@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { isoToHours, parseDuration } from "../core/duration.js";
 import { OpCliError } from "../core/errors.js";
-import { filtersQuery, updatedAtRange, type WpFilter } from "../core/filters.js";
+import { filtersQuery, isoDate, updatedAtRange, type WpFilter } from "../core/filters.js";
 import { flattenHalRecord, isFlatLink, type FlatLink } from "../core/hal.js";
 import {
   apiDelete,
@@ -421,7 +421,7 @@ async function resolveActivityHref(
   const activityId = isIdForm(raw)
     ? Number(raw)
     : await resolveName(raw, activitiesSource(runtime.env, profile, projectId));
-  return `/api/v3/time_entries_activities/${String(activityId)}`;
+  return `/api/v3/time_entries/activities/${String(activityId)}`;
 }
 
 export function registerTimeCommands(time: Command, runtime: TimeRuntime): void {
@@ -436,12 +436,17 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         + "or an ISO 8601 duration such as PT1H30M",
     )
     .option("--activity <name-or-id>", "activity of the project, by name or id")
+    .option(
+      "--spent-on <date>",
+      "calendar date the hours were spent, YYYY-MM-DD; defaults to today",
+    )
     .option("--json", "emit a flat JSON record")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <id>", "override the profile default project")
     .action(async (reference: string, options: {
       hours: string;
       activity?: string;
+      spentOn?: string;
       json?: boolean;
       profile?: string;
       project?: string;
@@ -449,6 +454,11 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       runtime.setJsonMode(options.json === true);
       requireId(reference, "work package");
       const duration = parseDuration(options.hours);
+      // OpenProject refuses a time entry without a date, so the wire
+      // always carries one: today unless --spent-on says otherwise.
+      const spentOn = options.spentOn === undefined
+        ? isoDate(new Date())
+        : requireIsoDate(options.spentOn);
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseOptionalId(options.project),
@@ -475,6 +485,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         : await resolveActivityHref(runtime, profile, projectId, options.activity);
       const response = await postEntry(profile, {
         hours: duration.iso,
+        spentOn,
         _links: {
           workPackage: { href: `/api/v3/work_packages/${reference}` },
           ...(activityHref === undefined ? {} : { activity: { href: activityHref } }),

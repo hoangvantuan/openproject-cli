@@ -1,0 +1,15 @@
+NOTICE
+======
+
+op-cli is an independent, community-developed command-line tool. It is not
+affiliated with, endorsed by, sponsored by, or connected to OpenProject GmbH
+in any way.
+
+"OpenProject" is a trademark of OpenProject GmbH. This project makes no use
+of OpenProject branding, logos, or other trademarks. References to
+OpenProject in the documentation and command output describe
+interoperability with the OpenProject REST API only; they are nominative
+references to that product, not claims of association.
+
+op-cli is released under the MIT license; see the "license" field of
+package.json.

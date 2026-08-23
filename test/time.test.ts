@@ -241,7 +241,7 @@ function timeEntryElement(
       project: { href: "/api/v3/projects/13", title: "Operations" },
       user: { href: "/api/v3/users/9", title: "Linh Nguyen" },
       activity: {
-        href: "/api/v3/time_entries_activities/1",
+        href: "/api/v3/time_entries/activities/1",
         title: "Development",
       },
     },
@@ -386,6 +386,7 @@ describe("time log", () => {
     expect(payloads[0]).toBe(payloads[1]);
     expect(JSON.parse(payloads[0])).toEqual({
       hours: "PT1H30M",
+      spentOn: localIsoDate(new Date()),
       _links: { workPackage: { href: "/api/v3/work_packages/675" } },
     });
   });
@@ -418,7 +419,7 @@ describe("time log", () => {
     expect(postBodies[0]?.hours).toBe("PT45M");
     const links = postBodies[0]?._links as Record<string, { href: string }>;
     expect(links.workPackage.href).toBe("/api/v3/work_packages/675");
-    expect(links.activity.href).toBe("/api/v3/time_entries_activities/1");
+    expect(links.activity.href).toBe("/api/v3/time_entries/activities/1");
   });
 
   test("an unmatched activity exits 1 listing the valid names", async () => {
@@ -809,7 +810,7 @@ describe("time update", () => {
         hours: "PT2H",
         spentOn: "2026-08-20",
         comment: "reworked after review",
-        _links: { activity: { href: "/api/v3/time_entries_activities/1" } },
+        _links: { activity: { href: "/api/v3/time_entries/activities/1" } },
       },
     ]);
   });

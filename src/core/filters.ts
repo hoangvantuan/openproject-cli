@@ -33,7 +33,7 @@ export interface WpListFlags {
 
 const DATE_FORMS = "today, yesterday, a number of days such as 7d, or an explicit YYYY-MM-DD date";
 
-function isoDate(date: Date): string {
+export function isoDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${String(date.getFullYear())}-${month}-${day}`;
