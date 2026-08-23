@@ -1,7 +1,15 @@
-import { loadDefaultProfile, saveDefaultProfile } from "./context/profile.js";
+import {
+  listProfiles,
+  removeProfile,
+  requireStoredName,
+  resolveProfile,
+  parseOptionalId,
+  saveDefaultProfile,
+  setActiveProfile,
+} from "./context/profile.js";
 import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
 import { authenticate } from "./core/http.js";
-import { renderStatusTable } from "./output/table.js";
+import { renderProfilesTable, renderStatusTable } from "./output/table.js";
 
 import { Command, CommanderError } from "commander";
 
@@ -64,7 +72,7 @@ export async function run(
       if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
         throw new OpCliError("USAGE_ERROR");
       }
-      const instanceUrl = parsedUrl.toString().replace(/\/$/, "");
+      const instanceUrl = parsedUrl.toString().replace(/\/+$/, "");
       const user = await authenticate(instanceUrl, apiKey);
       await saveDefaultProfile(env, instanceUrl, apiKey);
       stdout +=
@@ -75,14 +83,20 @@ export async function run(
     .command("status")
     .description("Show the active profile and authenticated user")
     .option("--json", "emit a JSON object")
-    .action(async (options: { json?: boolean }) => {
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (options: { json?: boolean; profile?: string; project?: string }) => {
       jsonOutput = options.json === true;
-      const profile = await loadDefaultProfile(env);
+      const profile = await resolveProfile(env, {
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
       const user = await authenticate(profile.instanceUrl, profile.apiKey);
       if (options.json) {
         stdout += `${JSON.stringify({
           profile: profile.name,
           instance: profile.instanceUrl,
+          project: profile.project ?? null,
           user,
         })}\n`;
         return;
@@ -91,8 +105,55 @@ export async function run(
       stdout += renderStatusTable({
         profile: profile.name,
         instance: profile.instanceUrl,
+        project: profile.project ?? null,
         user: user.name,
       });
+    });
+
+  auth
+    .command("list")
+    .description("List stored profiles and mark the active one")
+    .option("--json", "emit a JSON object")
+    .action(async (options: { json?: boolean }) => {
+      jsonOutput = options.json === true;
+      const list = await listProfiles(env);
+      if (options.json) {
+        stdout += `${JSON.stringify({
+          active: list.activeName ?? null,
+          profiles: list.profiles.map((profile) => ({
+            name: profile.name,
+            instance: profile.instanceUrl,
+            project: profile.project ?? null,
+          })),
+        })}\n`;
+        return;
+      }
+
+      stdout += renderProfilesTable(
+        list.profiles.map((profile) => ({
+          name: profile.name,
+          instance: profile.instanceUrl,
+          project: profile.project,
+          active: profile.name === list.activeName,
+        })),
+      );
+    });
+  auth
+    .command("use")
+    .description("Set the active profile")
+    .argument("<profile>")
+    .action(async (profile: string) => {
+      await setActiveProfile(env, profile);
+      stdout += `Switched to profile ${profile}.\n`;
+    });
+  auth
+    .command("logout")
+    .description("Remove the stored credentials of a profile")
+    .option("--profile <name>", "profile to log out of, defaults to the active one")
+    .action(async (options: { profile?: string }) => {
+      const target = options.profile ?? (await requireStoredName(env));
+      await removeProfile(env, target);
+      stdout += `Logged out of profile ${target}.\n`;
     });
 
   try {

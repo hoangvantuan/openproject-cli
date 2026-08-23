@@ -330,8 +330,8 @@ describe("op-cli entry function", () => {
 
     expect(withoutTty).toEqual({
       stdout:
-        "PROFILE  INSTANCE                     USER\n" +
-        "default  https://openproject.example  Ada Lovelace\n",
+        "PROFILE  INSTANCE                     PROJECT  USER\n" +
+        "default  https://openproject.example           Ada Lovelace\n",
       stderr: "",
       exitCode: 0,
     });
@@ -371,6 +371,7 @@ describe("op-cli entry function", () => {
     expect(JSON.parse(result.stdout)).toEqual({
       profile: "default",
       instance: "https://openproject.example",
+      project: null,
       user: {
         id: 7,
         name: "Ada Lovelace",
