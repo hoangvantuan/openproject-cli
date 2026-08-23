@@ -685,13 +685,13 @@ async function runBulkCreate(
         : new OpCliError("INTERNAL_ERROR");
       firstFailure ??= failure;
       runtime.write(`${JSON.stringify({
+        ...(failure.details ?? {}),
         index,
         ok: false,
         status: "failed",
         code: failure.code,
         message: failure.message,
         hint: failure.hint,
-        ...(failure.details ?? {}),
       })}\n`);
       if (options.failFast === true) {
         break;
@@ -701,9 +701,13 @@ async function runBulkCreate(
   if (firstFailure !== undefined) {
     // The run's exit code comes from the first failure's catalogue code,
     // so scripts matching on codes keep their promise across both paths.
+    // The denominator is always the whole batch; an early stop says so
+    // explicitly instead of shrinking the total.
     throw new OpCliError(
       firstFailure.code,
-      `${failures} of ${attempted} work packages failed.`,
+      attempted < parsed.length
+        ? `${failures} of ${parsed.length} work packages failed; stopped after ${attempted}.`
+        : `${failures} of ${parsed.length} work packages failed.`,
       "each failed input carries its own result line above.",
     );
   }
@@ -1816,6 +1820,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         return;
       }
       runtime.setJsonMode(options.json === true);
+      // --dry-run and --fail-fast are declared on the shared command, so
+      // without this guard a single-subject create would silently ignore
+      // them and still write for real.
+      if (options.dryRun === true || options.failFast === true) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--dry-run and --fail-fast belong to wp create --stdin.",
+          "pipe a JSON array with --stdin, or drop both flags to create one.",
+        );
+      }
       if (subject === undefined) {
         throw new OpCliError(
           "USAGE_ERROR",

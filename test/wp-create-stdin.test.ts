@@ -167,7 +167,7 @@ function createdElement(id: number, subject: string): Record<string, unknown> {
     id,
     lockVersion: 1,
     subject,
-    getHits: (path) => hits[path] ?? 0,
+    createdAt: "2026-08-23T09:00:00Z",
     updatedAt: "2026-08-23T09:00:00Z",
     _links: {
       self: { href: `/api/v3/work_packages/${String(id)}` },
@@ -536,6 +536,30 @@ describe("wp create --stdin bulk path", () => {
       "[]",
     );
     expect(withJson.exitCode).toBe(1);
+  });
+
+  test("the single-subject path refuses --dry-run and --fail-fast", async () => {
+    const { configDir, cacheDir } = await room();
+    // No POST interceptor installed: if the guard failed and the create
+    // ran for real, the write would hit the net-disabled agent.
+    installMockApi({});
+    const dryRun = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["Single", "--dry-run"],
+      "",
+    );
+    expect(dryRun.exitCode).toBe(1);
+    expect(dryRun.stderr).toContain("USAGE_ERROR");
+    expect(dryRun.stdout).toBe("");
+    const failFast = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["Single", "--fail-fast"],
+      "",
+    );
+    expect(failFast.exitCode).toBe(1);
+    expect(failFast.stdout).toBe("");
   });
 
   test("reports when stdin is not readable in this environment", async () => {
