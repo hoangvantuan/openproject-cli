@@ -514,18 +514,31 @@ export async function loadProjectVocabulary(
   if (profile.project === undefined) {
     throw new OpCliError("USAGE_ERROR");
   }
+  return loadProjectVocabularyById(env, profile, profile.project);
+}
+
+/**
+ * The same cache-and-fetch flow for an explicit project id, used when the
+ * project is not the profile default but a resource's own (a time entry
+ * resolves its activity against the project of its work package).
+ */
+export async function loadProjectVocabularyById(
+  env: RunEnvironment,
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<ProjectVocabulary> {
   const stored = await readStoredMetadata(env, profile);
-  const cached = stored?.projectScoped?.[String(profile.project)];
+  const cached = stored?.projectScoped?.[String(projectId)];
   if (cached !== undefined) {
     return cached;
   }
   const base = stored ?? (await fetchStoredMetadata(profile));
-  const vocabulary = await fetchProjectVocabulary(profile, profile.project);
+  const vocabulary = await fetchProjectVocabulary(profile, projectId);
   await persistMetadata(env, profile, {
     ...base,
     projectScoped: {
       ...base.projectScoped,
-      [String(profile.project)]: vocabulary,
+      [String(projectId)]: vocabulary,
     },
   });
   return vocabulary;

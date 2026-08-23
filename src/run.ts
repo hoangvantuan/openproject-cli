@@ -14,6 +14,7 @@ import { registerMetaCommands } from "./commands/meta.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerWpCommands } from "./commands/wp.js";
 import { registerProjectCommands } from "./commands/project.js";
+import { registerTimeCommands } from "./commands/time.js";
 import { buildVersionOutput } from "./commands/version.js";
 
 import { Command, CommanderError } from "commander";
@@ -196,6 +197,23 @@ export async function run(
     .command("project")
     .description("Inspect and manage projects");
   registerProjectCommands(project, {
+    resolve: (overrides) => resolveProfile(env, overrides),
+    write: (text) => {
+      stdout += text;
+    },
+    writeErr: (text) => {
+      stderr += text;
+    },
+    setJsonMode: (on) => {
+      jsonOutput = on;
+    },
+  });
+
+  const time = program
+    .command("time")
+    .description("Track and inspect time entries");
+  registerTimeCommands(time, {
+    env,
     resolve: (overrides) => resolveProfile(env, overrides),
     write: (text) => {
       stdout += text;
