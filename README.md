@@ -55,6 +55,15 @@ op-cli doctor            # diagnose connectivity, credentials, versions
 - **No escape hatch by design.** If a command is missing there is no raw
   HTTP passthrough; report the gap instead of working around the tool.
 
+## Companion skill
+
+`skills/op-cli/SKILL.md` packages this CLI's workflows as a coding-agent
+skill. To install it, copy that directory into your agent's skills folder:
+
+```sh
+cp -R skills/op-cli ~/.claude/skills/op-cli
+```
+
 ## The Python predecessor
 
 op-cli is a TypeScript rewrite of an earlier Python-based OpenProject skill.

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { RunEnvironment } from "../run.js";
 import { OpCliError } from "../core/errors.js";
 
-const LOGIN_PROFILE = "default";
+export const LOGIN_PROFILE = "default";
 
 interface StoredConfig {
   readonly default_profile?: string;
@@ -107,19 +107,24 @@ async function writeStored(
   await chmod(credentialsPath, 0o600);
 }
 
-export async function saveDefaultProfile(
+export async function saveProfile(
   env: RunEnvironment,
   instanceUrl: string,
   apiKey: string,
+  name: string = LOGIN_PROFILE,
+  project?: number,
 ): Promise<void> {
   const state = await readStored(env);
   const profiles: Record<string, StoredProfileEntry> = {
     ...state?.config.profiles,
+    [name]:
+      project === undefined
+        ? { url: instanceUrl }
+        : { url: instanceUrl, project },
   };
-  profiles[LOGIN_PROFILE] = { url: instanceUrl };
   const credentials: StoredCredentials = {
     ...state?.credentials,
-    [LOGIN_PROFILE]: { api_key: apiKey },
+    [name]: { api_key: apiKey },
   };
 
   const config: {
@@ -127,9 +132,11 @@ export async function saveDefaultProfile(
     active_profile?: string;
     profiles: Record<string, StoredProfileEntry>;
   } = { profiles };
+  // Only the first login ever claims default+active; logging into another
+  // profile merges alongside instead of stealing the selection.
   config.default_profile =
-    state?.config.default_profile ?? LOGIN_PROFILE;
-  config.active_profile = state?.config.active_profile ?? LOGIN_PROFILE;
+    state?.config.default_profile ?? name;
+  config.active_profile = state?.config.active_profile ?? name;
 
   await writeStored(env, { config, credentials });
 }
@@ -163,16 +170,24 @@ export async function listProfiles(env: RunEnvironment): Promise<ProfileListResu
 export async function setActiveProfile(
   env: RunEnvironment,
   name: string,
+  options: { readonly project?: number | undefined } = {},
 ): Promise<void> {
   const state = await readStored(env);
   if (!state || !state.config.profiles[name]) {
     throw new OpCliError("PROFILE_NOT_FOUND");
   }
+  const profiles: Record<string, StoredProfileEntry> = {
+    ...state.config.profiles,
+  };
+  const entry = state.config.profiles[name];
+  if (options.project !== undefined && entry !== undefined) {
+    profiles[name] = { ...entry, project: options.project };
+  }
   const config: {
     default_profile?: string;
     active_profile?: string;
     profiles: Readonly<Record<string, StoredProfileEntry>>;
-  } = { active_profile: name, profiles: state.config.profiles };
+  } = { active_profile: name, profiles };
   if (state.config.default_profile !== undefined) {
     config.default_profile = state.config.default_profile;
   }

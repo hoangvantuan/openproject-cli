@@ -108,7 +108,12 @@ export type MetadataSection =
   | "statuses"
   | "priorities"
   | "project"
-  | "instance";
+  | "instance"
+  | "members"
+  | "versions"
+  | "categories"
+  | "activities"
+  | "fields";
 
 export interface MetadataChange {
   readonly section: MetadataSection;
@@ -489,6 +494,11 @@ export async function refreshStoredMetadata(
     ...diffProject(previous?.project, next.project),
     ...diffInstance(previous?.instance, next.instance),
   ];
+  for (const projectId of Object.keys(projectScoped)) {
+    changes.push(
+      ...diffVocabulary(previousScoped[projectId], projectScoped[projectId]),
+    );
+  }
   return changes;
 }
 
@@ -565,9 +575,15 @@ function fieldDiffs(before: object, after: object): Array<string> {
     ...Object.keys(beforeRecord),
     ...Object.keys(afterRecord),
   ]);
+  // Arrays (roles, allowed values) arrive as fresh objects on every fetch;
+  // compare them by value or every refresh would flag them as changed.
+  const sameValue = (before: unknown, after: unknown): boolean =>
+    Array.isArray(before) || Array.isArray(after)
+      ? JSON.stringify(before) === JSON.stringify(after)
+      : Object.is(before, after);
   const diffs: Array<string> = [];
   for (const key of keys) {
-    if (!Object.is(beforeRecord[key], afterRecord[key])) {
+    if (!sameValue(beforeRecord[key], afterRecord[key])) {
       diffs.push(
         `${key}: ${formatValue(beforeRecord[key])} -> ${formatValue(afterRecord[key])}`,
       );
@@ -665,3 +681,31 @@ function diffInstance(
     : [{ section: "instance", kind: "changed", id: null, detail: diffs.join("; ") }];
 }
 
+
+function diffVocabulary(
+  before: ProjectVocabulary | undefined,
+  after: ProjectVocabulary | undefined,
+): Array<MetadataChange> {
+  if (after === undefined) {
+    return [];
+  }
+  // diffEntries keys on id; members identify by their membership id.
+  const memberEntry = (member: StoredMember) => ({
+    id: member.membership_id,
+    name: member.name,
+    roles: member.roles,
+  });
+  const fields = (vocabulary: ProjectVocabulary | undefined) =>
+    Object.values(vocabulary?.custom_fields ?? {}).flat();
+  return [
+    ...diffEntries(
+      "members",
+      before?.members.map(memberEntry),
+      after.members.map(memberEntry),
+    ),
+    ...diffEntries("versions", before?.versions, after.versions),
+    ...diffEntries("categories", before?.categories, after.categories),
+    ...diffEntries("activities", before?.activities, after.activities),
+    ...diffEntries("fields", fields(before), fields(after)),
+  ];
+}

@@ -33,6 +33,9 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
     .reply(500, { _type: "Error" });
   pool
     .intercept({ path: "/api/v3/users/me", method: "GET" })
+    .reply(500, { _type: "Error" });
+  pool
+    .intercept({ path: "/api/v3/users/me", method: "GET" })
     .reply(401, { _type: "Error" });
   pool
     .intercept({ path: "/api/v3/users/me", method: "GET" })

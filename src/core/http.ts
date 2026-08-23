@@ -22,16 +22,19 @@ export async function authenticate(
   };
 }
 
-async function request(
+// Reads may burn exactly one extra attempt on a transient 429/5xx; writes
+// never retry (ADR-0002): a replayed create or update can duplicate data.
+const READ_RETRY_DELAY_MS = 200;
+
+async function attempt(
   instanceUrl: string,
   apiKey: string,
   path: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<Response> {
-  let response: Response;
   try {
-    response = await fetch(`${instanceUrl}${path}`, {
+    return await fetch(`${instanceUrl}${path}`, {
       headers: {
         accept: "application/hal+json",
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
@@ -46,7 +49,23 @@ async function request(
         ? { method, body: JSON.stringify(body) }
         : { method }),
     });
-  } catch {throw new OpCliError("NETWORK_ERROR");
+  } catch {
+    throw new OpCliError("NETWORK_ERROR");
+  }
+}
+
+async function request(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  body?: unknown,
+): Promise<Response> {
+  let response = await attempt(instanceUrl, apiKey, path, method, body);
+  if (method === "GET" && (response.status === 429 || response.status >= 500)) {
+    // Promise.withResolvers needs ES2024 lib; the executor form stays.
+    await new Promise<void>((resolve) => setTimeout(resolve, READ_RETRY_DELAY_MS));
+    response = await attempt(instanceUrl, apiKey, path, method, body);
   }
 
   if (response.status === 401 || response.status === 403) {

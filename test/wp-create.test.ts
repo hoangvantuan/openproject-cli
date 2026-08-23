@@ -5,6 +5,14 @@ import { Agent, MockAgent, setGlobalDispatcher } from "undici";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { run } from "../src/run.js";
+import {
+  baseMetadata,
+  customFieldKey,
+  customFieldsFromSchema,
+  INSTANCE,
+  projectVocabulary,
+  schemaFragment,
+} from "./fixtures/metadata.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -49,60 +57,23 @@ async function writeSingleProfile(
   return { configDir, cacheDir };
 }
 
-const INSTANCE = "https://op.example.dev";
+// Custom-field keys come from one generator; the schema fragment and the
+// stored vocabulary derive through the same rule the production store uses.
+const TYPE_TASK_FIELDS = schemaFragment([
+  { index: 8, name: "Estimate" },
+  { index: 9, name: "Blocked", kind: "Boolean" },
+  { index: 10, name: "Reviewer", kind: "User" },
+  { index: 11, name: "Formula" },
+  { index: 13, name: "Tags" },
+]);
+const TYPE_BUG_FIELDS = schemaFragment([
+  { index: 12, name: "Impediment" },
+]);
 
-function baseMetadata(
-  statuses?: ReadonlyArray<Record<string, unknown>>,
-): Record<string, unknown> {
-  return {
-    types: [
-      { id: 2, name: "Task", is_milestone: false },
-      { id: 6, name: "Bug", is_milestone: false },
-    ],
-    statuses:
-      statuses
-        ?? [
-          { id: 1, name: "In progress", is_closed: false, is_default: true },
-          { id: 5, name: "Closed", is_closed: true, is_default: false },
-        ],
-    priorities: [
-      { id: 3, name: "High", is_default: false },
-      { id: 4, name: "Low", is_default: false },
-    ],
-    instance: {
-      url: INSTANCE,
-      api_version: "v3",
-      core_version: "13.4",
-      fetched_at: "2026-08-23T00:00:00Z",
-    },
-  };
-}
-
-
-// Two distinct custom fields share the human name "Estimate" across
-// types, which is exactly what makes field-name resolution ambiguous.
-const PROJECT_VOCABULARY = {
-  project_id: 13,
-  fetched_at: "2026-08-23T00:00:00Z",
-  members: [
-    { membership_id: 1, user_id: 7, name: "Linh Nguyen", type: "User", roles: [] },
-  ],
-  versions: [{ id: 31, name: "0.9.0", status: "open" }],
-  categories: [{ id: 44, name: "Billing" }],
-  activities: [],
-  custom_fields: {
-    "2": [
-      { key: "customField8", id: 8, name: "Estimate" },
-      { key: "customField9", id: 9, name: "Blocked", is_boolean: true },
-      { key: "customField10", id: 10, name: "Reviewer", is_user: true },
-      { key: "customField11", id: 11, name: "Formula" },
-      { key: "customField13", id: 13, name: "Tags" },
-    ],
-    "6": [
-      { key: "customField12", id: 12, name: "Impediment" },
-    ],
-  },
-};
+const PROJECT_VOCABULARY = projectVocabulary({
+  "2": customFieldsFromSchema(TYPE_TASK_FIELDS),
+  "6": customFieldsFromSchema(TYPE_BUG_FIELDS),
+});
 
 async function writeMetadataFile(
   cacheDir: string,
@@ -275,7 +246,7 @@ describe("wp create values by name", () => {
     expect(links.assignee.href).toBe("/api/v3/users/7");
     expect(links.version.href).toBe("/api/v3/versions/31");
     expect(links.category.href).toBe("/api/v3/categories/44");
-    expect(postBodies[0]?.customField11).toBe("5");
+    expect(postBodies[0]?.[customFieldKey(11)]).toBe("5");
   });
 
   test("splits a field value at the first equals sign", async () => {
@@ -293,7 +264,7 @@ describe("wp create values by name", () => {
       "Formula=a=b=c",
     ]);
     expect(result.exitCode).toBe(0);
-    expect(postBodies[0]?.customField11).toBe("a=b=c");
+    expect(postBodies[0]?.[customFieldKey(11)]).toBe("a=b=c");
   });
 
   test("repeating --field collects several values for one field", async () => {
@@ -313,7 +284,7 @@ describe("wp create values by name", () => {
       "Tags=beta",
     ]);
     expect(result.exitCode).toBe(0);
-    expect(postBodies[0]?.customField13).toEqual(["alpha", "beta"]);
+    expect(postBodies[0]?.[customFieldKey(13)]).toEqual(["alpha", "beta"]);
   });
 
   test("sends null for --field \"Name=\" to clear the field", async () => {
@@ -331,7 +302,7 @@ describe("wp create values by name", () => {
       "Formula=",
     ]);
     expect(result.exitCode).toBe(0);
-    expect(postBodies[0]).toHaveProperty("customField11", null);
+    expect(postBodies[0]).toHaveProperty(customFieldKey(11), null);
   });
 
   test("refuses mixing a cleared and a set value for one field", async () => {
@@ -427,13 +398,15 @@ describe("wp create values by name", () => {
         "/api/v3/work_packages/schemas/13-2": {
           _type: "Schema",
           id: "13-2",
-          customField9: { type: "Boolean", name: "Blocked", writable: true },
-          customField10: { type: "User", name: "Reviewer", writable: true },
+          ...schemaFragment([
+            { index: 9, name: "Blocked", kind: "Boolean" },
+            { index: 10, name: "Reviewer", kind: "User" },
+          ]),
         },
         "/api/v3/work_packages/schemas/13-6": {
           _type: "Schema",
           id: "13-6",
-          customField12: { type: "String", name: "Estimate", writable: true },
+          ...schemaFragment([{ index: 12, name: "Estimate" }]),
         },
       },
       postPackages: {
@@ -503,7 +476,7 @@ describe("wp create values by name", () => {
       "Blocked=True",
     ]);
     expect(result.exitCode).toBe(0);
-    expect(postBodies[0]?.customField9).toBe(true);
+    expect(postBodies[0]?.[customFieldKey(9)]).toBe(true);
   });
 
   test("a user-typed field resolves through the assignee machinery", async () => {
@@ -521,7 +494,7 @@ describe("wp create values by name", () => {
       "Reviewer=Linh Nguyen",
     ]);
     expect(result.exitCode).toBe(0);
-    expect(postBodies[0]?.customField10).toEqual({
+    expect(postBodies[0]?.[customFieldKey(10)]).toEqual({
       href: "/api/v3/users/7",
     });
   });
@@ -529,13 +502,10 @@ describe("wp create values by name", () => {
   // Shared by both ambiguity tests: the human name "Estimate" exists on
   // two types under two different keys, so it must resolve as ambiguous
   // across types, never silently to one of them.
-  const ambiguousVocabulary = {
-    ...PROJECT_VOCABULARY,
-    custom_fields: {
-      "2": [{ key: "customField8", id: 8, name: "Estimate" }],
-      "6": [{ key: "customField12", id: 12, name: "Estimate" }],
-    },
-  };
+  const ambiguousVocabulary = projectVocabulary({
+    "2": customFieldsFromSchema(schemaFragment([{ index: 8, name: "Estimate" }])),
+    "6": customFieldsFromSchema(schemaFragment([{ index: 12, name: "Estimate" }])),
+  });
 
   test("an ambiguous field name exits 1 naming both candidates and their types", async () => {
     const { configDir, cacheDir } = await standardRoom();
@@ -554,8 +524,8 @@ describe("wp create values by name", () => {
     ]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('field "Estimate" is ambiguous');
-    expect(result.stderr).toContain("customField8 (Type Task)");
-    expect(result.stderr).toContain("customField12 (Type Bug)");
+    expect(result.stderr).toContain(`${customFieldKey(8)} (Type Task)`);
+    expect(result.stderr).toContain(`${customFieldKey(12)} (Type Bug)`);
   });
 
   test("an explicit customFieldN disambiguates an ambiguous name", async () => {
@@ -576,7 +546,7 @@ describe("wp create values by name", () => {
       "customfield12=3",
     ]);
     expect(result.exitCode).toBe(0);
-    expect(postBodies[0]?.customField12).toBe("3");
+    expect(postBodies[0]?.[customFieldKey(12)]).toBe("3");
   });
 
   test("an unknown explicit key exits 1 listing known names", async () => {
@@ -611,14 +581,18 @@ describe("wp create retry rule", () => {
     const { configDir, cacheDir } = await standardRoom();
     await writeMetadataFile(
       cacheDir,
-      baseMetadata([
-        { id: 99, name: "Archived", is_closed: false, is_default: false },
-      ]),
+      baseMetadata({
+        statuses: [
+          { id: 99, name: "Archived", is_closed: false, is_default: false },
+        ],
+      }),
     );
-    const fresh = baseMetadata([
-      { id: 1, name: "In progress", is_closed: false, is_default: true },
-      { id: freshStatusId, name: "Archived", is_closed: false, is_default: false },
-    ]);
+    const fresh = baseMetadata({
+      statuses: [
+        { id: 1, name: "In progress", is_closed: false, is_default: true },
+        { id: freshStatusId, name: "Archived", is_closed: false, is_default: false },
+      ],
+    });
     const { postBodies } = installMockApi({
       packages: refreshEndpoints(fresh),
       posts: [
@@ -675,10 +649,10 @@ describe("wp create retry rule", () => {
     const statuses = [
       { id: 99, name: "Archived", is_closed: false, is_default: false },
     ];
-    await writeMetadataFile(cacheDir, baseMetadata(statuses));
+    await writeMetadataFile(cacheDir, baseMetadata({ statuses }));
     // Fresh metadata carries the very same id: the honest error stays.
     const { postBodies } = installMockApi({
-      packages: refreshEndpoints(baseMetadata(statuses)),
+      packages: refreshEndpoints(baseMetadata({ statuses })),
       posts: [
         {
           status: 422,
@@ -882,7 +856,7 @@ describe("wp create retry rule", () => {
         "/api/v3/work_packages/schemas/13-2": {
           _type: "Schema",
           id: "13-2",
-          customField10: { type: "User", name: "Reviewer", writable: true },
+          ...schemaFragment([{ index: 10, name: "Reviewer", kind: "User" }]),
         },
         "/api/v3/work_packages/schemas/13-6": {
           _type: "Schema",
@@ -919,7 +893,7 @@ describe("wp create retry rule", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Review task");
     expect(postBodies).toHaveLength(2);
-    expect(postBodies[0]?.customField10).toEqual({ href: "/api/v3/users/7" });
-    expect(postBodies[1]?.customField10).toEqual({ href: "/api/v3/users/15" });
+    expect(postBodies[0]?.[customFieldKey(10)]).toEqual({ href: "/api/v3/users/7" });
+    expect(postBodies[1]?.[customFieldKey(10)]).toEqual({ href: "/api/v3/users/15" });
   });
 });

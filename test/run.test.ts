@@ -274,6 +274,11 @@ describe("op-cli entry function", () => {
       await mockAgent.close();
       setGlobalDispatcher(new Agent());
     });
+    // A GET burns its single allowed read retry before the failure lands.
+    mockAgent
+      .get("https://openproject.example")
+      .intercept({ path: "/api/v3/users/me", method: "GET" })
+      .reply(500, { _type: "Error", errorIdentifier: "urn:openproject-org:api:v3:errors:InternalError" });
     mockAgent
       .get("https://openproject.example")
       .intercept({ path: "/api/v3/users/me", method: "GET" })

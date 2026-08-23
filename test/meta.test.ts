@@ -685,6 +685,11 @@ describe("meta failure modes and surface", () => {
       await mockAgent.close();
       setGlobalDispatcher(new Agent());
     });
+    // A GET burns its single allowed read retry before the failure lands.
+    mockAgent
+      .get("https://op.example")
+      .intercept({ path: "/api/v3/types", method: "GET" })
+      .reply(500, { _type: "Error" });
     mockAgent
       .get("https://op.example")
       .intercept({ path: "/api/v3/types", method: "GET" })
@@ -1163,6 +1168,9 @@ describe("meta project vocabulary", () => {
     });
     const refreshedOnce = await run(["meta", "refresh"], env, {});
     expect(refreshedOnce.exitCode).toBe(0);
+    // The member added between the two fetches surfaces in the refresh
+    // report, grouped under the members section.
+    expect(refreshedOnce.stdout).toContain("members: added Backend (9)");
     const refreshed = await run(["meta", "members", "--json"], env, {});
 
     expect(refreshed.exitCode).toBe(0);

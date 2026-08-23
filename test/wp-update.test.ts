@@ -5,6 +5,14 @@ import { Agent, MockAgent, setGlobalDispatcher } from "undici";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { run } from "../src/run.js";
+import {
+  baseMetadata,
+  customFieldKey,
+  customFieldsFromSchema,
+  INSTANCE,
+  projectVocabulary,
+  schemaFragment,
+} from "./fixtures/metadata.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -49,45 +57,19 @@ async function writeSingleProfile(
   return { configDir, cacheDir };
 }
 
-const INSTANCE = "https://op.example.dev";
+
 const WP_PATH = "/api/v3/work_packages/675";
 
-function baseMetadata(): Record<string, unknown> {
+const PROJECT_VOCABULARY = projectVocabulary({
+  "2": customFieldsFromSchema(schemaFragment([{ index: 11, name: "Formula" }])),
+});
+
+function scopedMetadata(): Record<string, unknown> {
   return {
-    types: [
-      { id: 2, name: "Task", is_milestone: false },
-      { id: 6, name: "Bug", is_milestone: false },
-    ],
-    statuses: [
-      { id: 1, name: "In progress", is_closed: false, is_default: true },
-      { id: 5, name: "Closed", is_closed: true, is_default: false },
-    ],
-    priorities: [
-      { id: 3, name: "High", is_default: false },
-      { id: 4, name: "Low", is_default: false },
-    ],
-    instance: {
-      url: INSTANCE,
-      api_version: "v3",
-      core_version: "13.4",
-      fetched_at: "2026-08-23T00:00:00Z",
-    },
+    ...baseMetadata(),
+    projectScoped: { "13": PROJECT_VOCABULARY },
   };
 }
-
-const PROJECT_VOCABULARY = {
-  project_id: 13,
-  fetched_at: "2026-08-23T00:00:00Z",
-  members: [
-    { membership_id: 1, user_id: 7, name: "Linh Nguyen", type: "User", roles: [] },
-  ],
-  versions: [{ id: 31, name: "0.9.0", status: "open" }],
-  categories: [{ id: 44, name: "Billing" }],
-  activities: [],
-  custom_fields: {
-    "2": [{ key: "customField11", id: 11, name: "Formula" }],
-  },
-};
 
 async function writeMetadataFile(
   cacheDir: string,
@@ -96,13 +78,6 @@ async function writeMetadataFile(
   const dir = join(cacheDir, "default");
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "metadata.json"), JSON.stringify(metadata));
-}
-
-function scopedMetadata(): Record<string, unknown> {
-  return {
-    ...baseMetadata(),
-    projectScoped: { "13": PROJECT_VOCABULARY },
-  };
 }
 
 /** One stored work package in state `state`; `lockVersion` drives races. */
@@ -121,9 +96,8 @@ function wpRecord(
     subject: "Ship the thing",
     createdAt: "2026-08-23T09:00:00Z",
     updatedAt: "2026-08-23T09:00:00Z",
-    customField11: formula,
+    [customFieldKey(11)]: formula,
     _links: {
-      self: { href: WP_PATH },
       project: { href: "/api/v3/projects/13", title: "Operations" },
       type: { href: "/api/v3/types/2", title: "Task" },
       status,
@@ -234,7 +208,7 @@ describe("wp update", () => {
     expect(patchBodies[0]?.lockVersion).toBe(1);
     const links = patchBodies[0]?._links as Record<string, { href: string }>;
     expect(links.status.href).toBe("/api/v3/statuses/5");
-    expect(patchBodies[0]?.customField11).toBe("7");
+    expect(patchBodies[0]?.[customFieldKey(11)]).toBe("7");
   });
 
   test("a pure race succeeds after exactly one retry", async () => {
@@ -331,8 +305,7 @@ describe("wp update", () => {
       };
     };
     expect(rendered.error.code).toBe("CONFLICT");
-    expect(rendered.error.conflicting_fields).toEqual(["customField11"]);
-    expect(typeof rendered.error.message).toBe("string");
+    expect(rendered.error.conflicting_fields).toEqual([customFieldKey(11)]);
     expect(typeof rendered.error.hint).toBe("string");
   });
 

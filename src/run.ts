@@ -4,8 +4,9 @@ import {
   requireStoredName,
   resolveProfile,
   parseOptionalId,
-  saveDefaultProfile,
+  saveProfile,
   setActiveProfile,
+  LOGIN_PROFILE,
 } from "./context/profile.js";
 import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
 import { authenticate } from "./core/http.js";
@@ -76,7 +77,12 @@ export async function run(
   auth
     .command("login")
     .description("Verify and store OpenProject credentials")
-    .action(async () => {
+    .option(
+      "--profile <name>",
+      'profile to create or update, defaults to "default"',
+    )
+    .option("--project <id>", "default project stored on the profile")
+    .action(async (options: { profile?: string; project?: string }) => {
       if (!io.prompt) {
         throw new OpCliError("USAGE_ERROR");
       }
@@ -93,11 +99,13 @@ export async function run(
         throw new OpCliError("USAGE_ERROR");
       }
       const instanceUrl = parsedUrl.toString().replace(/\/+$/, "");
+      const profileName = options.profile ?? LOGIN_PROFILE;
+      const project = parseOptionalId(options.project);
       const user = await authenticate(instanceUrl, apiKey);
-      await saveDefaultProfile(env, instanceUrl, apiKey);
+      await saveProfile(env, instanceUrl, apiKey, profileName, project);
       stdout +=
         `Authenticated ${user.name} at ${instanceUrl} ` +
-        "using profile default.\n";
+        `using profile ${profileName}.\n`;
     });
   auth
     .command("status")
@@ -162,8 +170,11 @@ export async function run(
     .command("use")
     .description("Set the active profile")
     .argument("<profile>")
-    .action(async (profile: string) => {
-      await setActiveProfile(env, profile);
+    .option("--project <id>", "change the profile's default project")
+    .action(async (profile: string, options: { project?: string }) => {
+      await setActiveProfile(env, profile, {
+        project: parseOptionalId(options.project),
+      });
       stdout += `Switched to profile ${profile}.\n`;
     });
   auth

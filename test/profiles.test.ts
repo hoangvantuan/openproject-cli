@@ -625,11 +625,98 @@ describe("review round 1", () => {
     );
 
     const result = await run(["auth", "status"], { OP_CLI_CONFIG_DIR: directory }, {});
-
     expect(result).toEqual({
       stdout: "",
       stderr: "[AUTH_FAILED] Authentication failed. Hint: run op-cli auth login.\n",
       exitCode: 3,
     });
+  });
+});
+
+describe("login into named profiles and stored default projects", () => {
+  test("auth login --profile creates a second profile and leaves the old one intact", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-login-named-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      { default: { url: "https://op-a.example" } },
+      {
+        defaultProfile: "default",
+        activeProfile: "default",
+        credentials: { default: "key-a" },
+      },
+    );
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://op-b.example", "Grace Hopper");
+    const answers = ["https://op-b.example/", "key-b"];
+    const result = await run(
+      ["auth", "login", "--profile", "work", "--project", "13"],
+      { OP_CLI_CONFIG_DIR: directory },
+      { prompt: async () => answers.shift() ?? "" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("using profile work.");
+    expect(JSON.parse(await readFile(join(directory, "config.json"), "utf8")))
+      .toEqual({
+        default_profile: "default",
+        active_profile: "default",
+        profiles: {
+          default: { url: "https://op-a.example" },
+          work: { url: "https://op-b.example", project: 13 },
+        },
+      });
+    expect(JSON.parse(
+      await readFile(join(directory, "credentials.json"), "utf8"),
+    )).toEqual({
+      default: { api_key: "key-a" },
+      work: { api_key: "key-b" },
+    });
+    expect((await stat(join(directory, "credentials.json"))).mode & 0o777).toBe(
+      0o600,
+    );
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  test("auth use --project records the default project without re-login", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-use-project-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      {
+        default: { url: "https://op-a.example" },
+        work: { url: "https://op-b.example" },
+      },
+      { credentials: { default: "key-a", work: "key-b" } },
+    );
+
+    const result = await run(
+      ["auth", "use", "work", "--project", "13"],
+      { OP_CLI_CONFIG_DIR: directory },
+      {},
+    );
+
+    expect(result).toEqual({
+      stdout: "Switched to profile work.\n",
+      stderr: "",
+      exitCode: 0,
+    });
+    const config = JSON.parse(
+      await readFile(join(directory, "config.json"), "utf8"),
+    );
+    expect(config.active_profile).toBe("work");
+    expect(config.profiles.work).toEqual({
+      url: "https://op-b.example",
+      project: 13,
+    });
+    expect(config.profiles.default).toEqual({ url: "https://op-a.example" });
   });
 });
