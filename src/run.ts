@@ -295,7 +295,11 @@ export async function run(
       const usageError = new OpCliError("USAGE_ERROR");
       return {
         stdout,
-        stderr: renderTextError(usageError),
+        // Text mode replaces Commander's prose with the catalogue line,
+        // as before; JSON mode must stay a single parseable object.
+        stderr: jsonOutput
+          ? renderJsonError(usageError)
+          : renderTextError(usageError),
         exitCode: usageError.exitCode,
       };
     }

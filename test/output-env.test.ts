@@ -57,3 +57,15 @@ test("the bulk stdin path keeps its own output contract under the variable", asy
   // stdin parse proves the bulk path was skipped by the environment.
   expect(result.stderr).toContain("stdin did not carry valid JSON");
 });
+
+test("a command-line parse error renders as JSON under the variable", async () => {
+  const result = await run(["wp", "get"], { OP_CLI_OUTPUT: "json" }, {});
+  expect(result.exitCode).toBe(1);
+  // Text mode keeps replacing Commander's prose with the catalogue
+  // line; JSON mode stays a single parseable object.
+  expect(JSON.parse(result.stderr).error.code).toBe("USAGE_ERROR");
+
+  // Without the variable the same mistake keeps the text form.
+  const text = await run(["wp", "get"], {}, {});
+  expect(text.stderr).toContain("[USAGE_ERROR]");
+});
