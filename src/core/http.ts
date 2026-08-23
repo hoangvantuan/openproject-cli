@@ -10,9 +10,26 @@ export async function authenticate(
   instanceUrl: string,
   apiKey: string,
 ): Promise<AuthenticatedUser> {
+  const user = (await apiGet(
+    instanceUrl,
+    apiKey,
+    "/api/v3/users/me",
+  )) as AuthenticatedUser;
+  return {
+    id: user.id,
+    name: user.name,
+    login: user.login,
+  };
+}
+
+export async function apiGet(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${instanceUrl}/api/v3/users/me`, {
+    response = await fetch(`${instanceUrl}${path}`, {
       headers: {
         accept: "application/hal+json",
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
@@ -29,11 +46,5 @@ export async function authenticate(
   if (!response.ok) {
     throw new OpCliError("API_ERROR");
   }
-
-  const user = (await response.json()) as AuthenticatedUser;
-  return {
-    id: user.id,
-    name: user.name,
-    login: user.login,
-  };
+  return await response.json();
 }

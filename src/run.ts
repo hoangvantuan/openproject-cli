@@ -10,6 +10,7 @@ import {
 import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
 import { authenticate } from "./core/http.js";
 import { renderProfilesTable, renderStatusTable } from "./output/table.js";
+import { registerMetaCommands } from "./commands/meta.js";
 
 import { Command, CommanderError } from "commander";
 
@@ -155,6 +156,20 @@ export async function run(
       await removeProfile(env, target);
       stdout += `Logged out of profile ${target}.\n`;
     });
+
+  const meta = program
+    .command("meta")
+    .description("Inspect the stored metadata of the instance");
+  registerMetaCommands(meta, {
+    env,
+    resolve: () => resolveProfile(env),
+    write: (text) => {
+      stdout += text;
+    },
+    setJsonMode: (on) => {
+      jsonOutput = on;
+    },
+  });
 
   try {
     await program.parseAsync([...argv], { from: "user" });
