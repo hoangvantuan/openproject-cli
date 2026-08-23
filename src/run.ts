@@ -162,7 +162,7 @@ export async function run(
     .description("Inspect the stored metadata of the instance");
   registerMetaCommands(meta, {
     env,
-    resolve: () => resolveProfile(env),
+    resolve: (overrides) => resolveProfile(env, overrides),
     write: (text) => {
       stdout += text;
     },

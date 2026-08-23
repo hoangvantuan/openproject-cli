@@ -212,7 +212,7 @@ export function parseOptionalId(raw: string | undefined): number | undefined {
     return undefined;
   }
   const value = Number(raw);
-  if (!Number.isInteger(value)) {
+  if (!Number.isInteger(value) || value <= 0) {
     throw new OpCliError("USAGE_ERROR");
   }
   return value;

@@ -2,24 +2,35 @@ import type { Command } from "commander";
 
 import {
   clearStoredMetadata,
+  loadProjectVocabulary,
   loadStoredMetadata,
   readStoredMetadata,
   refreshStoredMetadata,
-  type LookupRow,
   type MetadataChange,
+  type ProjectVocabulary,
+  type StoredActivity,
+  type StoredCategory,
+  type StoredCustomField,
+  type StoredMember,
   type StoredMetadata,
   type StoredPriority,
   type StoredStatus,
+  type StoredVersion,
   type StoredType,
 } from "../context/metadata.js";
 import type { ActiveProfile } from "../context/profile.js";
+import { parseOptionalId, type ContextOverrides } from "../context/profile.js";
 import type { RunEnvironment } from "../run.js";
-import { defineLookupCommand, type LookupSpec } from "../core/define.js";
+import {
+  defineLookupCommand,
+  type LookupSpec,
+  type ParsedOptions,
+} from "../core/define.js";
 import { renderTable } from "../output/table.js";
 
 export interface MetaRuntime {
   readonly env: RunEnvironment;
-  readonly resolve: () => Promise<ActiveProfile>;
+  readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
   readonly write: (text: string) => void;
   readonly setJsonMode: (on: boolean) => void;
 }
@@ -28,7 +39,12 @@ function star(value: unknown): string {
   return value === true ? "*" : "";
 }
 
-const typeLookup: LookupSpec<StoredType> = {
+const projectOption = {
+  flag: "--project <id>",
+  description: "override the profile default project",
+};
+
+const typeLookup: LookupSpec<StoredType, StoredMetadata> = {
   name: "types",
   description: "List the work package types of the instance",
   select: (metadata) => metadata.types,
@@ -39,7 +55,7 @@ const typeLookup: LookupSpec<StoredType> = {
   ],
 };
 
-const statusLookup: LookupSpec<StoredStatus> = {
+const statusLookup: LookupSpec<StoredStatus, StoredMetadata> = {
   name: "statuses",
   description: "List the work package statuses of the instance",
   select: (metadata) => metadata.statuses,
@@ -63,7 +79,7 @@ const statusLookup: LookupSpec<StoredStatus> = {
   ],
 };
 
-const priorityLookup: LookupSpec<StoredPriority> = {
+const priorityLookup: LookupSpec<StoredPriority, StoredMetadata> = {
   name: "priorities",
   description: "List the work package priorities of the instance",
   select: (metadata) => metadata.priorities,
@@ -74,63 +90,73 @@ const priorityLookup: LookupSpec<StoredPriority> = {
   ],
 };
 
-// The sections below are stored by issue #5; until then they render what
-// the store holds, which is an honest empty list.
-function projectScoped(
-  metadata: StoredMetadata,
-  section: string,
-): ReadonlyArray<LookupRow> {
-  return metadata.projectScoped?.[section] ?? [];
-}
-
-const memberLookup: LookupSpec<LookupRow> = {
+const memberLookup: LookupSpec<StoredMember, ProjectVocabulary> = {
   name: "members",
   description: "List the members of the active project",
-  select: (metadata) => projectScoped(metadata, "members"),
+  select: (vocabulary) => vocabulary.members,
+  options: [projectOption],
   columns: [
-    { title: "ID", cell: (entry) => String(entry.id) },
+    { title: "ID", cell: (entry) => String(entry.user_id) },
     { title: "NAME", cell: (entry) => entry.name },
+    { title: "TYPE", cell: (entry) => entry.type },
+    {
+      title: "ROLES",
+      cell: (entry) => entry.roles.map((role) => role.title).join(", "),
+    },
   ],
 };
 
-const versionLookup: LookupSpec<LookupRow> = {
+const versionLookup: LookupSpec<StoredVersion, ProjectVocabulary> = {
   name: "versions",
   description: "List the versions of the active project",
-  select: (metadata) => projectScoped(metadata, "versions"),
+  select: (vocabulary) => vocabulary.versions,
+  options: [projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
+    { title: "STATUS", cell: (entry) => entry.status },
   ],
 };
 
-const categoryLookup: LookupSpec<LookupRow> = {
+const categoryLookup: LookupSpec<StoredCategory, ProjectVocabulary> = {
   name: "categories",
   description: "List the categories of the active project",
-  select: (metadata) => projectScoped(metadata, "categories"),
+  select: (vocabulary) => vocabulary.categories,
+  options: [projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
   ],
 };
 
-const fieldLookup: LookupSpec<LookupRow> = {
-  name: "fields",
-  description: "List the custom fields of the active project",
-  select: (metadata) => projectScoped(metadata, "fields"),
-  columns: [
-    { title: "ID", cell: (entry) => String(entry.id) },
-    { title: "NAME", cell: (entry) => entry.name },
-  ],
-};
-
-interface ActivityRow extends LookupRow {
-  readonly is_default?: boolean;
+function flattenFields(
+  vocabulary: ProjectVocabulary,
+): ReadonlyArray<StoredCustomField> {
+  const fields = Object.values(vocabulary.custom_fields).flat();
+  return [...fields].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const activityLookup: LookupSpec<ActivityRow> = {
+const fieldLookup: LookupSpec<StoredCustomField, ProjectVocabulary> = {
+  name: "fields",
+  description: "List the custom fields of the active project",
+  select: flattenFields,
+  options: [projectOption],
+  columns: [
+    { title: "ID", cell: (entry) => String(entry.id) },
+    { title: "NAME", cell: (entry) => entry.name },
+    { title: "KEY", cell: (entry) => entry.key },
+    {
+      title: "ALLOWED VALUES",
+      cell: (entry) => (entry.allowed_values ?? []).join(", "),
+    },
+  ],
+};
+
+const activityLookup: LookupSpec<StoredActivity, ProjectVocabulary> = {
   name: "activities",
   description: "List the time entry activities of the active project",
-  select: (metadata) => projectScoped(metadata, "activities") as ReadonlyArray<ActivityRow>,
+  select: (vocabulary) => vocabulary.activities,
+  options: [projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -241,30 +267,49 @@ function registerClear(parent: Command, runtime: MetaRuntime): void {
     });
 }
 
-function registerLookup<Row>(
+type MetaLoader<Data> = (options: ParsedOptions) => Promise<Data>;
+
+function addLookup<Row, Data>(
   parent: Command,
   runtime: MetaRuntime,
-  spec: LookupSpec<Row>,
+  spec: LookupSpec<Row, Data>,
+  load: MetaLoader<Data>,
 ): void {
   parent.addCommand(
     defineLookupCommand(spec, {
-      load: async () => loadStoredMetadata(runtime.env, await runtime.resolve()),
+      load,
       write: runtime.write,
       setJsonMode: runtime.setJsonMode,
     }),
   );
 }
 
+function instanceLoad(runtime: MetaRuntime): MetaLoader<StoredMetadata> {
+  return async () =>
+    loadStoredMetadata(runtime.env, await runtime.resolve());
+}
+
+function projectLoad(runtime: MetaRuntime): MetaLoader<ProjectVocabulary> {
+  return async (options) => {
+    const raw = options.project;
+    const project = parseOptionalId(typeof raw === "string" ? raw : undefined);
+    const profile = await runtime.resolve({ project });
+    return loadProjectVocabulary(runtime.env, profile);
+  };
+}
+
 export function registerMetaCommands(parent: Command, runtime: MetaRuntime): void {
   // Eight read-only lookups, one declaration each.
-  registerLookup(parent, runtime, typeLookup);
-  registerLookup(parent, runtime, statusLookup);
-  registerLookup(parent, runtime, priorityLookup);
-  registerLookup(parent, runtime, memberLookup);
-  registerLookup(parent, runtime, versionLookup);
-  registerLookup(parent, runtime, categoryLookup);
-  registerLookup(parent, runtime, fieldLookup);
-  registerLookup(parent, runtime, activityLookup);
+  const instance = instanceLoad(runtime);
+  const project = projectLoad(runtime);
+  addLookup(parent, runtime, typeLookup, instance);
+  addLookup(parent, runtime, statusLookup, instance);
+  addLookup(parent, runtime, priorityLookup, instance);
+  addLookup(parent, runtime, memberLookup, project);
+  addLookup(parent, runtime, versionLookup, project);
+  addLookup(parent, runtime, categoryLookup, project);
+  addLookup(parent, runtime, fieldLookup, project);
+  addLookup(parent, runtime, activityLookup, project);
   registerShow(parent, runtime);
   registerRefresh(parent, runtime);
   registerClear(parent, runtime);
