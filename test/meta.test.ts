@@ -61,7 +61,7 @@ interface InstallOptions {
   readonly members?: Record<number, unknown[]>;
   readonly versions?: Record<number, unknown[]>;
   readonly categories?: Record<number, unknown[]>;
-  readonly activities?: { readonly allowedValues: unknown[] };
+  readonly activities?: Record<number, { readonly allowedValues: unknown[] }>;
   readonly projectTypes?: Record<number, unknown[]>;
   readonly schemas?: Record<string, Record<string, unknown>>;
 }
@@ -182,19 +182,59 @@ function installMockApi(options: InstallOptions): MockAgent {
       .reply(200, halCollection(elements))
       .persist();
   }
-  if (options.activities !== undefined) {
+  for (const [projectId, form] of Object.entries(options.activities ?? {})) {
     pool
-      .intercept({ path: "/api/v3/time_entries/schema", method: "GET" })
-      .reply(200, {
-        _type: "Schema",
-        activity: {
-          type: "TimeEntriesActivity",
-          name: "Time entry activity",
-          required: false,
-          hasDefault: true,
-          writable: true,
-          allowedValues: options.activities.allowedValues,
+      .intercept({
+        path: "/api/v3/time_entries/form",
+        method: "POST",
+        body: (raw: unknown) => {
+          try {
+            const payload = JSON.parse(String(raw)) as {
+              _links?: { project?: { href?: string } };
+            };
+            return (
+              payload._links?.project?.href === `/api/v3/projects/${projectId}`
+            );
+          } catch {
+            return false;
+          }
         },
+      })
+      .reply(200, {
+        _type: "Form",
+        _links: {
+          self: { href: "/api/v3/time_entries/form", method: "post" },
+          validate: { href: "/api/v3/time_entries/form", method: "post" },
+          commit: { href: "/api/v3/time_entries", method: "post" },
+        },
+        _embedded: {
+          payload: {
+            _links: { project: { href: `/api/v3/projects/${projectId}` } },
+          },
+          schema: {
+            _type: "Schema",
+            activity: {
+              type: "TimeEntriesActivity",
+              name: "Time entry activity",
+              required: false,
+              hasDefault: true,
+              writable: true,
+              _embedded: { allowedValues: form.allowedValues },
+              _links: {
+                allowedValues: (
+                  form.allowedValues as ReadonlyArray<{
+                    id: number;
+                    name: string;
+                  }>
+                ).map((option) => ({
+                  href: `/api/v3/time_entries/activities/${String(option.id)}`,
+                  title: option.name,
+                })),
+              },
+            },
+          },
+        },
+        validation_errors: {},
       })
       .persist();
   }
@@ -718,7 +758,7 @@ describe("meta project vocabulary", () => {
       },
       versions: { 13: [] },
       categories: { 13: [] },
-      activities: { allowedValues: [] },
+      activities: { 13: { allowedValues: [activityOption(18, "Management", false)] } },
       projectTypes: { 13: [] },
     });
     const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
@@ -792,7 +832,7 @@ describe("meta project vocabulary", () => {
       },
       versions: { 13: [], 14: [] },
       categories: { 13: [], 14: [] },
-      activities: { allowedValues: [] },
+      activities: { 13: { allowedValues: [] }, 14: { allowedValues: [] } },
       projectTypes: { 13: [], 14: [] },
     });
     const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
@@ -902,7 +942,7 @@ describe("meta project vocabulary", () => {
         13: [categoryElement(6, "Frontend"), categoryElement(1, "API")],
       },
       activities: {
-        allowedValues: [activityOption(18, "Management", false)],
+        13: { allowedValues: [activityOption(18, "Management", false)] },
       },
       projectTypes: { 13: [] },
     });
@@ -944,21 +984,31 @@ describe("meta project vocabulary", () => {
     installMockApi({
       ...baseInstall("https://op.example"),
       project: projectRef(),
-      members: { 13: [] },
-      versions: { 13: [] },
-      categories: { 13: [] },
+      members: { 13: [], 14: [] },
+      versions: { 13: [], 14: [] },
+      categories: { 13: [], 14: [] },
       activities: {
-        allowedValues: [
-          activityOption(7, "Development", false),
-          activityOption(2, "Meeting", true),
-          activityOption(11, "Support", false),
-        ],
+        13: {
+          allowedValues: [
+            activityOption(7, "Development", false),
+            activityOption(2, "Meeting", true),
+            activityOption(11, "Support", false),
+          ],
+        },
+        14: {
+          allowedValues: [activityOption(31, "Consulting", true)],
+        },
       },
-      projectTypes: { 13: [] },
+      projectTypes: { 13: [], 14: [] },
     });
     const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
 
     const result = await run(["meta", "activities"], env, {});
+    const other = await run(
+      ["meta", "activities", "--json", "--project", "14"],
+      env,
+      {},
+    );
     const stored = await readStore(cacheDir, "default");
     const scoped = stored.projectScoped as Record<
       string,
@@ -971,6 +1021,12 @@ describe("meta project vocabulary", () => {
         "2   Meeting      *\n" +
         "11  Support\n",
     );
+    expect(JSON.parse(other.stdout)).toEqual([
+      { id: 31, name: "Consulting", is_default: true },
+    ]);
+    expect(scoped["14"]?.activities).toEqual([
+      { id: 31, name: "Consulting", is_default: true },
+    ]);
     expect(scoped["13"]?.activities).toEqual([
       { id: 7, name: "Development", is_default: false },
       { id: 2, name: "Meeting", is_default: true },
@@ -1003,7 +1059,7 @@ describe("meta project vocabulary", () => {
       members: { 13: [] },
       versions: { 13: [] },
       categories: { 13: [] },
-      activities: { allowedValues: [] },
+      activities: { 13: { allowedValues: [] } },
       projectTypes: { 13: [{ _type: "Type", id: 6, name: "User Story", isMilestone: false }] },
       schemas: {
         "13-6": schemaWithCustomFields([...cases]),
@@ -1051,7 +1107,7 @@ describe("meta project vocabulary", () => {
       members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])] },
       versions: { 13: [] },
       categories: { 13: [] },
-      activities: { allowedValues: [] },
+      activities: { 13: { allowedValues: [] } },
       projectTypes: { 13: [] },
     });
 
@@ -1083,7 +1139,7 @@ describe("meta project vocabulary", () => {
       members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])] },
       versions: { 13: [] },
       categories: { 13: [] },
-      activities: { allowedValues: [] },
+      activities: { 13: { allowedValues: [] } },
       projectTypes: { 13: [] },
     });
     const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
@@ -1101,7 +1157,7 @@ describe("meta project vocabulary", () => {
       },
       versions: { 13: [] },
       categories: { 13: [] },
-      activities: { allowedValues: [] },
+      activities: { 13: { allowedValues: [] } },
       projectTypes: { 13: [] },
     });
     const refreshedOnce = await run(["meta", "refresh"], env, {});

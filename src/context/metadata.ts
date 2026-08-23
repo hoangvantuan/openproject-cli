@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { apiGet } from "../core/http.js";
+import { apiGet, apiPost } from "../core/http.js";
 import { halElements } from "../core/paginate.js";
 import { OpCliError } from "../core/errors.js";
 
@@ -317,34 +317,34 @@ async function fetchCategories(
   return sortByName(categories);
 }
 
+// The bare schema endpoint builds its values from TimeEntry.new, so its
+// activity list is never populated. Only the create form (form_embedded)
+// fills the activities that are active in the referenced project; its
+// payload carries linked resources under _links, and the embedded schema
+// lists full activity representations under activity/_embedded/allowedValues.
 async function fetchActivities(
   profile: ActiveProfile,
+  projectId: number,
 ): Promise<ReadonlyArray<StoredActivity>> {
-  const schema = (await apiGet(
+  const form = (await apiPost(
     profile.instanceUrl,
     profile.apiKey,
-    "/api/v3/time_entries/schema",
+    "/api/v3/time_entries/form",
+    { _links: { project: { href: `/api/v3/projects/${String(projectId)}` } } },
   )) as HalElement;
+  const formEmbedded = (form._embedded ?? {}) as HalElement;
+  const schema = (formEmbedded.schema ?? {}) as HalElement;
   const activity = (schema.activity ?? {}) as HalElement;
-  const embedded = Array.isArray(activity.allowedValues)
-    ? (activity.allowedValues as ReadonlyArray<HalElement>)
+  const activityEmbedded = (activity._embedded ?? {}) as HalElement;
+  const values = Array.isArray(activityEmbedded.allowedValues)
+    ? (activityEmbedded.allowedValues as ReadonlyArray<HalElement>)
     : [];
-  const activityLinks = (activity._links ?? {}) as HalElement;
-  const linked = Array.isArray(activityLinks.allowedValues)
-    ? (activityLinks.allowedValues as ReadonlyArray<HalElement>)
-    : [];
-  const rows = embedded.length > 0
-    ? embedded.map((option) => ({
-      id: Number(option.id),
-      name: asString(option.name),
-      is_default: option.default === true,
-    }))
-    : linked.map((link) => ({
-      id: hrefId(link),
-      name: asString(link.title),
-      is_default: false,
-    }));
-  return sortByName(rows);
+  const activities = values.map((option) => ({
+    id: Number(option.id),
+    name: asString(option.name),
+    is_default: option.default === true,
+  }));
+  return sortByName(activities);
 }
 
 async function fetchCustomFields(
@@ -492,7 +492,7 @@ export async function fetchProjectVocabulary(
     members: await fetchMembers(profile, projectId),
     versions: await fetchVersions(profile, projectId),
     categories: await fetchCategories(profile, projectId),
-    activities: await fetchActivities(profile),
+    activities: await fetchActivities(profile, projectId),
     custom_fields: await fetchCustomFields(profile, projectId),
   };
 }

@@ -22,10 +22,12 @@ export async function authenticate(
   };
 }
 
-export async function apiGet(
+async function send(
   instanceUrl: string,
   apiKey: string,
   path: string,
+  method: "GET" | "POST",
+  body?: unknown,
 ): Promise<unknown> {
   let response: Response;
   try {
@@ -35,6 +37,7 @@ export async function apiGet(
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
       },
       signal: AbortSignal.timeout(10_000),
+      ...(method === "POST" ? { method, body: JSON.stringify(body) } : { method }),
     });
   } catch {
     throw new OpCliError("NETWORK_ERROR");
@@ -47,4 +50,21 @@ export async function apiGet(
     throw new OpCliError("API_ERROR");
   }
   return await response.json();
+}
+
+export async function apiGet(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<unknown> {
+  return send(instanceUrl, apiKey, path, "GET");
+}
+
+export async function apiPost(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  body: unknown,
+): Promise<unknown> {
+  return send(instanceUrl, apiKey, path, "POST", body);
 }
