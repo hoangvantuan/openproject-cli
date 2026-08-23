@@ -13,6 +13,7 @@ import { renderProfilesTable, renderStatusTable } from "./output/table.js";
 import { registerMetaCommands } from "./commands/meta.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerWpCommands } from "./commands/wp.js";
+import { registerProjectCommands } from "./commands/project.js";
 import { buildVersionOutput } from "./commands/version.js";
 
 import { Command, CommanderError } from "commander";
@@ -179,6 +180,22 @@ export async function run(
     .description("Inspect and manage work packages");
   registerWpCommands(wp, {
     env,
+    resolve: (overrides) => resolveProfile(env, overrides),
+    write: (text) => {
+      stdout += text;
+    },
+    writeErr: (text) => {
+      stderr += text;
+    },
+    setJsonMode: (on) => {
+      jsonOutput = on;
+    },
+  });
+
+  const project = program
+    .command("project")
+    .description("Inspect and manage projects");
+  registerProjectCommands(project, {
     resolve: (overrides) => resolveProfile(env, overrides),
     write: (text) => {
       stdout += text;
