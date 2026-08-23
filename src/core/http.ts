@@ -51,6 +51,9 @@ async function send(
   if (response.status === 401 || response.status === 403) {
     throw new OpCliError("AUTH_FAILED");
   }
+  if (response.status === 404) {
+    throw new OpCliError("NOT_FOUND");
+  }
   if (!response.ok) {
     throw new OpCliError("API_ERROR");
   }

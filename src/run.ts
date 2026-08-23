@@ -12,6 +12,7 @@ import { authenticate } from "./core/http.js";
 import { renderProfilesTable, renderStatusTable } from "./output/table.js";
 import { registerMetaCommands } from "./commands/meta.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerWpCommands } from "./commands/wp.js";
 import { buildVersionOutput } from "./commands/version.js";
 
 import { Command, CommanderError } from "commander";
@@ -164,6 +165,19 @@ export async function run(
     .description("Inspect the stored metadata of the instance");
   registerMetaCommands(meta, {
     env,
+    resolve: (overrides) => resolveProfile(env, overrides),
+    write: (text) => {
+      stdout += text;
+    },
+    setJsonMode: (on) => {
+      jsonOutput = on;
+    },
+  });
+
+  const wp = program
+    .command("wp")
+    .description("Inspect and manage work packages");
+  registerWpCommands(wp, {
     resolve: (overrides) => resolveProfile(env, overrides),
     write: (text) => {
       stdout += text;

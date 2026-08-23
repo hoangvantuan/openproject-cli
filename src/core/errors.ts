@@ -9,6 +9,11 @@ export const ERROR_CATALOGUE = {
     message: "No active profile.",
     hint: "run op-cli auth login.",
   },
+  NOT_FOUND: {
+    exitCode: 4,
+    message: "Not found.",
+    hint: "check the id; run op-cli meta refresh if names changed recently.",
+  },
   API_ERROR: {
     exitCode: 2,
     message: "OpenProject request failed.",
@@ -43,13 +48,15 @@ export class OpCliError extends Error {
   readonly exitCode: number;
   readonly hint: string;
 
-  constructor(code: ErrorCode) {
+  // The code stays inside the closed catalogue; only the wording is
+  // contextual, so scripts matching on codes keep their promise.
+  constructor(code: ErrorCode, message?: string, hint?: string) {
     const definition = ERROR_CATALOGUE[code];
-    super(definition.message);
+    super(message ?? definition.message);
     this.name = "OpCliError";
     this.code = code;
     this.exitCode = definition.exitCode;
-    this.hint = definition.hint;
+    this.hint = hint ?? definition.hint;
   }
 }
 
