@@ -129,6 +129,13 @@ const categoryLookup: LookupSpec<StoredCategory, ProjectVocabulary> = {
   ],
 };
 
+/**
+ * One row per (type, custom field) pair: when a custom field is attached
+ * to several work package types it appears SEVERAL times here under the
+ * same name (distinct keys), so the result is not unique by name. The wp
+ * create resolver relies on exactly this duplication to declare a shared
+ * name ambiguous.
+ */
 function flattenFields(
   vocabulary: ProjectVocabulary,
 ): ReadonlyArray<StoredCustomField> {

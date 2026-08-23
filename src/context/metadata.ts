@@ -76,6 +76,11 @@ export interface StoredCustomField {
   readonly id: number;
   readonly name: string;
   readonly allowed_values?: ReadonlyArray<string>;
+  // Captured from the work package schema so `wp create` can validate
+  // input without refetching: booleans accept only true/false and
+  // user-typed fields resolve values like --assignee.
+  readonly is_boolean?: true;
+  readonly is_user?: true;
 }
 
 export interface ProjectVocabulary {
@@ -266,6 +271,9 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
       continue;
     }
     const values = allowedValuesOf(property as HalElement);
+    // The schema `type` decides input validation downstream; anything
+    // beyond Boolean/User stays unmarked and passes through as text.
+    const kind = asString((property as HalElement).type).toLowerCase();
     fields.push({
       key,
       id: Number(key.slice("customField".length)),
@@ -273,6 +281,8 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
       ...(values.length > 0 && values.length <= MAX_ALLOWED_VALUES
         ? { allowed_values: values }
         : {}),
+      ...(kind === "boolean" ? { is_boolean: true as const } : {}),
+      ...(kind === "user" ? { is_user: true as const } : {}),
     });
   }
   return fields;

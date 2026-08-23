@@ -8,10 +8,12 @@ import {
   type WpListFlags,
 } from "../core/filters.js";
 import { flattenHalRecord, isFlatLink } from "../core/hal.js";
-import { apiGet, authenticate } from "../core/http.js";
+import { apiGet, apiPostRaw, authenticate, type RawWriteResponse } from "../core/http.js";
 import { halElements } from "../core/paginate.js";
 import {
+  explicitCustomFieldKey,
   isIdForm,
+  matchByName,
   rankByCloseness,
   resolveName,
   type LookupSource,
@@ -27,6 +29,7 @@ import {
   loadStoredMetadata,
   refreshStoredMetadata,
   type ProjectVocabulary,
+  type StoredCustomField,
   type StoredMetadata,
 } from "../context/metadata.js";
 import type { RunEnvironment } from "../run.js";
@@ -270,6 +273,350 @@ async function resolveUserValues(
     }
   }
   return ids;
+}
+
+function membersSource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  flag: string,
+): LookupSource<number> {
+  return projectSource<number>(runtime, profile, flag, flag, (vocabulary) =>
+    vocabulary.members.map((member) => ({
+      name: member.name,
+      owner: member.type,
+      value: member.user_id,
+    })),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// wp create
+
+interface CreateOptions {
+  readonly type?: string;
+  readonly status?: string;
+  readonly priority?: string;
+  readonly assignee?: string;
+  readonly version?: string;
+  readonly category?: string;
+  readonly field?: Array<string>;
+  readonly json?: boolean;
+  readonly profile?: string;
+  readonly project?: string;
+}
+
+interface FieldPair {
+  readonly name: string;
+  readonly value: string;
+}
+
+function splitFieldPair(raw: string): FieldPair {
+  const at = raw.indexOf("=");
+  if (at < 1) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `--field "${raw}" is not Name=Value.`,
+      'separate the human field name from its value with an equals sign, '
+        + 'e.g. --field "Estimate=5"; repeat the flag to add more values.',
+    );
+  }
+  return { name: raw.slice(0, at), value: raw.slice(at + 1) };
+}
+
+/**
+ * One row per (type, custom field) pair. A field attached to several
+ * types appears once per type under the same human name; like
+ * flattenFields in commands/meta.ts this list is NOT unique by name, and
+ * that duplication is exactly what makes a shared name resolve as
+ * ambiguous rather than wrong.
+ */
+function customFieldRows(
+  metadata: StoredMetadata,
+  vocabulary: ProjectVocabulary,
+): ReadonlyArray<NamedEntry<string>> {
+  const typeName = new Map(
+    metadata.types.map((entry) => [String(entry.id), entry.name]),
+  );
+  const rows: Array<NamedEntry<string>> = [];
+  for (const [typeId, fields] of Object.entries(vocabulary.custom_fields)) {
+    const owner = `Type ${typeName.get(typeId) ?? typeId}`;
+    for (const field of fields) {
+      rows.push({ name: field.name, owner, value: field.key });
+    }
+  }
+  return rows;
+}
+
+async function resolveFieldDefinition(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  rawName: string,
+): Promise<StoredCustomField> {
+  if (profile.project === undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--field needs a project to look field names up in.",
+      "pass --project <id> or set a default project on the profile.",
+    );
+  }
+  const source: LookupSource<string> = {
+    label: "field",
+    load: async () =>
+      customFieldRows(
+        await loadStoredMetadata(runtime.env, profile),
+        await loadProjectVocabulary(runtime.env, profile),
+      ),
+    refresh: async () => {
+      await refreshStoredMetadata(runtime.env, profile);
+    },
+  };
+  const explicit = explicitCustomFieldKey(rawName);
+  const key = explicit ?? await resolveName(rawName, source);
+  const vocabulary = await loadProjectVocabulary(runtime.env, profile);
+  const definitions = Object.values(vocabulary.custom_fields).flat();
+  const field = definitions.find((entry) => entry.key === key);
+  if (field === undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `custom field "${rawName}" is not defined in this project.`,
+      `known fields: ${definitions
+        .map((entry) => `${entry.key} (${entry.name})`)
+        .join(", ")}.`,
+    );
+  }
+  return field;
+}
+
+/**
+ * One attribute whose payload id was built by resolving a NAME against
+ * metadata. Only these can be repaired by the proof-carrying retry of
+ * ADR-0002; caller-given ids never depend on cached knowledge.
+ */
+interface ResolvedAttribute {
+  /** Payload location: a _links key such as "status". */
+  readonly attribute: string;
+  /** The user-typed value, re-resolved verbatim after a refresh. */
+  readonly raw: string;
+  readonly idBefore: number;
+  /** href prefix up to the id, e.g. "/api/v3/statuses/". */
+  readonly hrefBase: string;
+  readonly source: LookupSource<number>;
+}
+
+/**
+ * Resolve one link-valued option into the payload. An all-digits value is
+ * an id and goes straight in; anything else is resolved here and
+ * remembered so a rejection that blames this exact attribute can be
+ * retried after one real refresh.
+ */
+async function resolveLinkOption(
+  links: Record<string, { href: string }>,
+  attribute: string,
+  hrefBase: string,
+  flag: string,
+  raw: string | undefined,
+  source: LookupSource<number>,
+  refs: Array<ResolvedAttribute>,
+): Promise<void> {
+  if (raw === undefined || raw === "") {
+    return;
+  }
+  let id: number;
+  if (isIdForm(raw)) {
+    id = Number(raw);
+  } else {
+    id = Number(await resolveName(raw, source));
+    refs.push({ attribute, raw, idBefore: id, hrefBase, source });
+  }
+  links[attribute] = { href: `${hrefBase}${String(id)}` };
+}
+
+/** Same contract as resolveLinkOption for members: names, ids, and me. */
+async function resolveUserOption(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  links: Record<string, { href: string }>,
+  attribute: string,
+  hrefBase: string,
+  flag: string,
+  raw: string | undefined,
+  refs: Array<ResolvedAttribute>,
+): Promise<void> {
+  if (raw === undefined || raw === "") {
+    return;
+  }
+  let id: number;
+  if (raw.toLowerCase() === "me") {
+    id = (await authenticate(profile.instanceUrl, profile.apiKey)).id;
+  } else if (isIdForm(raw)) {
+    id = Number(raw);
+  } else {
+    const source = membersSource(runtime, profile, flag);
+    id = Number(await resolveName(raw, source));
+    refs.push({ attribute, raw, idBefore: id, hrefBase, source });
+  }
+  links[attribute] = { href: `${hrefBase}${String(id)}` };
+}
+
+function booleanFieldValue(field: StoredCustomField, raw: string): boolean {
+  const lowered = raw.toLowerCase();
+  if (lowered !== "true" && lowered !== "false") {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `--field "${field.name}=${raw}" is not true or false.`,
+      'boolean fields accept only true and false.',
+    );
+  }
+  return lowered === "true";
+}
+
+async function userFieldValue(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  field: StoredCustomField,
+  raw: string,
+): Promise<{ readonly href: string }> {
+  let id: number;
+  if (raw.toLowerCase() === "me") {
+    id = (await authenticate(profile.instanceUrl, profile.apiKey)).id;
+  } else if (isIdForm(raw)) {
+    id = Number(raw);
+  } else {
+    id = Number(await resolveName(raw, membersSource(runtime, profile, field.name)));
+  }
+  return { href: `/api/v3/users/${String(id)}` };
+}
+
+const RETRYABLE_WRITE_STATUSES: ReadonlyArray<number> = [404, 422];
+
+/** The attribute an OpenProject rejection blames, e.g. "status". */
+function pointedAttribute(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null) {
+    return undefined;
+  }
+  const record = body as Record<string, unknown>;
+  const embedded = record._embedded as Record<string, unknown> | undefined;
+  const details = embedded?.details ?? record.details ?? record.attribute;
+  const name = typeof details === "string"
+    ? details
+    : typeof details === "object" && details !== null
+      ? (details as Record<string, unknown>).attribute
+      : undefined;
+  if (typeof name !== "string") {
+    return undefined;
+  }
+  // Link rejections sometimes spell the target "links/status".
+  return name.replace(/^links[./]/i, "");
+}
+
+/**
+ * Catalogue mapping for a write that survived the proof-carrying retry:
+ * 404 stays NOT_FOUND, 5xx becomes the unknown-state NETWORK_ERROR, and
+ * everything else is API_ERROR carrying the server's own message when it
+ * has one.
+ */
+function writeRejection(status: number, body: unknown): OpCliError {
+  if (status === 404) {
+    return new OpCliError("NOT_FOUND");
+  }
+  // A 5xx means the request may still have been applied server-side, so
+  // the honest answer is "unknown state", never a retry that could
+  // duplicate the work package.
+  if (status >= 500) {
+    return new OpCliError(
+      "NETWORK_ERROR",
+      `the create failed with HTTP ${status}; whether the work package was created is unknown.`,
+      "check whether the work package exists before repeating the command.",
+    );
+  }
+  const detail = typeof body === "object" && body !== null
+    && typeof (body as Record<string, unknown>).message === "string"
+    ? (body as Record<string, unknown>).message as string
+    : undefined;
+  return new OpCliError(
+    "API_ERROR",
+    detail === undefined ? undefined : `OpenProject rejected the create: ${detail}`,
+  );
+}
+
+/**
+ * A create request whose failure to complete leaves the state unknown:
+ * timeouts and network errors are never retried on writes, and exit 6
+ * says so instead of inviting a duplicate.
+ */
+async function postCreate(
+  profile: ActiveProfile,
+  payload: Record<string, unknown>,
+): Promise<RawWriteResponse> {
+  try {
+    return await apiPostRaw(
+      profile.instanceUrl,
+      profile.apiKey,
+      "/api/v3/work_packages",
+      payload,
+    );
+  } catch (error) {
+    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
+      throw new OpCliError(
+        "NETWORK_ERROR",
+        "the create request did not complete; whether the work package was created is unknown.",
+        "check whether the work package exists before repeating the command.",
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * The ADR-0002 resolution retry: after a rejected write, retry once only
+ * when all three conditions hold — the status is 404 or 422, OpenProject's
+ * body points at an attribute we built from a resolved name, and
+ * refreshing metadata really changed that id. Otherwise the original
+ * response stands untouched: a refresh that changes nothing means the
+ * retry would fail identically, so we keep the honest error and spend no
+ * second request.
+ */
+async function retryWithFreshIds(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  response: RawWriteResponse,
+  payload: Record<string, unknown>,
+  refs: ReadonlyArray<ResolvedAttribute>,
+  resend: () => Promise<RawWriteResponse>,
+): Promise<RawWriteResponse> {
+  if (!RETRYABLE_WRITE_STATUSES.includes(response.status)) {
+    return response;
+  }
+  const pointed = pointedAttribute(response.body);
+  if (pointed === undefined) {
+    return response;
+  }
+  const suspects = refs.filter((ref) => ref.attribute === pointed);
+  if (suspects.length === 0) {
+    return response;
+  }
+  await refreshStoredMetadata(runtime.env, profile);
+  const links = payload._links as Record<string, { href: string }>;
+  let changedAny = false;
+  for (const suspect of suspects) {
+    // After the refresh the cache holds the fresh snapshot; a value that
+    // no longer resolves uniquely cannot prove its id moved, so it keeps
+    // the original error too.
+    const match = matchByName(suspect.raw, await suspect.source.load());
+    if (match.kind !== "unique") {
+      continue;
+    }
+    const refreshed = Number(match.entry.value);
+    if (refreshed === suspect.idBefore) {
+      continue;
+    }
+    changedAny = true;
+    links[suspect.attribute] = { href: `${suspect.hrefBase}${String(refreshed)}` };
+  }
+  if (!changedAny) {
+    return response;
+  }
+  return resend();
 }
 
 async function searchParentByName(
@@ -593,4 +940,214 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         );
       },
     );
+  // The clearing convention is a promise about syntax, so it belongs in
+  // this help text and not only in the skill.
+  wp.command("create")
+    .description("Create one work package with every value given by name")
+    .argument("<subject>")
+    .option("--type <name-or-id>", "work package type, by name or id")
+    .option("--status <name-or-id>", "initial status, by name or id")
+    .option("--priority <name-or-id>", "priority, by name or id")
+    .option("--assignee <name-or-id>", "assignee, by name, id, or me")
+    .option("--version <name-or-id>", "version of the project, by name or id")
+    .option("--category <name-or-id>", "category of the project, by name or id")
+    .option(
+      "--field <pair>",
+      'set a custom field by human name as "Name=Value"; repeat the flag '
+        + 'for several values; "Name=" clears the field',
+      collectValue,
+      [],
+    )
+    .option("--json", "emit a flat JSON record")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (subject: string, options: CreateOptions) => {
+      runtime.setJsonMode(options.json === true);
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      if (profile.project === undefined) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "wp create needs a project to create the work package in.",
+          "pass --project <id> or set a default project on the profile.",
+        );
+      }
+
+      const refs: Array<ResolvedAttribute> = [];
+      const links: Record<string, { href: string }> = {
+        project: { href: `/api/v3/projects/${String(profile.project)}` },
+      };
+      await resolveLinkOption(
+        links,
+        "type",
+        "/api/v3/types/",
+        "--type",
+        options.type,
+        instanceSource(runtime, profile, "type", (metadata) =>
+          metadata.types.map((entry) => ({
+            name: entry.name,
+            owner: "Type",
+            value: entry.id,
+          })),
+        ),
+        refs,
+      );
+      await resolveLinkOption(
+        links,
+        "status",
+        "/api/v3/statuses/",
+        "--status",
+        options.status,
+        instanceSource(runtime, profile, "status", (metadata) =>
+          metadata.statuses.map((entry) => ({
+            name: entry.name,
+            owner: "Status",
+            value: entry.id,
+          })),
+        ),
+        refs,
+      );
+      await resolveLinkOption(
+        links,
+        "priority",
+        "/api/v3/priorities/",
+        "--priority",
+        options.priority,
+        instanceSource(runtime, profile, "priority", (metadata) =>
+          metadata.priorities.map((entry) => ({
+            name: entry.name,
+            owner: "Priority",
+            value: entry.id,
+          })),
+        ),
+        refs,
+      );
+      await resolveUserOption(
+        runtime,
+        profile,
+        links,
+        "assignee",
+        "/api/v3/users/",
+        "assignee",
+        options.assignee,
+        refs,
+      );
+      await resolveLinkOption(
+        links,
+        "version",
+        "/api/v3/versions/",
+        "--version",
+        options.version,
+        projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
+          vocabulary.versions.map((entry) => ({
+            name: entry.name,
+            owner: "Version",
+            value: entry.id,
+          })),
+        ),
+        refs,
+      );
+      await resolveLinkOption(
+        links,
+        "category",
+        "/api/v3/categories/",
+        "--category",
+        options.category,
+        projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
+          vocabulary.categories.map((entry) => ({
+            name: entry.name,
+            owner: "Category",
+            value: entry.id,
+          })),
+        ),
+        refs,
+      );
+
+      const payload: Record<string, unknown> = { subject, _links: links };
+      const groups = new Map<string, {
+        field: StoredCustomField;
+        pairs: Array<FieldPair>;
+      }>();
+      for (const pair of (options.field ?? []).map(splitFieldPair)) {
+        const field = await resolveFieldDefinition(runtime, profile, pair.name);
+        const group = groups.get(field.key);
+        if (group === undefined) {
+          groups.set(field.key, { field, pairs: [pair] });
+        } else {
+          group.pairs.push(pair);
+        }
+      }
+      for (const { field, pairs } of groups.values()) {
+        const cleared = pairs.some((pair) => pair.value === "");
+        if (cleared && pairs.length > 1) {
+          throw new OpCliError(
+            "USAGE_ERROR",
+            `--field mixes cleared and set values for "${field.name}".`,
+            'either clear with "Name=" or give every occurrence a value.',
+          );
+        }
+        if (cleared) {
+          payload[field.key] = null;
+          continue;
+        }
+        if (field.is_boolean === true) {
+          if (pairs.length > 1) {
+            throw new OpCliError(
+              "USAGE_ERROR",
+              `--field "${field.name}" takes a single true or false.`,
+              "boolean fields hold one value.",
+            );
+          }
+          payload[field.key] = booleanFieldValue(field, pairs[0]?.value ?? "");
+          continue;
+        }
+        if (field.is_user === true) {
+          if (pairs.length > 1) {
+            throw new OpCliError(
+              "USAGE_ERROR",
+              `--field "${field.name}" holds one user.`,
+              "user fields take a single name, id, or me.",
+            );
+          }
+          payload[field.key] = await userFieldValue(
+            runtime,
+            profile,
+            field,
+            pairs[0]?.value ?? "",
+          );
+          continue;
+        }
+        const values = pairs.map((pair) => pair.value);
+        payload[field.key] = values.length === 1 ? values[0] : values;
+      }
+
+      let response = await postCreate(profile, payload);
+      if (response.status >= 400) {
+        response = await retryWithFreshIds(
+          runtime,
+          profile,
+          response,
+          payload,
+          refs,
+          () => postCreate(profile, payload),
+        );
+      }
+      if (response.status >= 400) {
+        throw writeRejection(response.status, response.body);
+      }
+      const created = flattenHalRecord(response.body);
+      if (options.json === true) {
+        runtime.write(`${JSON.stringify(created)}\n`);
+        return;
+      }
+      const fields = selectedFields(undefined, created);
+      runtime.write(
+        renderTable(
+          ["FIELD", "VALUE"],
+          fields.map((field) => [field, formatCell(created[field])]),
+        ),
+      );
+    });
 }

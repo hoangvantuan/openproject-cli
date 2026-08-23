@@ -22,13 +22,13 @@ export async function authenticate(
   };
 }
 
-async function send(
+async function request(
   instanceUrl: string,
   apiKey: string,
   path: string,
   method: "GET" | "POST",
   body?: unknown,
-): Promise<unknown> {
+): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(`${instanceUrl}${path}`, {
@@ -44,13 +44,23 @@ async function send(
       signal: AbortSignal.timeout(10_000),
       ...(method === "POST" ? { method, body: JSON.stringify(body) } : { method }),
     });
-  } catch {
-    throw new OpCliError("NETWORK_ERROR");
+  } catch {throw new OpCliError("NETWORK_ERROR");
   }
 
   if (response.status === 401 || response.status === 403) {
     throw new OpCliError("AUTH_FAILED");
   }
+  return response;
+}
+
+async function send(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  method: "GET" | "POST",
+  body?: unknown,
+): Promise<unknown> {
+  const response = await request(instanceUrl, apiKey, path, method, body);
   if (response.status === 404) {
     throw new OpCliError("NOT_FOUND");
   }
@@ -58,6 +68,38 @@ async function send(
     throw new OpCliError("API_ERROR");
   }
   return await response.json();
+}
+
+/**
+ * A write response left unmapped so the proof-carrying retry of ADR-0002
+ * can inspect the status and body before the catalogue mapping happens.
+ * The caller owns that mapping; only network failures (including timeouts)
+ * and authentication errors throw here, because no refresh can repair them.
+ */
+export interface RawWriteResponse {
+  readonly status: number;
+  readonly body: unknown | undefined;
+}
+
+async function bodyOf(response: Response): Promise<unknown | undefined> {
+  const text = await response.text();
+  if (text === "") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {return text;
+  }
+}
+
+export async function apiPostRaw(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  body: unknown,
+): Promise<RawWriteResponse> {
+  const response = await request(instanceUrl, apiKey, path, "POST", body);
+  return { status: response.status, body: await bodyOf(response) };
 }
 
 export async function apiGet(
