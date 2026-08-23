@@ -25,7 +25,7 @@ export const ERROR_CATALOGUE = {
     hint: "run op-cli auth login.",
   },
   UNSUPPORTED_VERSION: {
-    exitCode: 4,
+    exitCode: 7,
     message: "The instance version is not supported.",
     hint: "OpenProject v13 with API v3 or newer is required.",
   },

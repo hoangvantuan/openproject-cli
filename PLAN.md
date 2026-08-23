@@ -234,6 +234,7 @@ Mã thoát:
 | 4 | Không tìm thấy (404) |
 | 5 | Xung đột (409, lockVersion) |
 | 6 | Lỗi mạng, quá thời gian, hoặc trạng thái không xác định sau lệnh ghi |
+| 7 | Phiên bản instance không hỗ trợ (mở rộng hợp đồng từ issue #6, trước khi có consumer; 4 đã dành cho not found) |
 
 Lỗi in ra stderr, theo chế độ output, nhưng chế độ text vẫn nhét code máy đọc được:
 

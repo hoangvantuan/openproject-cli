@@ -11,7 +11,7 @@ export interface DoctorRuntime {
   readonly setJsonMode: (on: boolean) => void;
 }
 
-type CheckStatus = "pass" | "warn" | "fail";
+type CheckStatus = "pass" | "warn" | "fail" | "skipped";
 
 interface CheckResult {
   readonly check: string;
@@ -75,7 +75,7 @@ export function registerDoctorCommand(parent: Command, runtime: DoctorRuntime): 
       const skip = (name: string): void => {
         checks.push({
           check: name,
-          status: "fail",
+          status: "skipped",
           detail: "not attempted: an earlier check failed",
         });
       };

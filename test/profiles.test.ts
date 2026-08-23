@@ -606,4 +606,30 @@ describe("review round 1", () => {
     );
     mockAgent.assertNoPendingInterceptors();
   });
+
+  test("stored config without a credentials file maps to the auth exit code", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-no-credentials-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = join(root, "config");
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "config.json"),
+      JSON.stringify({
+        default_profile: "default",
+        profiles: { default: { url: "https://op-a.example" } },
+      }),
+    );
+
+    const result = await run(["auth", "status"], { OP_CLI_CONFIG_DIR: directory }, {});
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr: "[AUTH_FAILED] Authentication failed. Hint: run op-cli auth login.\n",
+      exitCode: 3,
+    });
+  });
 });

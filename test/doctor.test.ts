@@ -148,6 +148,7 @@ describe("op-cli doctor", () => {
       const result = await run(["doctor"], room.env, {});
       expect(result.exitCode).toBe(6);
       expect(result.stderr).toMatch(/^\[NETWORK_ERROR\]/);
+      expect(result.stdout).toContain("skipped");
       expect(result.stdout).toContain("connectivity");
       expect(result.stdout).toContain("fail");
     } finally {
@@ -184,7 +185,7 @@ describe("op-cli doctor", () => {
     });
     try {
       const result = await run(["doctor"], room.env, {});
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(7);
       expect(result.stderr).toMatch(/^\[UNSUPPORTED_VERSION\]/);
       expect(result.stdout).toContain("versions");
       expect(result.stdout).toContain("fail");
@@ -245,6 +246,88 @@ describe("op-cli doctor", () => {
     );
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toMatch(/^\[PROFILE_NOT_FOUND\]/);
+  });
+
+  test("doctor --profile diagnoses the named profile instead of the active one", async () => {
+    const room = await makeRoom(true);
+    await writeFile(
+      join(room.configDir, "config.json"),
+      JSON.stringify({
+        default_profile: "default",
+        active_profile: "default",
+        profiles: {
+          default: { url: "https://default.example" },
+          other: { url: INSTANCE_URL },
+        },
+      }),
+    );
+    await writeFile(
+      join(room.configDir, "credentials.json"),
+      JSON.stringify({
+        default: { api_key: "secret-key" },
+        other: { api_key: "other-key" },
+      }),
+      { mode: 0o600 },
+    );
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    stubInstance(mockAgent, {});
+    try {
+      const result = await run(["doctor", "--profile", "other"], room.env, {});
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(INSTANCE_URL);
+      expect(result.stdout).not.toContain("https://default.example");
+    } finally {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    }
+  });
+
+  test("a permissions failure maps to the auth exit code", async () => {
+    const room = await makeRoom(true);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    stubInstance(mockAgent, { projects: { status: 403, body: { _type: "Error" } } });
+    try {
+      const result = await run(["doctor"], room.env, {});
+      expect(result.exitCode).toBe(3);
+      expect(result.stderr).toMatch(/^\[AUTH_FAILED\]/);
+      expect(result.stdout).toContain("permissions");
+      expect(result.stdout).toContain("fail");
+    } finally {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    }
+  });
+
+  test("doctor --json on failure emits checks JSON and a catalogued JSON error", async () => {
+    const room = await makeRoom(true);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    stubInstance(mockAgent, {
+      root: { status: 200, body: { _type: "Root", apiVersion: "2" } },
+    });
+    try {
+      const result = await run(["doctor", "--json"], room.env, {});
+      expect(result.exitCode).toBe(7);
+      const parsed = JSON.parse(result.stdout) as {
+        ok: boolean;
+        checks: Array<{ check: string; status: string }>;
+      };
+      expect(parsed.ok).toBe(false);
+      const versions = parsed.checks.find((check) => check.check === "versions");
+      expect(versions?.status).toBe("fail");
+      const renderedError = JSON.parse(result.stderr) as {
+        error: { code: string };
+      };
+      expect(renderedError.error.code).toBe("UNSUPPORTED_VERSION");
+    } finally {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    }
   });
 });
 
