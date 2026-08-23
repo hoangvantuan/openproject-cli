@@ -35,6 +35,11 @@ async function send(
       headers: {
         accept: "application/hal+json",
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
+        // The API rejects non-JSON bodies with 415; without this header
+        // fetch would label the body text/plain.
+        ...(method === "POST"
+          ? { "content-type": "application/json" }
+          : {}),
       },
       signal: AbortSignal.timeout(10_000),
       ...(method === "POST" ? { method, body: JSON.stringify(body) } : { method }),

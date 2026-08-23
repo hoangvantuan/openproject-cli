@@ -187,6 +187,7 @@ function installMockApi(options: InstallOptions): MockAgent {
       .intercept({
         path: "/api/v3/time_entries/form",
         method: "POST",
+        headers: { "content-type": "application/json" },
         body: (raw: unknown) => {
           try {
             const payload = JSON.parse(String(raw)) as {
