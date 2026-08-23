@@ -26,7 +26,7 @@ async function request(
   instanceUrl: string,
   apiKey: string,
   path: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<Response> {
   let response: Response;
@@ -37,12 +37,14 @@ async function request(
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
         // The API rejects non-JSON bodies with 415; without this header
         // fetch would label the body text/plain.
-        ...(method === "POST"
+        ...(method === "POST" || method === "PATCH"
           ? { "content-type": "application/json" }
           : {}),
       },
       signal: AbortSignal.timeout(10_000),
-      ...(method === "POST" ? { method, body: JSON.stringify(body) } : { method }),
+      ...(method === "POST" || method === "PATCH"
+        ? { method, body: JSON.stringify(body) }
+        : { method }),
     });
   } catch {throw new OpCliError("NETWORK_ERROR");
   }
@@ -57,10 +59,13 @@ async function send(
   instanceUrl: string,
   apiKey: string,
   path: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<unknown> {
   const response = await request(instanceUrl, apiKey, path, method, body);
+  if (response.status === 204) {
+    return undefined;
+  }
   if (response.status === 404) {
     throw new OpCliError("NOT_FOUND");
   }
@@ -100,6 +105,24 @@ export async function apiPostRaw(
 ): Promise<RawWriteResponse> {
   const response = await request(instanceUrl, apiKey, path, "POST", body);
   return { status: response.status, body: await bodyOf(response) };
+}
+
+export async function apiPatchRaw(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  body: unknown,
+): Promise<RawWriteResponse> {
+  const response = await request(instanceUrl, apiKey, path, "PATCH", body);
+  return { status: response.status, body: await bodyOf(response) };
+}
+
+export async function apiDelete(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<unknown> {
+  return send(instanceUrl, apiKey, path, "DELETE");
 }
 
 export async function apiGet(
