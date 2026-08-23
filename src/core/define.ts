@@ -104,8 +104,6 @@ export interface CollectionSpec {
   /** One flat output row per element; returning undefined drops it. */
   readonly row: (element: unknown) => Record<string, unknown> | undefined;
   readonly columns: ReadonlyArray<CollectionColumn>;
-  /** Noun for the truncation notice, e.g. "comments". */
-  readonly noun: string;
 }
 
 export interface CollectionRuntime {
@@ -251,7 +249,7 @@ export function defineCollectionCommand(
     const total = typeof page.total === "number" ? page.total : elements.length;
     if (total > elements.length) {
       runtime.writeErr(
-        `Showing ${rows.length} of ${total} ${spec.noun}. `
+        `Showing ${rows.length} of ${total} records. `
           + "Pass --all to fetch every result.\n",
       );
     }

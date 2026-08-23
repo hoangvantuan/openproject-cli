@@ -1194,6 +1194,9 @@ const SCHEMA_COLUMNS = [
   { title: "WRITABLE", field: "writable" },
 ] as const;
 
+// Relations are named by type ("follows"), never by id.
+const DEFAULT_RELATION_TYPE = "relates";
+
 // The API speaks relation type names ("follows"), never ids.
 const RELATION_TYPES: ReadonlyArray<string> = [
   "relates",
@@ -1291,6 +1294,20 @@ function schemaRows(schema: unknown): Array<Record<string, unknown>> {
       };
     });
 }
+
+/**
+ * The exact key set of a relationRow output; `wp unrelate` validates
+ * --fields against it before deleting anything.
+ */
+const RELATION_ROW_SHAPE: Record<string, unknown> = {
+  id: 0,
+  type: "",
+  reverseType: "",
+  lag: null,
+  description: null,
+  from: { id: 0, name: "" },
+  to: { id: 0, name: "" },
+};
 
 export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   wp.description("Inspect and manage work packages");
@@ -1611,7 +1628,6 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: (id) => `/api/v3/work_packages/${id}/activities`,
       row: commentRow,
       columns: COMMENT_COLUMNS,
-      noun: "comments",
     },
     collectionRuntime,
   ));
@@ -1623,7 +1639,6 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: (id) => `/api/v3/work_packages/${id}/activities`,
       row: activityRow,
       columns: HISTORY_COLUMNS,
-      noun: "activities",
     },
     collectionRuntime,
   ));
@@ -1635,7 +1650,6 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: involvedRelationsPath,
       row: relationRow,
       columns: RELATION_COLUMNS,
-      noun: "relations",
     },
     collectionRuntime,
   ));
@@ -1676,7 +1690,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .description("Relate one work package to another")
     .argument("<id>")
     .argument("<to>", "work package id this one relates to")
-    .option("--type <name>", `relation type: ${RELATION_TYPES.join(", ")}`, "relates")
+    .option("--type <name>", `relation type: ${RELATION_TYPES.join(", ")}`, DEFAULT_RELATION_TYPE)
     .option(recordOptions.json, "emit a flat JSON record")
     .option(recordOptions.fields, "comma-separated columns to show")
     .option(recordOptions.profile, "use this profile for this command only")
@@ -1690,7 +1704,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     }) => {
       requireWpId(reference);
       requireWpId(toReference);
-      const type = normalizeRelationType(options.type ?? "relates");
+      const type = normalizeRelationType(options.type ?? DEFAULT_RELATION_TYPE);
       const profile = await openProfile(runtime, options);
       const created = flattenHalRecord(await apiPost(
         profile.instanceUrl,
@@ -1717,6 +1731,9 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     }) => {
       requireWpId(reference);
       requireWpId(other);
+      // Destructive: --fields misuse is refused before any traffic, so a
+      // typo can never delete relations and then exit 1.
+      selectedFields(options.fields, RELATION_ROW_SHAPE);
       const profile = await openProfile(runtime, options);
       const pair = [Number(reference), Number(other)];
       const removed: Array<Record<string, unknown>> = [];

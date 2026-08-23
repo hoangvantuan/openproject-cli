@@ -287,7 +287,7 @@ describe("wp comments", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe(
-      "Showing 2 of 340 comments. Pass --all to fetch every result.\n",
+      "Showing 2 of 340 records. Pass --all to fetch every result.\n",
     );
   });
 
@@ -305,7 +305,7 @@ describe("wp comments", () => {
     const result = await runWp(configDir, cacheDir, ["comments", "1520", "--limit", "5"]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).toContain("Showing 1 of 340 comments.");
+    expect(result.stderr).toContain("Showing 1 of 340 records.");
   });
 
   test("--all consumes every page and streams NDJSON under --json", async () => {
@@ -650,6 +650,24 @@ describe("wp relate", () => {
 });
 
 describe("wp unrelate", () => {
+  test("a wrong --fields column refuses before any traffic and deletes nothing", async () => {
+    const root = await makeTempRoom("op-cli-wp-unrelate-badfield-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const { writes } = installMockApi({ gets: {}, writes: [] });
+
+    const result = await runWp(configDir, cacheDir, [
+      "unrelate",
+      "1520",
+      "1401",
+      "--fields",
+      "typo",
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('field "typo" is not a column.');
+    expect(writes).toHaveLength(0);
+  });
+
   test("finds the relation between two work packages and deletes it", async () => {
     const root = await makeTempRoom("op-cli-wp-unrelate-delete-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
