@@ -55,6 +55,8 @@ export interface WpRuntime {
   readonly write: (text: string) => void;
   readonly writeErr: (text: string) => void;
   readonly setJsonMode: (on: boolean) => void;
+  /** Present only when the host can hand over stdin (bin.ts can). */
+  readonly readStdin?: () => Promise<string>;
 }
 
 // Canonical row order for a single-record table; every other key of the
@@ -243,11 +245,18 @@ function instanceSource<V>(
   profile: ActiveProfile,
   label: string,
   select: (metadata: StoredMetadata) => ReadonlyArray<NamedEntry<V>>,
+  memo?: ResolutionMemo,
 ): LookupSource<V> {
   return {
     label,
-    load: async () => select(await loadStoredMetadata(runtime.env, profile)),
+    load: async () =>
+      select(await (memo === undefined
+        ? loadStoredMetadata(runtime.env, profile)
+        : memo.metadata())),
     refresh: async () => {
+      // Drop the shared snapshots before and while the store is rebuilt:
+      // a concurrent item must never read the stale one.
+      memo?.invalidate();
       await refreshStoredMetadata(runtime.env, profile);
     },
   };
@@ -260,6 +269,7 @@ function projectSource<V>(
   flag: string,
   label: string,
   select: (vocabulary: ProjectVocabulary) => ReadonlyArray<NamedEntry<V>>,
+  memo?: ResolutionMemo,
 ): LookupSource<V> {
   return {
     label,
@@ -271,9 +281,12 @@ function projectSource<V>(
           "pass --project <id> or set a default project on the profile.",
         );
       }
-      return select(await loadProjectVocabulary(runtime.env, profile));
+      return select(await (memo === undefined
+        ? loadProjectVocabulary(runtime.env, profile)
+        : memo.vocabulary()));
     },
     refresh: async () => {
+      memo?.invalidate();
       await refreshStoredMetadata(runtime.env, profile);
     },
   };
@@ -332,6 +345,7 @@ function membersSource(
   runtime: WpRuntime,
   profile: ActiveProfile,
   flag: string,
+  memo?: ResolutionMemo,
 ): LookupSource<number> {
   return projectSource<number>(runtime, profile, flag, flag, (vocabulary) =>
     vocabulary.members.map((member) => ({
@@ -339,13 +353,16 @@ function membersSource(
       owner: member.type,
       value: member.user_id,
     })),
+    memo,
   );
 }
 
 // ---------------------------------------------------------------------------
 // wp create
 
-interface CreateOptions {
+
+/** The value flags shared verbatim by one create and every stdin item. */
+interface CreateValueFlags {
   readonly type?: string;
   readonly status?: string;
   readonly priority?: string;
@@ -353,10 +370,345 @@ interface CreateOptions {
   readonly version?: string;
   readonly category?: string;
   readonly field?: Array<string>;
+}
+
+interface CreateOptions extends CreateValueFlags {
+  readonly stdin?: boolean;
+  readonly dryRun?: boolean;
+  readonly failFast?: boolean;
   readonly json?: boolean;
   readonly profile?: string;
   readonly project?: string;
 }
+
+/**
+ * One bulk run resolves against one profile: vocabulary snapshots and
+ * the authenticated user are computed at most once and reused by every
+ * item instead of refetched per item. Any metadata refresh drops every
+ * memo, so the ADR-0002 retry still sees fresh ids.
+ */
+interface ResolutionMemo {
+  readonly metadata: () => Promise<StoredMetadata>;
+  readonly vocabulary: () => Promise<ProjectVocabulary>;
+  readonly me: () => Promise<number>;
+  readonly invalidate: () => void;
+}
+
+function newResolutionMemo(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+): ResolutionMemo {
+  let metadata: Promise<StoredMetadata> | undefined;
+  let vocabulary: Promise<ProjectVocabulary> | undefined;
+  let me: Promise<number> | undefined;
+  // A rejected load clears its slot so one failing item cannot poison
+  // the shared promise for every later item.
+  const guarded = async <T>(build: () => Promise<T>, clear: () => void): Promise<T> => {
+    try {
+      return await build();
+    } catch (error) {
+      clear();
+      throw error;
+    }
+  };
+  return {
+    metadata: () => {
+      metadata ??= guarded(() => loadStoredMetadata(runtime.env, profile), () => {
+        metadata = undefined;
+      });
+      return metadata;
+    },
+    vocabulary: () => {
+      vocabulary ??= guarded(
+        () => loadProjectVocabulary(runtime.env, profile),
+        () => {
+          vocabulary = undefined;
+        },
+      );
+      return vocabulary;
+    },
+    me: () => {
+      me ??= guarded(
+        () => authenticate(profile.instanceUrl, profile.apiKey).then((user) => user.id),
+        () => {
+          me = undefined;
+        },
+      );
+      return me;
+    },
+    invalidate: () => {
+      metadata = undefined;
+      vocabulary = undefined;
+      me = undefined;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk creation from stdin
+
+/**
+ * Everything the two create paths share up to the wire: values resolved
+ * by name into a payload with the subject and project link attached.
+ */
+async function prepareCreatePayload(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  subject: string,
+  values: CreateValueFlags,
+  memo?: ResolutionMemo,
+): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
+  const { payload, refs } = await resolveNamedValues(runtime, profile, values, memo);
+  payload.subject = subject;
+  const links = payload._links as Record<string, { href: string }>;
+  links.project = { href: `/api/v3/projects/${String(profile.project)}` };
+  return { payload, refs };
+}
+
+/**
+ * The send tail both create paths share: one proof-carrying retry of
+ * ADR-0002, then the closed catalogue mapping. Returns the raw body so
+ * the single path can still flatten and render it.
+ */
+async function submitCreate(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  payload: Record<string, unknown>,
+  refs: ReadonlyArray<ResolvedAttribute>,
+  memo?: ResolutionMemo,
+): Promise<unknown> {
+  let response = await postCreate(profile, payload);
+  if (response.status >= 400) {
+    response = await retryWithFreshIds(
+      runtime,
+      profile,
+      response,
+      payload,
+      refs,
+      () => postCreate(profile, payload),
+      memo,
+    );
+  }
+  if (response.status >= 400) {
+    throw writeRejection(response.status, response.body);
+  }
+  return response.body;
+}
+
+/** Keys one stdin item may carry; everything else is a loud usage error. */
+const BULK_ITEM_KEYS: ReadonlyArray<string> = [
+  "subject",
+  "type",
+  "status",
+  "priority",
+  "assignee",
+  "version",
+  "category",
+  "field",
+];
+
+/**
+ * One element of the --stdin array. Mirrors the value flags of the
+ * single-subject path; every rejection names the offending input by its
+ * zero-based index so the NDJSON line and the message agree.
+ */
+function parseBulkItem(
+  raw: unknown,
+  index: number,
+): { subject: string; values: CreateValueFlags } {
+  const usage = (message: string, hint?: string): OpCliError =>
+    new OpCliError("USAGE_ERROR", `input ${index}: ${message}`, hint);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw usage('every input must be an object with a non-empty "subject".');
+  }
+  const record = raw as Record<string, unknown>;
+  const unknownKeys = Object.keys(record)
+    .filter((key) => !BULK_ITEM_KEYS.includes(key));
+  if (unknownKeys.length > 0) {
+    throw usage(
+      `unknown key(s): ${unknownKeys.join(", ")}.`,
+      `allowed keys: ${BULK_ITEM_KEYS.join(", ")}.`,
+    );
+  }
+  const subject = record.subject;
+  if (typeof subject !== "string" || subject.trim() === "") {
+    throw usage('every input needs a non-empty "subject" string.');
+  }
+  const values: {
+    type?: string;
+    status?: string;
+    priority?: string;
+    assignee?: string;
+    version?: string;
+    category?: string;
+    field?: Array<string>;
+  } = {};
+  const scalarKeys: ReadonlyArray<Exclude<keyof CreateValueFlags, "field">> = [
+    "type",
+    "status",
+    "priority",
+    "assignee",
+    "version",
+    "category",
+  ];
+  for (const key of scalarKeys) {
+    const rawValue = record[key];
+    if (rawValue === undefined) {
+      continue;
+    }
+    if (typeof rawValue !== "string" || rawValue === "") {
+      throw usage(`"${key}" must be a non-empty name-or-id string.`);
+    }
+    values[key] = rawValue;
+  }
+  const field = record.field;
+  if (field !== undefined) {
+    if (
+      !Array.isArray(field)
+      || field.some((entry) => typeof entry !== "string")
+    ) {
+      throw usage(
+        '"field" must be an array of "Name=Value" strings.',
+        'e.g. "field": ["Estimate=5"]; "Name=" clears the field.',
+      );
+    }
+    values.field = field as Array<string>;
+  }
+  return { subject, values };
+}
+
+/**
+ * The --stdin batch: one NDJSON result line per input, in input order,
+ * continuing past failures unless --fail-fast. Every item shares one
+ * resolution memo; any failure ends the run with that failure's catalogue
+ * exit code after the last line is out.
+ */
+async function runBulkCreate(
+  runtime: WpRuntime,
+  subjectArg: string | undefined,
+  options: CreateOptions,
+): Promise<void> {
+  if (subjectArg !== undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "wp create --stdin takes its subjects from the input array.",
+      "drop the subject argument, or leave out --stdin to create one.",
+    );
+  }
+  if (options.json === true) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "wp create --stdin already reports one NDJSON line per item.",
+      "drop --json; each line is machine-readable as it is.",
+    );
+  }
+  const readStdin = runtime.readStdin;
+  if (readStdin === undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "stdin is not readable in this environment.",
+      "pipe the JSON array from a file: op-cli wp create --stdin < wps.json.",
+    );
+  }
+  runtime.setJsonMode(false);
+  const text = await readStdin();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "stdin did not carry valid JSON.",
+      "wp create --stdin reads one JSON array of work packages.",
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "wp create --stdin expects a JSON array of work packages.",
+      'each element is an object like {"subject": "...", "type": "Task"}.',
+    );
+  }
+
+  const profile = await runtime.resolve({
+    profile: options.profile,
+    project: parseOptionalId(options.project),
+  });
+  if (profile.project === undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "wp create needs a project to create the work package in.",
+      "pass --project <id> or set a default project on the profile.",
+    );
+  }
+
+  const memo = newResolutionMemo(runtime, profile);
+  const dryRun = options.dryRun === true;
+  let attempted = 0;
+  let failures = 0;
+  let firstFailure: OpCliError | undefined;
+  for (let index = 0; index < parsed.length; index++) {
+    attempted += 1;
+    try {
+      const item = parseBulkItem(parsed[index], index);
+      const { payload, refs } = await prepareCreatePayload(
+        runtime,
+        profile,
+        item.subject,
+        item.values,
+        memo,
+      );
+      if (dryRun) {
+        runtime.write(`${JSON.stringify({
+          index,
+          ok: true,
+          status: "would-create",
+          subject: item.subject,
+        })}\n`);
+        continue;
+      }
+      const body = await submitCreate(runtime, profile, payload, refs, memo);
+      const id = typeof body === "object" && body !== null
+        ? (body as Record<string, unknown>).id
+        : undefined;
+      runtime.write(`${JSON.stringify({
+        index,
+        ok: true,
+        status: "created",
+        ...(typeof id === "number" ? { id } : {}),
+        subject: item.subject,
+      })}\n`);
+    } catch (error) {
+      failures += 1;
+      const failure = error instanceof OpCliError
+        ? error
+        : new OpCliError("INTERNAL_ERROR");
+      firstFailure ??= failure;
+      runtime.write(`${JSON.stringify({
+        index,
+        ok: false,
+        status: "failed",
+        code: failure.code,
+        message: failure.message,
+        hint: failure.hint,
+        ...(failure.details ?? {}),
+      })}\n`);
+      if (options.failFast === true) {
+        break;
+      }
+    }
+  }
+  if (firstFailure !== undefined) {
+    // The run's exit code comes from the first failure's catalogue code,
+    // so scripts matching on codes keep their promise across both paths.
+    throw new OpCliError(
+      firstFailure.code,
+      `${failures} of ${attempted} work packages failed.`,
+      "each failed input carries its own result line above.",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // wp update
 
@@ -420,6 +772,7 @@ async function resolveFieldDefinition(
   runtime: WpRuntime,
   profile: ActiveProfile,
   rawName: string,
+  memo?: ResolutionMemo,
 ): Promise<StoredCustomField> {
   if (profile.project === undefined) {
     throw new OpCliError(
@@ -428,21 +781,24 @@ async function resolveFieldDefinition(
       "pass --project <id> or set a default project on the profile.",
     );
   }
+  const metadata = memo === undefined
+    ? loadStoredMetadata(runtime.env, profile)
+    : memo.metadata();
+  const vocabulary = memo === undefined
+    ? loadProjectVocabulary(runtime.env, profile)
+    : memo.vocabulary();
   const source: LookupSource<string> = {
     label: "field",
     load: async () =>
-      customFieldRows(
-        await loadStoredMetadata(runtime.env, profile),
-        await loadProjectVocabulary(runtime.env, profile),
-      ),
+      customFieldRows(await metadata, await vocabulary),
     refresh: async () => {
+      memo?.invalidate();
       await refreshStoredMetadata(runtime.env, profile);
     },
   };
   const explicit = explicitCustomFieldKey(rawName);
   const key = explicit ?? await resolveName(rawName, source);
-  const vocabulary = await loadProjectVocabulary(runtime.env, profile);
-  const definitions = Object.values(vocabulary.custom_fields).flat();
+  const definitions = Object.values((await vocabulary).custom_fields).flat();
   const field = definitions.find((entry) => entry.key === key);
   if (field === undefined) {
     throw new OpCliError(
@@ -514,17 +870,20 @@ async function resolveUserOption(
   flag: string,
   raw: string | undefined,
   refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
 ): Promise<void> {
   if (raw === undefined || raw === "") {
     return;
   }
   let id: number;
   if (raw.toLowerCase() === "me") {
-    id = (await authenticate(profile.instanceUrl, profile.apiKey)).id;
+    id = memo === undefined
+      ? (await authenticate(profile.instanceUrl, profile.apiKey)).id
+      : await memo.me();
   } else if (isIdForm(raw)) {
     id = Number(raw);
   } else {
-    const source = membersSource(runtime, profile, flag);
+    const source = membersSource(runtime, profile, flag, memo);
     id = Number(await resolveName(raw, source));
     refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
   }
@@ -550,14 +909,17 @@ async function userFieldValue(
   raw: string,
   payload: Record<string, unknown>,
   refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
 ): Promise<void> {
   let id: number;
   if (raw.toLowerCase() === "me") {
-    id = (await authenticate(profile.instanceUrl, profile.apiKey)).id;
+    id = memo === undefined
+      ? (await authenticate(profile.instanceUrl, profile.apiKey)).id
+      : await memo.me();
   } else if (isIdForm(raw)) {
     id = Number(raw);
   } else {
-    const source = membersSource(runtime, profile, field.name);
+    const source = membersSource(runtime, profile, field.name, memo);
     id = Number(await resolveName(raw, source));
     // A user-typed custom field holds its resolved href at the top level
     // of the payload rather than under _links; record it like any
@@ -781,6 +1143,7 @@ async function retryWithFreshIds(
   payload: Record<string, unknown>,
   refs: ReadonlyArray<ResolvedAttribute>,
   resend: () => Promise<RawWriteResponse>,
+  memo?: ResolutionMemo,
 ): Promise<RawWriteResponse> {
   if (!RETRYABLE_WRITE_STATUSES.includes(response.status)) {
     return response;
@@ -794,6 +1157,7 @@ async function retryWithFreshIds(
     return response;
   }
   await refreshStoredMetadata(runtime.env, profile);
+  memo?.invalidate();
   const links = payload._links as Record<string, { href: string }>;
   let changedAny = false;
   for (const suspect of suspects) {
@@ -997,15 +1361,8 @@ function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): st
 async function resolveNamedValues(
   runtime: WpRuntime,
   profile: ActiveProfile,
-  options: {
-    readonly type?: string;
-    readonly status?: string;
-    readonly priority?: string;
-    readonly assignee?: string;
-    readonly version?: string;
-    readonly category?: string;
-    readonly field?: Array<string>;
-  },
+  options: CreateValueFlags,
+  memo?: ResolutionMemo,
 ): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
   const refs: Array<ResolvedAttribute> = [];
   const links: Record<string, { href: string }> = {};
@@ -1020,8 +1377,7 @@ async function resolveNamedValues(
         name: entry.name,
         owner: "Type",
         value: entry.id,
-      })),
-    ),
+      })), memo),
     refs,
   );
   await resolveLinkOption(
@@ -1035,8 +1391,7 @@ async function resolveNamedValues(
         name: entry.name,
         owner: "Status",
         value: entry.id,
-      })),
-    ),
+      })), memo),
     refs,
   );
   await resolveLinkOption(
@@ -1050,8 +1405,7 @@ async function resolveNamedValues(
         name: entry.name,
         owner: "Priority",
         value: entry.id,
-      })),
-    ),
+      })), memo),
     refs,
   );
   await resolveUserOption(
@@ -1063,6 +1417,7 @@ async function resolveNamedValues(
     "assignee",
     options.assignee,
     refs,
+    memo,
   );
   await resolveLinkOption(
     links,
@@ -1075,8 +1430,7 @@ async function resolveNamedValues(
         name: entry.name,
         owner: "Version",
         value: entry.id,
-      })),
-    ),
+      })), memo),
     refs,
   );
   await resolveLinkOption(
@@ -1090,8 +1444,7 @@ async function resolveNamedValues(
         name: entry.name,
         owner: "Category",
         value: entry.id,
-      })),
-    ),
+      })), memo),
     refs,
   );
 
@@ -1101,7 +1454,7 @@ async function resolveNamedValues(
     pairs: Array<FieldPair>;
   }>();
   for (const pair of (options.field ?? []).map(splitFieldPair)) {
-    const field = await resolveFieldDefinition(runtime, profile, pair.name);
+    const field = await resolveFieldDefinition(runtime, profile, pair.name, memo);
     const group = groups.get(field.key);
     if (group === undefined) {
       groups.set(field.key, { field, pairs: [pair] });
@@ -1148,6 +1501,7 @@ async function resolveNamedValues(
         pairs[0]?.value ?? "",
         payload,
         refs,
+        memo,
       );
       continue;
     }
@@ -1429,8 +1783,17 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   // The clearing convention is a promise about syntax, so it belongs in
   // this help text and not only in the skill.
   wp.command("create")
-    .description("Create one work package with every value given by name")
-    .argument("<subject>")
+    .description("Create one work package, or many from a JSON array on stdin")
+    .argument("[subject]", "subject of the one work package to create")
+    .option(
+      "--stdin",
+      "read a JSON array of work packages and report one NDJSON line per item",
+    )
+    .option("--fail-fast", "with --stdin: stop the batch at the first failing item")
+    .option(
+      "--dry-run",
+      "with --stdin: resolve and validate everything, create nothing",
+    )
     .option("--type <name-or-id>", "work package type, by name or id")
     .option("--status <name-or-id>", "initial status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
@@ -1447,8 +1810,19 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--json", "emit a flat JSON record")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <id>", "override the profile default project")
-    .action(async (subject: string, options: CreateOptions) => {
+    .action(async (subject: string | undefined, options: CreateOptions) => {
+      if (options.stdin === true) {
+        await runBulkCreate(runtime, subject, options);
+        return;
+      }
       runtime.setJsonMode(options.json === true);
+      if (subject === undefined) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "wp create needs a subject or --stdin with an array of work packages.",
+          "give <subject> to create one, or pipe a JSON array with --stdin.",
+        );
+      }
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseOptionalId(options.project),
@@ -1460,26 +1834,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "pass --project <id> or set a default project on the profile.",
         );
       }
-      const { payload, refs } = await resolveNamedValues(runtime, profile, options);
-      payload.subject = subject;
-      const links = payload._links as Record<string, { href: string }>;
-      links.project = { href: `/api/v3/projects/${String(profile.project)}` };
-      let response = await postCreate(profile, payload);
-      if (response.status >= 400) {
-        response = await retryWithFreshIds(
-          runtime,
-          profile,
-          response,
-          payload,
-          refs,
-          () => postCreate(profile, payload),
-        );
-      }
-      if (response.status >= 400) {
-        throw writeRejection(response.status, response.body);
-      }
-      const created = flattenHalRecord(response.body);
-      renderRecord(runtime, options, created);
+      const { payload, refs } = await prepareCreatePayload(
+        runtime,
+        profile,
+        subject,
+        options,
+      );
+      const body = await submitCreate(runtime, profile, payload, refs);
+      renderRecord(runtime, options, flattenHalRecord(body));
     });
 
   wp.command("update")

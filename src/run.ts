@@ -26,6 +26,8 @@ export interface RunEnvironment {
 export interface RunIo {
   readonly prompt?: (message: string, secret: boolean) => Promise<string>;
   readonly isTTY?: boolean;
+  /** Whole stdin as one string; only the --stdin paths touch it. */
+  readonly readStdin?: () => Promise<string>;
 }
 
 export interface RunResult {
@@ -191,6 +193,7 @@ export async function run(
     setJsonMode: (on) => {
       jsonOutput = on;
     },
+    ...(io.readStdin === undefined ? {} : { readStdin: io.readStdin }),
   });
 
   const project = program
