@@ -65,7 +65,7 @@ if [ "$DRY" = "1" ]; then
   }
   launcher="${BIN%% *}"
   if [ "$launcher" != "node" ]; then
-    eval "${launcher}() { echo \"[smoke:dry] ${launcher} \\$*\"; }"
+    eval "${launcher}() { echo \"[smoke:dry] ${launcher} \$*\"; }"
   fi
 fi
 
