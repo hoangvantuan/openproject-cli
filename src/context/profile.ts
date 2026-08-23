@@ -66,9 +66,15 @@ async function readStored(env: RunEnvironment): Promise<StoredState | undefined>
     const config = JSON.parse(
       await readFile(join(directory, "config.json"), "utf8"),
     ) as StoredConfig;
-    const credentials = JSON.parse(
-      await readFile(join(directory, "credentials.json"), "utf8"),
-    ) as StoredCredentials;
+    let credentials: StoredCredentials = {};
+    try {
+      credentials = JSON.parse(
+        await readFile(join(directory, "credentials.json"), "utf8"),
+      ) as StoredCredentials;
+    } catch {
+      // Credentials are optional when only the profile identity is needed,
+      // e.g. --version reading cached metadata without an API key.
+    }
     return { config, credentials };
   } catch {
     return undefined;
@@ -265,5 +271,33 @@ export async function resolveProfile(
       overrides.project ??
       parseOptionalId(env.OP_CLI_PROJECT) ??
       entry?.project,
+  };
+}
+
+export interface ProfilePeek {
+  readonly name: string;
+  readonly instanceUrl: string;
+}
+
+// Resolves the active profile identity without requiring credentials, for
+// read-only commands such as --version that must run without an API key.
+export async function peekActiveProfile(
+  env: RunEnvironment,
+): Promise<ProfilePeek | undefined> {
+  const state = await readStored(env);
+  const explicitName = env.OP_CLI_PROFILE;
+  const storedName = state ? storedSelectedName(state) : undefined;
+  const name = explicitName ?? storedName;
+  const entry = name !== undefined ? state?.config.profiles[name] : undefined;
+  const instanceUrl = firstDefined(
+    env.OPENPROJECT_URL,
+    entry?.url,
+  )?.replace(/\/+$/, "");
+  if (!instanceUrl) {
+    return undefined;
+  }
+  return {
+    name: entry !== undefined && name !== undefined ? name : ENV_PROFILE_NAME,
+    instanceUrl,
   };
 }

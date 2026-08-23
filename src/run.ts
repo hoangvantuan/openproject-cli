@@ -11,6 +11,8 @@ import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
 import { authenticate } from "./core/http.js";
 import { renderProfilesTable, renderStatusTable } from "./output/table.js";
 import { registerMetaCommands } from "./commands/meta.js";
+import { registerDoctorCommand } from "./commands/doctor.js";
+import { buildVersionOutput } from "./commands/version.js";
 
 import { Command, CommanderError } from "commander";
 
@@ -171,11 +173,32 @@ export async function run(
     },
   });
 
+  const doctor = program
+    .command("doctor")
+    .description("Diagnose connectivity, credentials, permissions, and versions");
+  registerDoctorCommand(doctor, {
+    resolve: (overrides) => resolveProfile(env, overrides),
+    write: (text) => {
+      stdout += text;
+    },
+    setJsonMode: (on) => {
+      jsonOutput = on;
+    },
+  });
+
+  if (argv.includes("--version")) {
+    // Registered lazily so the metadata lookup only runs when requested.
+    program.version(await buildVersionOutput(env), "--version", "print version information");
+  }
+
   try {
     await program.parseAsync([...argv], { from: "user" });
     return { stdout, stderr, exitCode: 0 };
   } catch (error) {
-    if (error instanceof CommanderError && error.code === "commander.helpDisplayed") {
+    if (
+      error instanceof CommanderError
+      && (error.code === "commander.helpDisplayed" || error.code === "commander.version")
+    ) {
       return { stdout, stderr, exitCode: 0 };
     }
     if (error instanceof CommanderError) {

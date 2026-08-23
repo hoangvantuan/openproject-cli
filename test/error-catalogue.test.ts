@@ -37,6 +37,15 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
   pool
     .intercept({ path: "/api/v3/users/me", method: "GET" })
     .replyWithError(new Error("connect ECONNREFUSED"));
+  pool
+    .intercept({ path: "/api/v3/", method: "GET" })
+    .reply(200, { _type: "Root", apiVersion: "2" });
+  pool
+    .intercept({ path: "/api/v3/users/me", method: "GET" })
+    .reply(200, { id: 1, name: "Ada", login: "ada" });
+  pool
+    .intercept({ path: "/api/v3/projects?pageSize=1", method: "GET" })
+    .reply(200, { _type: "Collection", total: 0, count: 0 });
 
   try {
     const env = {
@@ -65,6 +74,7 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
       await run(["auth", "status"], env, {}),
       await run(["auth", "status"], env, {}),
       await run(["auth", "status"], env, {}),
+      await run(["doctor"], env, {}),
     ];
     const closedCatalogue: Record<string, true> = {
       USAGE_ERROR: true,
@@ -72,6 +82,7 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
       API_ERROR: true,
       INTERNAL_ERROR: true,
       AUTH_FAILED: true,
+      UNSUPPORTED_VERSION: true,
       NETWORK_ERROR: true,
     };
     const surfacedCodes = new Set<string>();
