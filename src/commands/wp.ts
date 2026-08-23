@@ -393,7 +393,8 @@ async function resolveFieldDefinition(
  * ADR-0002; caller-given ids never depend on cached knowledge.
  */
 interface ResolvedAttribute {
-  /** Payload location: a _links key such as "status". */
+  /** Payload location: a _links key such as "status", or the top-level
+   * payload key of a custom field such as "customField10". */
   readonly attribute: string;
   /** The user-typed value, re-resolved verbatim after a refresh. */
   readonly raw: string;
@@ -401,6 +402,9 @@ interface ResolvedAttribute {
   /** href prefix up to the id, e.g. "/api/v3/statuses/". */
   readonly hrefBase: string;
   readonly source: LookupSource<number>;
+  /** True when the href lives under _links; false for a top-level
+   * custom-field attribute. Decides where the retry patches the id. */
+  readonly link: boolean;
 }
 
 /**
@@ -426,7 +430,7 @@ async function resolveLinkOption(
     id = Number(raw);
   } else {
     id = Number(await resolveName(raw, source));
-    refs.push({ attribute, raw, idBefore: id, hrefBase, source });
+    refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
   }
   links[attribute] = { href: `${hrefBase}${String(id)}` };
 }
@@ -453,7 +457,7 @@ async function resolveUserOption(
   } else {
     const source = membersSource(runtime, profile, flag);
     id = Number(await resolveName(raw, source));
-    refs.push({ attribute, raw, idBefore: id, hrefBase, source });
+    refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
   }
   links[attribute] = { href: `${hrefBase}${String(id)}` };
 }
@@ -475,16 +479,30 @@ async function userFieldValue(
   profile: ActiveProfile,
   field: StoredCustomField,
   raw: string,
-): Promise<{ readonly href: string }> {
+  payload: Record<string, unknown>,
+  refs: Array<ResolvedAttribute>,
+): Promise<void> {
   let id: number;
   if (raw.toLowerCase() === "me") {
     id = (await authenticate(profile.instanceUrl, profile.apiKey)).id;
   } else if (isIdForm(raw)) {
     id = Number(raw);
   } else {
-    id = Number(await resolveName(raw, membersSource(runtime, profile, field.name)));
+    const source = membersSource(runtime, profile, field.name);
+    id = Number(await resolveName(raw, source));
+    // A user-typed custom field holds its resolved href at the top level
+    // of the payload rather than under _links; record it like any
+    // name-resolved value so a rejection can be retried with fresh ids.
+    refs.push({
+      attribute: field.key,
+      raw,
+      idBefore: id,
+      hrefBase: "/api/v3/users/",
+      source,
+      link: false,
+    });
   }
-  return { href: `/api/v3/users/${String(id)}` };
+  payload[field.key] = { href: `/api/v3/users/${String(id)}` };
 }
 
 const RETRYABLE_WRITE_STATUSES: ReadonlyArray<number> = [404, 422];
@@ -611,7 +629,11 @@ async function retryWithFreshIds(
       continue;
     }
     changedAny = true;
-    links[suspect.attribute] = { href: `${suspect.hrefBase}${String(refreshed)}` };
+    if (suspect.link) {
+      links[suspect.attribute] = { href: `${suspect.hrefBase}${String(refreshed)}` };
+    } else {
+      payload[suspect.attribute] = { href: `${suspect.hrefBase}${String(refreshed)}` };
+    }
   }
   if (!changedAny) {
     return response;
@@ -1111,11 +1133,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
               "user fields take a single name, id, or me.",
             );
           }
-          payload[field.key] = await userFieldValue(
+          await userFieldValue(
             runtime,
             profile,
             field,
             pairs[0]?.value ?? "",
+            payload,
+            refs,
           );
           continue;
         }

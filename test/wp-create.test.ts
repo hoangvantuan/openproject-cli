@@ -526,17 +526,19 @@ describe("wp create values by name", () => {
     });
   });
 
+  // Shared by both ambiguity tests: the human name "Estimate" exists on
+  // two types under two different keys, so it must resolve as ambiguous
+  // across types, never silently to one of them.
+  const ambiguousVocabulary = {
+    ...PROJECT_VOCABULARY,
+    custom_fields: {
+      "2": [{ key: "customField8", id: 8, name: "Estimate" }],
+      "6": [{ key: "customField12", id: 12, name: "Estimate" }],
+    },
+  };
+
   test("an ambiguous field name exits 1 naming both candidates and their types", async () => {
     const { configDir, cacheDir } = await standardRoom();
-    // A dedicated fixture: the shared human name "Estimate" must resolve
-    // as ambiguous across types, never silently to one of them.
-    const ambiguousVocabulary = {
-      ...PROJECT_VOCABULARY,
-      custom_fields: {
-        "2": [{ key: "customField8", id: 8, name: "Estimate" }],
-        "6": [{ key: "customField12", id: 12, name: "Estimate" }],
-      },
-    };
     await writeMetadataFile(cacheDir, {
       ...baseMetadata(),
       projectScoped: { "13": ambiguousVocabulary },
@@ -558,7 +560,10 @@ describe("wp create values by name", () => {
 
   test("an explicit customFieldN disambiguates an ambiguous name", async () => {
     const { configDir, cacheDir } = await standardRoom();
-    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    await writeMetadataFile(cacheDir, {
+      ...baseMetadata(),
+      projectScoped: { "13": ambiguousVocabulary },
+    });
     const { postBodies } = installMockApi({
       posts: [{ status: 201, body: createdElement(1507, "F") }],
     });
@@ -810,5 +815,111 @@ describe("wp create retry rule", () => {
     expect(result.exitCode).toBe(6);
     expect(result.stderr).toContain("[NETWORK_ERROR]");
     expect(result.stderr).toContain("unknown");
+  });
+
+  test("retries once on 422 for a user-typed field when the refresh moves the member id", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    // Cached membership still says Linh Nguyen is user 7; the fresh
+    // answer says 15. The rejection blames the custom field itself.
+    const staleVocabulary = {
+      ...PROJECT_VOCABULARY,
+      members: [
+        { membership_id: 1, user_id: 7, name: "Linh Nguyen", type: "User", roles: [] },
+      ],
+    };
+    const freshVocabulary = {
+      ...PROJECT_VOCABULARY,
+      members: [
+        { membership_id: 1, user_id: 15, name: "Linh Nguyen", type: "User", roles: [] },
+      ],
+    };
+    await writeMetadataFile(cacheDir, {
+      ...baseMetadata(),
+      projectScoped: { "13": staleVocabulary },
+    });
+    const memberFilters = encodeURIComponent(
+      JSON.stringify([{ project: { operator: "=", values: ["13"] } }]),
+    );
+    const toMembershipElement = (member: {
+      membership_id: number;
+      user_id: number;
+      name: string;
+      type: string;
+    }) => ({
+      id: member.membership_id,
+      _embedded: {
+        principal: { _type: member.type, id: member.user_id, name: member.name },
+      },
+      _links: { roles: [] },
+    });
+    const { postBodies } = installMockApi({
+      packages: {
+        ...refreshEndpoints(baseMetadata()),
+        [`/api/v3/memberships?filters=${memberFilters}`]: {
+          _type: "Collection",
+          total: 1,
+          count: 1,
+          _embedded: { elements: freshVocabulary.members.map(toMembershipElement) },
+        },
+        "/api/v3/projects/13/versions": {
+          _type: "Collection",
+          total: freshVocabulary.versions.length,
+          count: freshVocabulary.versions.length,
+          _embedded: { elements: freshVocabulary.versions },
+        },
+        "/api/v3/projects/13/categories": {
+          _type: "Collection",
+          total: freshVocabulary.categories.length,
+          count: freshVocabulary.categories.length,
+          _embedded: { elements: freshVocabulary.categories },
+        },
+        "/api/v3/projects/13/types": {
+          _type: "Collection",
+          total: 2,
+          count: 2,
+          _embedded: { elements: [{ _type: "Type", id: 2 }, { _type: "Type", id: 6 }] },
+        },
+        "/api/v3/work_packages/schemas/13-2": {
+          _type: "Schema",
+          id: "13-2",
+          customField10: { type: "User", name: "Reviewer", writable: true },
+        },
+        "/api/v3/work_packages/schemas/13-6": {
+          _type: "Schema",
+          id: "13-6",
+        },
+      },
+      postPackages: {
+        "/api/v3/time_entries/form": {
+          _embedded: {
+            schema: { activity: { _embedded: { allowedValues: [] } } },
+          },
+        },
+      },
+      posts: [
+        {
+          status: 422,
+          body: {
+            _type: "Error",
+            message: 'Reviewer is not set to "Linh Nguyen".',
+            _embedded: { details: { attribute: "customField10" } },
+          },
+        },
+        { status: 201, body: createdElement(1509, "Review task") },
+      ],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Review task",
+      "--type",
+      "Task",
+      "--field",
+      "Reviewer=Linh Nguyen",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Review task");
+    expect(postBodies).toHaveLength(2);
+    expect(postBodies[0]?.customField10).toEqual({ href: "/api/v3/users/7" });
+    expect(postBodies[1]?.customField10).toEqual({ href: "/api/v3/users/15" });
   });
 });
