@@ -154,6 +154,7 @@ describe("op-cli entry function", () => {
     ]);
     expect(JSON.parse(await readFile(join(root, "config", "config.json"), "utf8"))).toEqual({
       default_profile: "default",
+      active_profile: "default",
       profiles: {
         default: { url: "https://openproject.example" },
       },

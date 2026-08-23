@@ -77,18 +77,25 @@ async function readStored(env: RunEnvironment): Promise<StoredState | undefined>
 
 async function writeStored(
   env: RunEnvironment,
-  config: StoredConfig,
-  credentials?: StoredCredentials,
+  parts: {
+    readonly config?: StoredConfig;
+    readonly credentials?: StoredCredentials;
+  },
 ): Promise<void> {
   const directory = writableConfigDirectory(env);
   await mkdir(directory, { recursive: true });
 
-  await writeFile(join(directory, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
-  if (!credentials) {
+  if (parts.config) {
+    await writeFile(
+      join(directory, "config.json"),
+      `${JSON.stringify(parts.config, null, 2)}\n`,
+    );
+  }
+  if (!parts.credentials) {
     return;
   }
   const credentialsPath = join(directory, "credentials.json");
-  await writeFile(credentialsPath, `${JSON.stringify(credentials, null, 2)}\n`, {
+  await writeFile(credentialsPath, `${JSON.stringify(parts.credentials, null, 2)}\n`, {
     mode: 0o600,
   });
   await chmod(credentialsPath, 0o600);
@@ -99,17 +106,26 @@ export async function saveDefaultProfile(
   instanceUrl: string,
   apiKey: string,
 ): Promise<void> {
-  const config: StoredConfig = {
-    default_profile: LOGIN_PROFILE,
-    profiles: {
-      [LOGIN_PROFILE]: { url: instanceUrl },
-    },
+  const state = await readStored(env);
+  const profiles: Record<string, StoredProfileEntry> = {
+    ...state?.config.profiles,
   };
+  profiles[LOGIN_PROFILE] = { url: instanceUrl };
   const credentials: StoredCredentials = {
+    ...state?.credentials,
     [LOGIN_PROFILE]: { api_key: apiKey },
   };
 
-  await writeStored(env, config, credentials);
+  const config: {
+    default_profile?: string;
+    active_profile?: string;
+    profiles: Record<string, StoredProfileEntry>;
+  } = { profiles };
+  config.default_profile =
+    state?.config.default_profile ?? LOGIN_PROFILE;
+  config.active_profile = state?.config.active_profile ?? LOGIN_PROFILE;
+
+  await writeStored(env, { config, credentials });
 }
 
 function storedSelectedName(state: StoredState): string | undefined {
@@ -154,7 +170,7 @@ export async function setActiveProfile(
   if (state.config.default_profile !== undefined) {
     config.default_profile = state.config.default_profile;
   }
-  await writeStored(env, config);
+  await writeStored(env, { config });
 }
 
 export async function requireStoredName(env: RunEnvironment): Promise<string> {
@@ -171,27 +187,13 @@ export async function removeProfile(
   name: string,
 ): Promise<void> {
   const state = await readStored(env);
-  if (!state || !state.config.profiles[name]) {
+  if (!state || !(state.config.profiles[name] || state.credentials[name])) {
     throw new OpCliError("PROFILE_NOT_FOUND");
   }
-  const profiles: Record<string, StoredProfileEntry> = {
-    ...state.config.profiles,
-  };
-  delete profiles[name];
   const credentials: StoredCredentials = { ...state.credentials };
   delete credentials[name];
-  const config: {
-    default_profile?: string;
-    active_profile?: string;
-    profiles: Record<string, StoredProfileEntry>;
-  } = { profiles };
-  if (state.config.default_profile && state.config.default_profile !== name) {
-    config.default_profile = state.config.default_profile;
-  }
-  if (state.config.active_profile && state.config.active_profile !== name) {
-    config.active_profile = state.config.active_profile;
-  }
-  await writeStored(env, config, credentials);
+
+  await writeStored(env, { credentials });
 }
 
 export const ENV_PROFILE_NAME = "env";
@@ -227,6 +229,13 @@ export async function resolveProfile(
 ): Promise<ActiveProfile> {
   const state = await readStored(env);
   const explicitName = firstDefined(overrides.profile, env.OP_CLI_PROFILE);
+  if (
+    explicitName !== undefined &&
+    state !== undefined &&
+    !state.config.profiles[explicitName]
+  ) {
+    throw new OpCliError("PROFILE_NOT_FOUND");
+  }
   const storedName = state ? storedSelectedName(state) : undefined;
   const name = explicitName ?? storedName;
   const entry = name !== undefined ? state?.config.profiles[name] : undefined;
@@ -238,8 +247,11 @@ export async function resolveProfile(
     entry?.url,
   )?.replace(/\/+$/, "");
   const apiKey = firstDefined(env.OPENPROJECT_API_KEY, secret);
-  if (!instanceUrl || !apiKey) {
+  if (!instanceUrl) {
     throw new OpCliError("PROFILE_NOT_FOUND");
+  }
+  if (!apiKey) {
+    throw new OpCliError("AUTH_FAILED");
   }
 
   const displayName = entry !== undefined && name !== undefined

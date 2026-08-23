@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -223,7 +223,7 @@ describe("multiple profiles", () => {
     });
   });
 
-  test("auth logout removes the active profile and repairs stored pointers", async ({
+  test("auth logout removes only the credentials and keeps the selection", async ({
     onTestFinished,
   }) => {
     const root = await mkdtemp(join(tmpdir(), "op-cli-logout-"));
@@ -252,7 +252,11 @@ describe("multiple profiles", () => {
     expect(JSON.parse(await readFile(join(directory, "config.json"), "utf8")))
       .toEqual({
         default_profile: "default",
-        profiles: { default: { url: "https://op-a.example" } },
+        active_profile: "work",
+        profiles: {
+          default: { url: "https://op-a.example" },
+          work: { url: "https://op-b.example" },
+        },
       });
     expect(JSON.parse(
       await readFile(join(directory, "credentials.json"), "utf8"),
@@ -266,8 +270,22 @@ describe("multiple profiles", () => {
 
     expect(listing.stdout).toBe(
       "PROFILE  INSTANCE              PROJECT  ACTIVE\n" +
-        "default  https://op-a.example           *\n",
+        "default  https://op-a.example\n" +
+        "work     https://op-b.example           *\n",
     );
+
+    const status = await run(
+      ["auth", "status"],
+      { OP_CLI_CONFIG_DIR: directory },
+      {},
+    );
+
+    expect(status).toEqual({
+      stdout: "",
+      stderr:
+        "[AUTH_FAILED] Authentication failed. Hint: run op-cli auth login.\n",
+      exitCode: 3,
+    });
   });
 
   test("auth logout of an unknown profile exits 1 with a stable code", async ({
@@ -477,6 +495,115 @@ describe("context precedence", () => {
 
     expect(JSON.parse(honoured.stdout).project).toBe(5);
     expect(JSON.parse(overridden.stdout).project).toBe(7);
+    mockAgent.assertNoPendingInterceptors();
+  });
+});
+
+describe("review round 1", () => {
+  test("an explicit unknown profile name fails even when environment could serve", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-explicit-missing-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      { default: { url: "https://op-a.example" } },
+      { credentials: { default: "key-a" } },
+    );
+
+    const result = await run(
+      ["auth", "status", "--profile", "ghost"],
+      {
+        OP_CLI_CONFIG_DIR: directory,
+        OPENPROJECT_URL: "https://ci.example",
+        OPENPROJECT_API_KEY: "ci-key",
+      },
+      {},
+    );
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        "[PROFILE_NOT_FOUND] No active profile. Hint: run op-cli auth login.\n",
+      exitCode: 1,
+    });
+  });
+
+  test("a profile flag over pure environment variables without files still works", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-flag-env-only-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://ci.example", "CI User");
+
+    const result = await run(
+      ["auth", "status", "--json", "--profile", "ghost"],
+      {
+        OP_CLI_CONFIG_DIR: join(root, "missing"),
+        OPENPROJECT_URL: "https://ci.example",
+        OPENPROJECT_API_KEY: "ci-key",
+      },
+      {},
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).profile).toBe("env");
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  test("auth login merges into stored profiles instead of wiping them", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-login-merge-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      {
+        default: { url: "https://op-a.example" },
+        work: { url: "https://op-b.example", project: 5 },
+      },
+      {
+        defaultProfile: "work",
+        activeProfile: "work",
+        credentials: { work: "key-b" },
+      },
+    );
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://op-a.example", "Ada Lovelace");
+
+    const answers = ["https://op-a.example/", "key-a"];
+    const result = await run(
+      ["auth", "login"],
+      { OP_CLI_CONFIG_DIR: directory },
+      { prompt: async () => answers.shift() ?? "" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(join(directory, "config.json"), "utf8")))
+      .toEqual({
+        default_profile: "work",
+        active_profile: "work",
+        profiles: {
+          default: { url: "https://op-a.example" },
+          work: { url: "https://op-b.example", project: 5 },
+        },
+      });
+    expect(JSON.parse(
+      await readFile(join(directory, "credentials.json"), "utf8"),
+    )).toEqual({
+      default: { api_key: "key-a" },
+      work: { api_key: "key-b" },
+    });
+    expect((await stat(join(directory, "credentials.json"))).mode & 0o777).toBe(
+      0o600,
+    );
     mockAgent.assertNoPendingInterceptors();
   });
 });
