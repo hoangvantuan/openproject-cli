@@ -820,4 +820,295 @@ describe("meta project vocabulary", () => {
       expect(result.exitCode).toBe(1);
     }
   });
+
+  function versionElement(
+    id: number,
+    name: string,
+    status: string,
+  ): Record<string, unknown> {
+    return { _type: "Version", id, name, status, sharing: "none" };
+  }
+
+  function categoryElement(id: number, name: string): Record<string, unknown> {
+    return { _type: "Category", id, name };
+  }
+
+  function activityOption(
+    id: number,
+    name: string,
+    isDefault: boolean,
+  ): Record<string, unknown> {
+    return {
+      _type: "TimeEntriesActivity",
+      id,
+      name,
+      position: id,
+      default: isDefault,
+    };
+  }
+
+  // Generated from a schema shape, never a hardcoded customFieldN: the
+  // caller decides each field's index and its option list size.
+  function schemaWithCustomFields(
+    fields: ReadonlyArray<{
+      readonly index: number;
+      readonly name: string;
+      readonly options?: ReadonlyArray<string>;
+    }>,
+  ): Record<string, unknown> {
+    const schema: Record<string, unknown> = {
+      _type: "Schema",
+      id: { type: "Integer", name: "ID", required: true, writable: false },
+      subject: { type: "String", name: "Subject", required: true, writable: true },
+    };
+    for (const field of fields) {
+      const key = `customField${String(field.index)}`;
+      schema[key] = {
+        type: "CustomField",
+        name: field.name,
+        required: false,
+        hasDefault: false,
+        writable: true,
+        ...(field.options === undefined
+          ? {}
+          : {
+              _links: {
+                allowedValues: field.options.map((title, position) => ({
+                  href: `/api/v3/custom_options/${String(position + 1)}`,
+                  title,
+                })),
+              },
+            }),
+      };
+    }
+    return schema;
+  }
+
+  test("versions carry their status and categories their names", async () => {
+    const root = await makeTempRoom("op-cli-meta-vercat-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: {
+        13: [
+          versionElement(9, "Sprint 12", "open"),
+          versionElement(4, "Sprint 11", "closed"),
+          versionElement(2, "Backlog", "locked"),
+        ],
+      },
+      categories: {
+        13: [categoryElement(6, "Frontend"), categoryElement(1, "API")],
+      },
+      activities: {
+        allowedValues: [activityOption(18, "Management", false)],
+      },
+      projectTypes: { 13: [] },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const versions = await run(["meta", "versions"], env, {});
+    const categories = await run(["meta", "categories"], env, {});
+    const stored = await readStore(cacheDir, "default");
+    const scoped = stored.projectScoped as Record<
+      string,
+      { versions: unknown[]; categories: unknown[] }
+    >;
+
+    expect(versions.stdout).toBe(
+      "ID  NAME       STATUS\n" +
+        "2   Backlog    locked\n" +
+        "4   Sprint 11  closed\n" +
+        "9   Sprint 12  open\n",
+    );
+    expect(categories).toEqual({
+      stdout: "ID  NAME\n1   API\n6   Frontend\n",
+      stderr: "",
+      exitCode: 0,
+    });
+    expect(scoped["13"]?.versions).toEqual([
+      { id: 2, name: "Backlog", status: "locked" },
+      { id: 4, name: "Sprint 11", status: "closed" },
+      { id: 9, name: "Sprint 12", status: "open" },
+    ]);
+    expect(scoped["13"]?.categories).toEqual([
+      { id: 1, name: "API" },
+      { id: 6, name: "Frontend" },
+    ]);
+  });
+
+  test("activities carry the default marker per project", async () => {
+    const root = await makeTempRoom("op-cli-meta-activities-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: {
+        allowedValues: [
+          activityOption(7, "Development", false),
+          activityOption(2, "Meeting", true),
+          activityOption(11, "Support", false),
+        ],
+      },
+      projectTypes: { 13: [] },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const result = await run(["meta", "activities"], env, {});
+    const stored = await readStore(cacheDir, "default");
+    const scoped = stored.projectScoped as Record<
+      string,
+      { activities: unknown[] }
+    >;
+
+    expect(result.stdout).toBe(
+      "ID  NAME         DEFAULT\n" +
+        "7   Development\n" +
+        "2   Meeting      *\n" +
+        "11  Support\n",
+    );
+    expect(scoped["13"]?.activities).toEqual([
+      { id: 7, name: "Development", is_default: false },
+      { id: 2, name: "Meeting", is_default: true },
+      { id: 11, name: "Support", is_default: false },
+    ]);
+  });
+
+  test("custom fields keep allowed values at most fifty and drop them above", async () => {
+    const root = await makeTempRoom("op-cli-meta-fields-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    // Option lists are generated from one schema loop; every assertion
+    // reads fields by their generated index, never by a literal number.
+    const cases = [
+      { index: 21, name: "Text note", options: undefined },
+      { index: 8, name: "T-shirt size", options: ["Small", "Medium", "Large"] },
+      {
+        index: 33,
+        name: "Region",
+        options: Array.from({ length: 50 }, (_, i) => `region-${String(i + 1)}`),
+      },
+      {
+        index: 5,
+        name: "Country",
+        options: Array.from({ length: 51 }, (_, i) => `country-${String(i + 1)}`),
+      },
+    ] as const;
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { allowedValues: [] },
+      projectTypes: { 13: [{ _type: "Type", id: 6, name: "User Story", isMilestone: false }] },
+      schemas: {
+        "13-6": schemaWithCustomFields([...cases]),
+      },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const table = await run(["meta", "fields"], env, {});
+    const json = await run(["meta", "fields", "--json"], env, {});
+    const stored = await readStore(cacheDir, "default");
+    const scoped = stored.projectScoped as Record<
+      string,
+      { custom_fields: Record<string, unknown[]> }
+    >;
+    const rows = JSON.parse(json.stdout) as Array<Record<string, unknown>>;
+
+    expect(table.exitCode).toBe(0);
+    for (const testCase of cases) {
+      const key = `customField${String(testCase.index)}`;
+      const row = rows.find((candidate) => candidate.key === key);
+      expect(row?.name).toBe(testCase.name);
+      if (testCase.options !== undefined && testCase.options.length <= 50) {
+        expect(row?.allowed_values).toEqual(testCase.options);
+      } else {
+        expect(row?.allowed_values).toBeUndefined();
+      }
+      expect(scoped["13"]?.custom_fields["6"]).toContainEqual(
+        expect.objectContaining({ key }),
+      );
+    }
+    expect(rows).toHaveLength(cases.length);
+  });
+
+  test("env-driven runs keep their project vocabulary under the env key", async () => {
+    const root = await makeTempRoom("op-cli-meta-envvocab-");
+    const cacheDir = join(root, "cache");
+    installMockApi({
+      ...baseInstall("https://ci.example"),
+      project: {
+        _type: "Project",
+        id: 13,
+        identifier: "ci",
+        name: "Continuous",
+      },
+      members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { allowedValues: [] },
+      projectTypes: { 13: [] },
+    });
+
+    const result = await run(
+      ["meta", "members", "--json"],
+      {
+        OPENPROJECT_URL: "https://ci.example",
+        OPENPROJECT_API_KEY: "ci-key",
+        OP_CLI_PROJECT: "13",
+        OP_CLI_CACHE_DIR: cacheDir,
+      },
+      {},
+    );
+    const key = `env-${createHash("sha1").update("https://ci.example").digest("hex")}`;
+    const stored = await readStore(cacheDir, key);
+    const scoped = stored.projectScoped as Record<string, unknown>;
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)[0].name).toBe("Ada");
+    expect(Object.keys(scoped)).toEqual(["13"]);
+  });
+
+  test("meta refresh re-fetches stored project vocabularies", async () => {
+    const root = await makeTempRoom("op-cli-meta-vocabrefresh-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { allowedValues: [] },
+      projectTypes: { 13: [] },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+    await run(["meta", "members", "--json"], env, {});
+
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      root: { _type: "API", apiVersion: "v3", coreVersion: "13.5" },
+      project: projectRef(),
+      members: {
+        13: [
+          membership(1, ada, [{ id: 4, title: "Manager" }]),
+          membership(9, backend, [{ id: 11, title: "Developer" }]),
+        ],
+      },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { allowedValues: [] },
+      projectTypes: { 13: [] },
+    });
+    const refreshedOnce = await run(["meta", "refresh"], env, {});
+    expect(refreshedOnce.exitCode).toBe(0);
+    const refreshed = await run(["meta", "members", "--json"], env, {});
+
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(refreshed.stdout)).toHaveLength(2);
+  });
 });
