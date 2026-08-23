@@ -6,10 +6,15 @@
 # and delete lifecycle against a scratch project on a live instance.
 #
 # Configuration (environment):
-#   OPENPROJECT_URL       base URL of the instance      (required)
-#   OPENPROJECT_API_KEY   API key with write access     (required)
+#   OPENPROJECT_URL       base URL of the instance      (required unless
+#                         OP_CLI_SMOKE_DRY=1)
+#   OPENPROJECT_API_KEY   API key with write access     (required unless
+#                         OP_CLI_SMOKE_DRY=1)
 #   OP_CLI_SMOKE_BIN      binary to exercise; defaults to the freshly
 #                         built dist/bin.js of this repository
+#   OP_CLI_SMOKE_DRY      1 simulates the whole run: every external
+#                         command is echoed, none executes; exit 0 when
+#                         the script itself parses and stays coherent
 #
 # The scratch project itself is left behind on purpose: the CLI refuses to
 # delete projects, so remove it through the OpenProject web UI afterwards.
@@ -28,6 +33,10 @@ else
 fi
 
 CURRENT_STEP=""
+DRY=0
+case "${OP_CLI_SMOKE_DRY:-}" in
+  1|true|yes) DRY=1 ;;
+esac
 on_error() {
   echo "smoke: FAIL at step: ${CURRENT_STEP:-<unknown>}" >&2
   if [ -n "${SCRATCH_IDENT:-}" ]; then
@@ -41,8 +50,30 @@ step() {
   echo "[smoke] $1"
 }
 
+if [ "$DRY" = "1" ]; then
+  # The dry gate: prove the script parses, then shadow every launcher with
+  # an echo so no external command runs. Shell functions take precedence
+  # over PATH lookups, so "$BIN ..." and the node assertions below all
+  # degrade to echoes and the lifecycle walks through without side effects.
+  bash -n "$REPO_ROOT/scripts/smoke.sh"
+  node() {
+    if [ "${1:-}" = "-e" ]; then
+      echo "[smoke:dry] node -e <inline script>"
+    else
+      echo "[smoke:dry] node $*"
+    fi
+  }
+  launcher="${BIN%% *}"
+  if [ "$launcher" != "node" ]; then
+    eval "${launcher}() { echo \"[smoke:dry] ${launcher} \\$*\"; }"
+  fi
+fi
+
 json_field() {
   # Read JSON from stdin, print one top-level field, or fail loudly.
+  # CAUTION: $1 is interpolated straight into the JavaScript literal below;
+  # only call this helper with fixed literals from this script, never with
+  # data read from the instance or the environment.
   node -e '
     const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
     const value = data[process.argv[1]];
@@ -54,16 +85,19 @@ json_field() {
   ' "$1"
 }
 
-# --- Preflight -------------------------------------------------------------
-
-if [ -z "${OPENPROJECT_URL:-}" ] || [ -z "${OPENPROJECT_API_KEY:-}" ]; then
+if [ "$DRY" != "1" ] && { [ -z "${OPENPROJECT_URL:-}" ] || [ -z "${OPENPROJECT_API_KEY:-}" ]; }; then
   echo "smoke: this gate needs a real instance to write to." >&2
   echo "smoke: export OPENPROJECT_URL and OPENPROJECT_API_KEY first, then rerun." >&2
+  echo "smoke: or set OP_CLI_SMOKE_DRY=1 to simulate the run without any writes." >&2
   exit 2
 fi
 
-step "preflight: doctor against ${OPENPROJECT_URL}"
-$BIN doctor > /dev/null
+step "preflight: doctor against ${OPENPROJECT_URL:-<dry: no instance>}"
+if [ "$DRY" = "1" ]; then
+  $BIN doctor
+else
+  $BIN doctor > /dev/null
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 SCRATCH_IDENT="op-cli-smoke-$STAMP"
@@ -85,7 +119,7 @@ WP_ID="$(printf '%s' "$WP_JSON" | json_field id)"
 step "update work package $WP_ID"
 UPDATED_JSON="$($BIN wp update "$WP_ID" --subject "smoke subject B" --json)"
 GOT_SUBJECT="$(printf '%s' "$UPDATED_JSON" | json_field subject)"
-if [ "$GOT_SUBJECT" != "smoke subject B" ]; then
+if [ "$DRY" != "1" ] && [ "$GOT_SUBJECT" != "smoke subject B" ]; then
   echo "smoke: update echoed subject '$GOT_SUBJECT' instead of 'smoke subject B'" >&2
   false
 fi
@@ -153,5 +187,9 @@ step "delete work package $WP_ID"
 $BIN wp delete "$WP_ID" --yes > /dev/null
 
 trap - ERR
-echo "[smoke] PASS: full lifecycle succeeded."
-echo "smoke: leftover scratch project '$SCRATCH_IDENT' (id $PROJ_ID); remove it via the web UI."
+if [ "$DRY" = "1" ]; then
+  echo "[smoke] PASS: dry simulation coherent, nothing was executed or written."
+else
+  echo "[smoke] PASS: full lifecycle succeeded."
+  echo "smoke: leftover scratch project '$SCRATCH_IDENT' (id $PROJ_ID); remove it via the web UI."
+fi

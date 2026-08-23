@@ -285,7 +285,7 @@ function timeEntryFormFixture(): Record<string, unknown> {
                 name: "Development",
                 default: true,
                 _links: {
-                  self: { href: "/api/v3/time_entries_activities/1" },
+                  self: { href: "/api/v3/time_entries/activities/1" },
                 },
               },
               {
@@ -294,7 +294,7 @@ function timeEntryFormFixture(): Record<string, unknown> {
                 name: "Support",
                 default: false,
                 _links: {
-                  self: { href: "/api/v3/time_entries_activities/2" },
+                  self: { href: "/api/v3/time_entries/activities/2" },
                 },
               },
             ],
