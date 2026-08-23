@@ -3,9 +3,11 @@ import type { Command } from "commander";
 import { isoToHours, parseDuration } from "../core/duration.js";
 import { OpCliError } from "../core/errors.js";
 import { filtersQuery, updatedAtRange, type WpFilter } from "../core/filters.js";
-import { flattenHalRecord, type FlatLink } from "../core/hal.js";
+import { flattenHalRecord, isFlatLink, type FlatLink } from "../core/hal.js";
 import {
+  apiDelete,
   apiGet,
+  apiPatchRaw,
   apiPostRaw,
   authenticate,
   type RawWriteResponse,
@@ -326,6 +328,102 @@ async function postEntry(
   }
 }
 
+/**
+ * Catalogue mapping for an update that survived without retrying: 404
+ * stays NOT_FOUND, 5xx means the state is unknown, everything else is
+ * API_ERROR carrying the server's own message when it has one.
+ */
+function updateRejection(status: number, body: unknown): OpCliError {
+  if (status === 404) {
+    return new OpCliError("NOT_FOUND");
+  }
+  if (status >= 500) {
+    return new OpCliError(
+      "NETWORK_ERROR",
+      `the request failed with HTTP ${String(status)}; whether the change was applied is unknown.`,
+      "check op-cli time get before repeating the command.",
+    );
+  }
+  const detail = typeof body === "object" && body !== null
+    && typeof (body as Record<string, unknown>).message === "string"
+    ? (body as Record<string, unknown>).message as string
+    : undefined;
+  return new OpCliError(
+    "API_ERROR",
+    detail === undefined ? undefined : `OpenProject rejected the change: ${detail}`,
+  );
+}
+
+/** A patch whose failure leaves the stored state unknown: never retried. */
+async function patchEntry(
+  profile: ActiveProfile,
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<RawWriteResponse> {
+  try {
+    return await apiPatchRaw(
+      profile.instanceUrl,
+      profile.apiKey,
+      `/api/v3/time_entries/${id}`,
+      payload,
+    );
+  } catch (error) {
+    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
+      throw new OpCliError(
+        "NETWORK_ERROR",
+        "the request did not complete; whether the change was applied is unknown.",
+        "check op-cli time get before repeating the command.",
+      );
+    }
+    throw error;
+  }
+}
+
+/** A delete whose failure leaves the stored state unknown: never retried. */
+async function deleteEntry(profile: ActiveProfile, id: string): Promise<void> {
+  try {
+    await apiDelete(profile.instanceUrl, profile.apiKey, `/api/v3/time_entries/${id}`);
+  } catch (error) {
+    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
+      throw new OpCliError(
+        "NETWORK_ERROR",
+        "the request did not complete; whether the entry was removed is unknown.",
+        "check op-cli time list before repeating the command.",
+      );
+    }
+    throw error;
+  }
+}
+
+/** Strict calendar date for --spent-on: the wire form is YYYY-MM-DD. */
+function requireIsoDate(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `--spent-on "${value}" is not a calendar date.`,
+      "give YYYY-MM-DD, for example 2026-08-21.",
+    );
+  }
+  return value;
+}
+
+/**
+ * One shared resolution path for --activity on log and update alike:
+ * id form passes through, a name resolves against the vocabulary of the
+ * project the work belongs to (#5).
+ */
+async function resolveActivityHref(
+  runtime: TimeRuntime,
+  profile: ActiveProfile,
+  projectId: number,
+  raw: string,
+): Promise<string> {
+  const activityId = isIdForm(raw)
+    ? Number(raw)
+    : await resolveName(raw, activitiesSource(runtime.env, profile, projectId));
+  return `/api/v3/time_entries_activities/${String(activityId)}`;
+}
+
 export function registerTimeCommands(time: Command, runtime: TimeRuntime): void {
   time.description("Track and inspect time entries");
 
@@ -372,16 +470,9 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
           "check the work package on the instance.",
         );
       }
-      let activityHref: string | undefined;
-      if (options.activity !== undefined) {
-        const activityId = isIdForm(options.activity)
-          ? Number(options.activity)
-          : await resolveName(
-              options.activity,
-              activitiesSource(runtime.env, profile, projectId),
-            );
-        activityHref = `/api/v3/time_entries_activities/${String(activityId)}`;
-      }
+      const activityHref = options.activity === undefined
+        ? undefined
+        : await resolveActivityHref(runtime, profile, projectId, options.activity);
       const response = await postEntry(profile, {
         hours: duration.iso,
         _links: {
@@ -501,5 +592,205 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         ),
       );
       renderRecord(runtime, options, record);
+    });
+
+  time.command("update")
+    .description("Update one time entry")
+    .argument("<id>", "time entry id")
+    .option(
+      "--hours <value>",
+      "decimal hours such as 1.5, a compound form such as 1h30m, "
+        + "or an ISO 8601 duration such as PT1H30M",
+    )
+    .option("--activity <name-or-id>", "activity of the project, by name or id")
+    .option("--comment <text>", "replace the comment")
+    .option("--spent-on <date>", "move the entry to this day, YYYY-MM-DD")
+    .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated columns to show")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (reference: string, options: {
+      hours?: string;
+      activity?: string;
+      comment?: string;
+      spentOn?: string;
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      runtime.setJsonMode(options.json === true);
+      requireId(reference, "time entry");
+      // Refuse impossible input before any traffic or resolution.
+      const hours = options.hours === undefined
+        ? undefined
+        : parseDuration(options.hours);
+      const spentOn = options.spentOn === undefined
+        ? undefined
+        : requireIsoDate(options.spentOn);
+      const touchesSomething = hours !== undefined
+        || options.activity !== undefined
+        || options.comment !== undefined
+        || spentOn !== undefined;
+      if (!touchesSomething) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "time update needs at least one value to change.",
+          "pass --hours, --activity, --comment, or --spent-on.",
+        );
+      }
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      const payload: Record<string, unknown> = {};
+      if (hours !== undefined) {
+        payload.hours = hours.iso;
+      }
+      if (spentOn !== undefined) {
+        payload.spentOn = spentOn;
+      }
+      if (options.comment !== undefined) {
+        payload.comment = options.comment;
+      }
+      if (options.activity !== undefined) {
+        // The activity vocabulary hangs off the project the entry's own
+        // work package belongs to, not off the profile default.
+        const flat = flattenHalRecord(
+          await apiGet(profile.instanceUrl, profile.apiKey, `/api/v3/time_entries/${reference}`),
+        );
+        const projectId = (flat.project as FlatLink | undefined)?.id ?? null;
+        if (projectId === null) {
+          throw new OpCliError(
+            "API_ERROR",
+            `time entry ${reference} carries no project link.`,
+            "check the time entry on the instance.",
+          );
+        }
+        payload._links = {
+          activity: {
+            href: await resolveActivityHref(runtime, profile, projectId, options.activity),
+          },
+        };
+      }
+      const response = await patchEntry(profile, reference, payload);
+      if (
+        response.status < 200
+        || response.status >= 300
+        || response.body === undefined
+      ) {
+        throw updateRejection(response.status, response.body);
+      }
+      renderRecord(runtime, options, timeEntryRecord(response.body));
+    });
+
+  time.command("delete")
+    .description("Delete one time entry after explicit confirmation")
+    .argument("<id>", "time entry id")
+    .option("--yes", "confirm the deletion")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (reference: string, options: {
+      yes?: boolean;
+      profile?: string;
+      project?: string;
+    }) => {
+      // The guard fires before any resolution or traffic: without --yes
+      // nothing is read, nothing is sent, with or without a terminal.
+      if (options.yes !== true) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `time delete refuses to remove time entry ${reference} without confirmation.`,
+          "repeat the command with --yes to confirm the deletion.",
+        );
+      }
+      requireId(reference, "time entry");
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      await deleteEntry(profile, reference);
+      runtime.write(`Deleted time entry ${reference}.\n`);
+    });
+
+  time.command("report")
+    .description("Sum logged hours over the same filters as time list")
+    .option("--wp <id>", "work package id; repeat or comma-separate to OR values", collectValue, [])
+    .option("--user <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option("--from <date>", "today, yesterday, days back such as 7d, or YYYY-MM-DD")
+    .option("--json", "emit a flat JSON array of per-work-package groups")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (options: {
+      wp?: Array<string>;
+      user?: Array<string>;
+      from?: string;
+      json?: boolean;
+      profile?: string;
+      project?: string;
+    }) => {
+      runtime.setJsonMode(options.json === true);
+      // Refuse impossible input before any traffic or resolution.
+      const wps = splitList(options.wp ?? []);
+      for (const wp of wps) {
+        requireId(wp, "work package");
+      }
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      const users = await resolveUserValues(runtime.env, profile, splitList(options.user ?? []));
+      const filters = buildTimeFilters(wps, users, options.from, new Date());
+      // A total is only honest over the whole filtered set, so report
+      // always walks every page; there is no --limit to half-count by.
+      const startPath = withPageSize(
+        `/api/v3/time_entries?filters=${filtersQuery(filters)}`,
+        parsePageSize(undefined),
+      );
+      const getPage = (path: string): Promise<unknown> =>
+        apiGet(profile.instanceUrl, profile.apiKey, path);
+      interface ReportGroup {
+        wp: FlatLink | null;
+        count: number;
+        ms: number;
+      }
+      const groups = new Map<string, ReportGroup>();
+      let totalMs = 0;
+      let totalCount = 0;
+      for await (const element of halElements<unknown>(getPage, startPath)) {
+        const record = timeEntryRecord(element);
+        const wp = isFlatLink(record.wp) ? record.wp : null;
+        const key = wp === null ? "none" : String(wp.id);
+        const group = groups.get(key) ?? { wp, count: 0, ms: 0 };
+        group.count += 1;
+        // Millisecond integers keep every partial sum exact; only the
+        // final render divides into decimal hours.
+        const ms = typeof record.hours === "number"
+          ? Math.round(record.hours * 3600000)
+          : 0;
+        group.ms += ms;
+        totalMs += ms;
+        totalCount += 1;
+        groups.set(key, group);
+      }
+      if (options.json === true) {
+        runtime.write(`${JSON.stringify([...groups.values()].map((group) => ({
+          wp: group.wp,
+          entries: group.count,
+          hours: group.ms / 3600000,
+        })))}\n`);
+        return;
+      }
+      runtime.write(renderTable(
+        ["WORK PACKAGE", "ENTRIES", "HOURS"],
+        [
+          ...[...groups.values()].map((group) => [
+            group.wp === null || group.wp.name === null ? "-" : group.wp.name,
+            String(group.count),
+            String(group.ms / 3600000),
+          ]),
+          ["TOTAL", String(totalCount), String(totalMs / 3600000)],
+        ],
+      ));
     });
 }

@@ -100,12 +100,23 @@ interface PostReply {
   readonly body?: unknown;
 }
 
+interface PatchReply {
+  readonly status: number;
+  readonly body?: unknown;
+}
+
 interface InstallOptions {
   readonly packages?: Record<string, unknown>;
   /** Consumed in order; once the list runs dry the interception stops matching. */
   readonly posts?: Array<PostReply>;
   /** Persistent POST endpoint (the time-entry create form). */
   readonly form?: unknown;
+  /** PATCH replies for one entry path, consumed in order. */
+  readonly patchPath?: string;
+  readonly patches?: ReadonlyArray<PatchReply>;
+  /** One DELETE endpoint; every reply carries the same status. */
+  readonly deletePath?: string;
+  readonly deleteStatus?: number;
 }
 
 /**
@@ -114,7 +125,11 @@ interface InstallOptions {
  */
 function installMockApi(
   options: InstallOptions,
-): { postBodies: Array<Record<string, unknown>> } {
+): {
+  postBodies: Array<Record<string, unknown>>;
+  patchBodies: Array<Record<string, unknown>>;
+  deleteCalls: () => number;
+} {
   const mockAgent = new MockAgent();
   mockAgent.disableNetConnect();
   setGlobalDispatcher(mockAgent);
@@ -127,6 +142,7 @@ function installMockApi(
     pool.intercept({ path, method: "GET" }).reply(200, body).persist();
   }
   const postBodies: Array<Record<string, unknown>> = [];
+  const patchBodies: Array<Record<string, unknown>> = [];
   for (const next of options.posts ?? []) {
     pool.intercept({ path: "/api/v3/time_entries", method: "POST" }).reply(
       (call) => {
@@ -135,13 +151,28 @@ function installMockApi(
       },
     );
   }
-  if (options.form !== undefined) {
-    pool.intercept({ path: "/api/v3/time_entries/form", method: "POST" })
-      .reply(200, options.form)
-      .persist();
+  if (options.patchPath !== undefined) {
+    const replies = options.patches ?? [];
+    pool.intercept({ path: options.patchPath, method: "PATCH" }).reply((call) => {
+      patchBodies.push(JSON.parse(String(call.body)) as Record<string, unknown>);
+      const next = replies[Math.min(patchBodies.length - 1, replies.length - 1)];
+      return { statusCode: next.status, data: next.body ?? {} };
+    });
   }
-  return { postBodies };
-}
+  let deleteCalls = 0;
+  if (options.deletePath !== undefined) {
+    pool.intercept({ path: options.deletePath, method: "DELETE" }).reply(() => {
+      deleteCalls += 1;
+      return { statusCode: options.deleteStatus ?? 204, data: "" };
+    }).persist();
+  }
+   if (options.form !== undefined) {
+     pool.intercept({ path: "/api/v3/time_entries/form", method: "POST" })
+       .reply(200, options.form)
+       .persist();
+   }
+  return { postBodies, patchBodies, deleteCalls: () => deleteCalls };
+ }
 
 function halCollection(
   total: number,
@@ -192,13 +223,14 @@ function timeEntryElement(
   wpId: number,
   wpTitle: string,
   hoursIso: string,
+  overrides?: { spentOn?: string; comment?: string },
 ): Record<string, unknown> {
   return {
     _type: "TimeEntry",
     id,
     hours: hoursIso,
-    spentOn: "2026-08-21",
-    comment: "pairing session",
+    spentOn: overrides?.spentOn ?? "2026-08-21",
+    comment: overrides?.comment ?? "pairing session",
     createdOn: "2026-08-21T18:00:00Z",
     _links: {
       self: { href: `/api/v3/time_entries/${String(id)}` },
@@ -677,5 +709,329 @@ describe("time get", () => {
     const result = await runTime(configDir, cacheDir, ["get", "latest"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("[USAGE_ERROR]");
+  });
+});
+
+describe("time update", () => {
+  const ENTRY_PATH = "/api/v3/time_entries/3001";
+
+  test("edits hours, activity by name, comment, and date in one PATCH", async () => {
+    const root = await makeTempRoom("time-update-all-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    await writeMetadataFile(cacheDir, baseMetadata());
+    installMockApi({
+      packages: {
+        ...refreshEndpoints(),
+        "/api/v3/work_packages/675": wpResource(675),
+        [ENTRY_PATH]: timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M"),
+      },
+      form: timeEntryFormFixture(),
+      patchPath: ENTRY_PATH,
+      patches: [
+        {
+          status: 200,
+          body: timeEntryElement(3001, 675, "Fix login redirect", "PT2H", {
+            spentOn: "2026-08-20",
+            comment: "reworked after review",
+          }),
+        },
+      ],
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "update",
+      "3001",
+      "--hours",
+      "2h",
+      "--activity",
+      "Development",
+      "--comment",
+      "reworked after review",
+      "--spent-on",
+      "2026-08-20",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("2");
+    expect(result.stdout).toContain("reworked after review");
+    expect(result.stdout).toContain("2026-08-20");
+  });
+
+  test("--hours alone patches without reading the entry first", async () => {
+    const root = await makeTempRoom("time-update-hours-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    // No GET endpoint installed: any read of the entry would fail the agent.
+    installMockApi({
+      patchPath: ENTRY_PATH,
+      patches: [
+        { status: 200, body: timeEntryElement(3001, 675, "Fix login redirect", "PT45M") },
+      ],
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "update",
+      "3001",
+      "--hours",
+      "45m",
+    ]);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("0.75");
+  });
+
+  test("the PATCH payload carries exactly the given values", async () => {
+    const root = await makeTempRoom("time-update-payload-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    await writeMetadataFile(cacheDir, baseMetadata());
+    const api = installMockApi({
+      packages: {
+        ...refreshEndpoints(),
+        "/api/v3/work_packages/675": wpResource(675),
+        [ENTRY_PATH]: timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M"),
+      },
+      form: timeEntryFormFixture(),
+      patchPath: ENTRY_PATH,
+      patches: [
+        { status: 200, body: timeEntryElement(3001, 675, "Fix login redirect", "PT2H") },
+      ],
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "update",
+      "3001",
+      "--hours",
+      "2h",
+      "--activity",
+      "Development",
+      "--comment",
+      "reworked after review",
+      "--spent-on",
+      "2026-08-20",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(api.patchBodies).toEqual([
+      {
+        hours: "PT2H",
+        spentOn: "2026-08-20",
+        comment: "reworked after review",
+        _links: { activity: { href: "/api/v3/time_entries_activities/1" } },
+      },
+    ]);
+  });
+
+  test("an unmatched activity exits 1 listing the valid names", async () => {
+    const root = await makeTempRoom("time-update-activity-miss-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    await writeMetadataFile(cacheDir, baseMetadata());
+    const api = installMockApi({
+      packages: {
+        ...refreshEndpoints(),
+        "/api/v3/work_packages/675": wpResource(675),
+        [ENTRY_PATH]: timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M"),
+      },
+      form: timeEntryFormFixture(),
+      patchPath: ENTRY_PATH,
+      patches: [{ status: 200 }],
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "update",
+      "3001",
+      "--activity",
+      "Developmnt",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('activity "Developmnt" not found');
+    expect(api.patchBodies).toHaveLength(0);
+  });
+
+  test("a malformed --spent-on is refused as usage before any traffic", async () => {
+    const root = await makeTempRoom("time-update-bad-date-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({});
+    const result = await runTime(configDir, cacheDir, [
+      "update",
+      "3001",
+      "--spent-on",
+      "soon",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain("--spent-on");
+  });
+
+  test("no value to change exits 1 before any traffic", async () => {
+    const root = await makeTempRoom("time-update-noop-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({});
+    const result = await runTime(configDir, cacheDir, ["update", "3001"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("at least one value to change");
+  });
+
+  test("a rejected update maps onto the catalogue without retrying", async () => {
+    const root = await makeTempRoom("time-update-rejected-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      patchPath: ENTRY_PATH,
+      patches: [
+        { status: 422, body: { _type: "Error", message: "Hours is invalid." } },
+      ],
+    });
+    const result = await runTime(configDir, cacheDir, ["update", "3001", "--hours", "2h"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("[API_ERROR]");
+    expect(result.stderr).toContain("Hours is invalid.");
+  });
+
+  test("a network failure on update reports the unknown state", async () => {
+    const root = await makeTempRoom("time-update-network-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      patchPath: ENTRY_PATH,
+      patches: [{ status: 503 }],
+    });
+    const result = await runTime(configDir, cacheDir, ["update", "3001", "--hours", "2h"]);
+    expect(result.exitCode).toBe(6);
+    expect(result.stderr).toContain("whether the change was applied is unknown");
+  });
+});
+
+describe("time delete", () => {
+  const ENTRY_PATH = "/api/v3/time_entries/3001";
+
+  test("without --yes exits 1 and sends nothing even without a terminal", async () => {
+    const root = await makeTempRoom("time-delete-guard-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({ deletePath: ENTRY_PATH });
+    const result = await runTime(configDir, cacheDir, ["delete", "3001"], {});
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--yes");
+  });
+
+  test("without --yes exits 1 even with a terminal attached and changes nothing", async () => {
+    const root = await makeTempRoom("time-delete-tty-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installMockApi({ deletePath: ENTRY_PATH });
+    const result = await runTime(configDir, cacheDir, ["delete", "3001"], {
+      isTTY: true,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(api.deleteCalls()).toBe(0);
+  });
+
+  test("--yes deletes and reports it", async () => {
+    const root = await makeTempRoom("time-delete-yes-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installMockApi({ deletePath: ENTRY_PATH });
+    const result = await runTime(configDir, cacheDir, ["delete", "3001", "--yes"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(api.deleteCalls()).toBe(1);
+    expect(result.stdout).toContain("Deleted time entry 3001.");
+  });
+
+  test("a missing time entry exits 4", async () => {
+    const root = await makeTempRoom("time-delete-miss-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({ deletePath: ENTRY_PATH, deleteStatus: 404 });
+    const result = await runTime(configDir, cacheDir, ["delete", "3001", "--yes"]);
+    expect(result.exitCode).toBe(4);
+  });
+
+  test("refuses a non-id reference without any request", async () => {
+    const root = await makeTempRoom("time-delete-bad-ref-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installMockApi({ deletePath: ENTRY_PATH });
+    const result = await runTime(configDir, cacheDir, ["delete", "latest", "--yes"]);
+    expect(result.exitCode).toBe(1);
+    expect(api.deleteCalls()).toBe(0);
+  });
+});
+
+describe("time report", () => {
+  /** Dyadic hour amounts only, so every total is float-exact. */
+  function reportEntries(): Array<Record<string, unknown>> {
+    return [
+      timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M"),
+      timeEntryElement(3002, 598, "Design review", "PT45M"),
+      timeEntryElement(3003, 675, "Fix login redirect", "PT2H"),
+    ];
+  }
+
+  test("aggregates over the same filters as time list and totals decimal hours", async () => {
+    const root = await makeTempRoom("time-report-filters-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [entryPath([
+          { entity_type: { operator: "=", values: ["WorkPackage"] } },
+          { entity_id: { operator: "=", values: ["675"] } },
+        ], 100)]: halCollection(3, reportEntries()),
+      },
+    });
+    // The strict mock proves both commands query byte-identical filters.
+    const listed = await runTime(configDir, cacheDir, ["list", "--wp", "675"]);
+    const reported = await runTime(configDir, cacheDir, ["report", "--wp", "675"]);
+    expect(listed.exitCode).toBe(0);
+    expect(reported.exitCode).toBe(0);
+    expect(reported.stderr).toBe("");
+    // Groups: wp 675 carries 1.5 + 2 = 3.5 over two entries; total 4.25.
+    expect(reported.stdout).toContain("TOTAL");
+    expect(reported.stdout).toContain("3.5");
+    expect(reported.stdout).toContain("4.25");
+    expect(reported.stdout.indexOf("3.5")).toBeLessThan(reported.stdout.indexOf("TOTAL"));
+  });
+
+  test("--json emits one flat group array whose hours sum to the entry total", async () => {
+    const root = await makeTempRoom("time-report-json-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [entryPath([], 100)]: halCollection(3, reportEntries()),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, ["report", "--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    const groups = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toEqual({ wp: { id: 675, name: "Fix login redirect" }, entries: 2, hours: 3.5 });
+    expect(groups[1]).toEqual({ wp: { id: 598, name: "Design review" }, entries: 1, hours: 0.75 });
+    const sum = groups.reduce((carry, group) => carry + (group.hours as number), 0);
+    expect(sum).toBeCloseTo(4.25, 10);
+    expect(JSON.stringify(groups)).not.toContain("_links");
+  });
+
+  test("totals span every page so a paged set never under-reports", async () => {
+    const root = await makeTempRoom("time-report-pages-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const nextPath = `${entryPath([], 100).replace("&pageSize=100", "")}&offset=100&pageSize=100`;
+    installMockApi({
+      packages: {
+        [entryPath([], 100)]: pagedCollection(
+          2,
+          [timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M")],
+          nextPath,
+        ),
+        [nextPath]: pagedCollection(2, [
+          timeEntryElement(3002, 598, "Design review", "PT45M"),
+        ]),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, ["report"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("2.25");
+  });
+
+  test("an empty filtered set reports zero without error", async () => {
+    const root = await makeTempRoom("time-report-empty-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [entryPath([], 100)]: halCollection(0, []),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, ["report"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("TOTAL");
+    const jsonResult = await runTime(configDir, cacheDir, ["report", "--json"]);
+    expect(JSON.parse(jsonResult.stdout)).toEqual([]);
   });
 });
