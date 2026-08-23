@@ -43,7 +43,9 @@ export async function run(
 ): Promise<RunResult> {
   let stdout = "";
   let stderr = "";
-  let jsonOutput = false;
+  // Spec story 51: one environment variable makes JSON the output for
+  // the whole session, errors included, instead of a flag per command.
+  let jsonOutput = env.OP_CLI_OUTPUT === "json";
 
   const program = new Command()
     .name("op-cli")
@@ -57,7 +59,17 @@ export async function run(
         stderr += text;
       },
     });
-
+  if (env.OP_CLI_OUTPUT === "json") {
+    program.hook("preAction", (_thisCommand, actionCommand) => {
+      const options = actionCommand.opts();
+      const declaresJson = actionCommand.options.some((option) => option.name() === "json");
+      // The bulk stdin path is skipped: it already reports one NDJSON
+      // line per item, and its explicit --json refusal must survive.
+      if (declaresJson && options.json !== true && options.stdin !== true) {
+        options.json = true;
+      }
+    });
+  }
   const auth = program
     .command("auth")
     .description("Authenticate with an OpenProject instance");
@@ -247,6 +259,27 @@ export async function run(
   if (argv[0] === "--version") {
     program.version(await buildVersionOutput(env), "--version", "print version information");
   }
+
+  // Commands built declaratively start as standalone Command objects, so
+  // they miss the root's exitOverride and output capture; without this
+  // walk their --help would print to the real stdout and process.exit,
+  // and the seam would never return.
+  const captureHelp = (command: Command): void => {
+    for (const child of command.commands) {
+      child
+        .exitOverride()
+        .configureOutput({
+          writeOut: (text) => {
+            stdout += text;
+          },
+          writeErr: (text) => {
+            stderr += text;
+          },
+        });
+      captureHelp(child);
+    }
+  };
+  captureHelp(program);
 
   try {
     await program.parseAsync([...argv], { from: "user" });
