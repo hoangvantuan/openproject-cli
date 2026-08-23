@@ -178,9 +178,13 @@ export async function run(
     .command("wp")
     .description("Inspect and manage work packages");
   registerWpCommands(wp, {
+    env,
     resolve: (overrides) => resolveProfile(env, overrides),
     write: (text) => {
       stdout += text;
+    },
+    writeErr: (text) => {
+      stderr += text;
     },
     setJsonMode: (on) => {
       jsonOutput = on;
@@ -200,8 +204,9 @@ export async function run(
     },
   });
 
-  if (argv.includes("--version")) {
-    // Registered lazily so the metadata lookup only runs when requested.
+  // Registered lazily and only at the root so a subcommand can reuse
+  // the "--version <value>" spelling as its own option (wp list).
+  if (argv[0] === "--version") {
     program.version(await buildVersionOutput(env), "--version", "print version information");
   }
 

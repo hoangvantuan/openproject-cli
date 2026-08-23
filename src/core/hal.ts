@@ -52,10 +52,11 @@ function isFlatLink(value: unknown): value is FlatLink {
 }
 
 /**
- * Flatten one HAL resource in place: `_type` is dropped, every `_links`
- * entry except `self` shrinks to `{ id, name }`, embedded resources are
- * flattened recursively, and scalars pass through untouched. The result
- * is the bare record; nothing wraps it.
+ * Flatten one HAL resource in place: `_type` is dropped, `_embedded` is
+ * stripped (embedded resources are never merged into the record), every
+ * `_links` entry except `self` shrinks to `{ id, name }`, and scalars
+ * pass through untouched. The result is the bare record; nothing wraps
+ * it.
  */
 export function flattenHalRecord(
   record: unknown,
