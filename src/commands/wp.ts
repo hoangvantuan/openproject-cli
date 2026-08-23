@@ -7,16 +7,23 @@ import {
   type WpFilter,
   type WpListFlags,
 } from "../core/filters.js";
+import { defineCollectionCommand, emitRows, type CollectionRuntime } from "../core/define.js";
 import { flattenHalRecord, isFlatLink } from "../core/hal.js";
 import {
   apiDelete,
   apiGet,
+  apiPost,
   apiPatchRaw,
   apiPostRaw,
   authenticate,
   type RawWriteResponse,
 } from "../core/http.js";
-import { halElements } from "../core/paginate.js";
+import {
+  DEFAULT_PAGE_SIZE,
+  halElements,
+  parsePageSize,
+  withPageSize,
+} from "../core/paginate.js";
 import {
   explicitCustomFieldKey,
   isIdForm,
@@ -40,7 +47,7 @@ import {
   type StoredMetadata,
 } from "../context/metadata.js";
 import type { RunEnvironment } from "../run.js";
-import { renderTable } from "../output/table.js";
+import { formatCell, renderTable } from "../output/table.js";
 
 export interface WpRuntime {
   readonly env: RunEnvironment;
@@ -118,17 +125,56 @@ function selectedFields(
   return requested;
 }
 
-function formatCell(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "";
+/** Work packages are addressed by numeric id everywhere on this surface. */
+function requireWpId(reference: string): void {
+  if (!isIdForm(reference)) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `work package "${reference}" is not an id.`,
+      "work packages are addressed by their numeric id.",
+    );
   }
-  if (typeof value === "string") {
-    return value;
+}
+
+/**
+ * The one shared tail of every single-record command: --fields plus the
+ * two shapes, a FIELD/VALUE table by default.
+ */
+function renderRecord(
+  runtime: Pick<WpRuntime, "write">,
+  options: { json?: boolean; fields?: string },
+  record: Record<string, unknown>,
+): void {
+  const fields = selectedFields(options.fields, record);
+  if (options.json === true) {
+    const picked: Record<string, unknown> = {};
+    for (const field of fields) {
+      picked[field] = record[field];
+    }
+    runtime.write(`${JSON.stringify(picked)}\n`);
+    return;
   }
-  if (isFlatLink(value)) {
-    return value.name ?? (value.id === null ? "" : String(value.id));
-  }
-  return JSON.stringify(value);
+  runtime.write(
+    renderTable(
+      ["FIELD", "VALUE"],
+      fields.map((field) => [field, formatCell(record[field])]),
+    ),
+  );
+}
+
+/**
+ * The shared opening of every command on this surface: JSON mode first,
+ * then the id check is the caller's, then the profile.
+ */
+async function openProfile(
+  runtime: Pick<WpRuntime, "write" | "setJsonMode" | "resolve">,
+  options: { json?: boolean; fields?: string; profile?: string; project?: string },
+): Promise<ActiveProfile> {
+  runtime.setJsonMode(options.json === true);
+  return runtime.resolve({
+    profile: options.profile,
+    project: parseOptionalId(options.project),
+  });
 }
 
 function collectValue(value: string, previous: Array<string>): Array<string> {
@@ -930,22 +976,6 @@ async function resolveListFlags(
   return { ...flags, open: options.open, closed: options.closed };
 }
 
-const DEFAULT_LIMIT = 100;
-
-function parseLimit(raw: string | undefined): number {
-  if (raw === undefined) {
-    return DEFAULT_LIMIT;
-  }
-  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
-    throw new OpCliError(
-      "USAGE_ERROR",
-      `--limit "${raw}" is not a positive integer.`,
-      "pass a whole number of 1 or more.",
-    );
-  }
-  return Number(raw);
-}
-
 function workPackagesPath(filters: ReadonlyArray<WpFilter>): string {
   return `/api/v3/work_packages?filters=${filtersQuery(filters)}`;
 }
@@ -1129,6 +1159,139 @@ async function resolveNamedValues(
   return { payload, refs };
 }
 
+// ---------------------------------------------------------------------------
+// Activities, relations, schemas
+
+const COMMENT_COLUMNS = [
+  { title: "ID", field: "id" },
+  { title: "AUTHOR", field: "user" },
+  { title: "COMMENT", field: "note" },
+  { title: "CREATED", field: "createdAt" },
+] as const;
+
+const HISTORY_COLUMNS = [
+  { title: "ID", field: "id" },
+  { title: "KIND", field: "kind" },
+  { title: "AUTHOR", field: "user" },
+  { title: "NOTE", field: "note" },
+  { title: "CREATED", field: "createdAt" },
+] as const;
+
+const RELATION_COLUMNS = [
+  { title: "ID", field: "id" },
+  { title: "TYPE", field: "type" },
+  { title: "FROM", field: "from" },
+  { title: "TO", field: "to" },
+  { title: "LAG", field: "lag" },
+  { title: "DESCRIPTION", field: "description" },
+] as const;
+
+const SCHEMA_COLUMNS = [
+  { title: "FIELD", field: "field" },
+  { title: "NAME", field: "name" },
+  { title: "TYPE", field: "type" },
+  { title: "REQUIRED", field: "required" },
+  { title: "WRITABLE", field: "writable" },
+] as const;
+
+// The API speaks relation type names ("follows"), never ids.
+const RELATION_TYPES: ReadonlyArray<string> = [
+  "relates",
+  "duplicates",
+  "duplicated",
+  "blocks",
+  "blocked",
+  "precedes",
+  "follows",
+  "includes",
+  "partof",
+  "requires",
+  "required",
+];
+
+function normalizeRelationType(raw: string): string {
+  const type = raw.trim().toLowerCase();
+  if (!RELATION_TYPES.includes(type)) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `relation type "${raw}" is not valid.`,
+      `valid types: ${RELATION_TYPES.join(", ")}.`,
+    );
+  }
+  return type;
+}
+
+/** The relations endpoint filters by involvement, not by work package path. */
+function involvedRelationsPath(id: string): string {
+  return `/api/v3/relations?filters=${encodeURIComponent(JSON.stringify([
+    { involved: { operator: "=", values: [Number(id)] } },
+  ]))}`;
+}
+
+function linkIdOf(link: unknown): number | null {
+  return isFlatLink(link) ? link.id : null;
+}
+
+/**
+ * One flat row per activity; the raw _type becomes the KIND column and
+ * survives flattening because flattenHalRecord drops _type from records.
+ */
+function activityRow(element: unknown): Record<string, unknown> | undefined {
+  const resource = element as { readonly _type?: unknown };
+  const kind = typeof resource._type === "string"
+    ? resource._type.replace(/^Activity::/, "")
+    : "";
+  const record = flattenHalRecord(element);
+  const comment = record.comment as { raw?: unknown } | null | undefined;
+  return {
+    id: record.id,
+    kind,
+    user: record.user,
+    note: typeof comment?.raw === "string" ? comment.raw : "",
+    createdAt: record.createdAt,
+  };
+}
+
+/** Comments are the Comment-kind slice of the same activity stream. */
+function commentRow(element: unknown): Record<string, unknown> | undefined {
+  const row = activityRow(element);
+  return row?.kind === "Comment" ? row : undefined;
+}
+
+/** Only the typed fields and both ends; the action links carry no data. */
+function relationRow(element: unknown): Record<string, unknown> {
+  const record = flattenHalRecord(element);
+  return {
+    id: record.id,
+    type: record.type,
+    reverseType: record.reverseType,
+    lag: record.lag,
+    description: record.description,
+    from: record.from,
+    to: record.to,
+  };
+}
+
+/** One row per available field of the project-and-type schema. */
+function schemaRows(schema: unknown): Array<Record<string, unknown>> {
+  return Object.entries(schema as Record<string, unknown>)
+    .filter(([key, value]) =>
+      !key.startsWith("_")
+      && typeof value === "object"
+      && value !== null
+      && !Array.isArray(value))
+    .map(([field, definition]) => {
+      const spec = definition as Record<string, unknown>;
+      return {
+        field,
+        name: spec.name ?? "",
+        type: spec.type ?? "",
+        required: spec.required ?? false,
+        writable: spec.writable ?? false,
+      };
+    });
+}
+
 export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   wp.description("Inspect and manage work packages");
   addFilterFlags(
@@ -1146,9 +1309,9 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       project: parseOptionalId(options.project),
     });
     const now = new Date();
-    const limit = parseLimit(options.limit);
+    const limit = parsePageSize(options.limit);
     const filters = buildWpFilters(await resolveListFlags(runtime, profile, options), now);
-    const startPath = `${workPackagesPath(filters)}&pageSize=${String(limit)}`;
+    const startPath = withPageSize(workPackagesPath(filters), limit);
     const getPage = (path: string): Promise<unknown> =>
       apiGet(profile.instanceUrl, profile.apiKey, path);
 
@@ -1231,13 +1394,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         },
       ) => {
         runtime.setJsonMode(options.json === true);
-        if (!isIdForm(reference)) {
-          throw new OpCliError(
-            "USAGE_ERROR",
-            `work package "${reference}" is not an id.`,
-            "work packages are addressed by their numeric id.",
-          );
-        }
+        requireWpId(reference);
         const profile = await runtime.resolve({
           profile: options.profile,
           project: parseOptionalId(options.project),
@@ -1249,21 +1406,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
             `/api/v3/work_packages/${reference}`,
           ),
         );
-        const fields = selectedFields(options.fields, record);
-        if (options.json === true) {
-          const picked: Record<string, unknown> = {};
-          for (const field of fields) {
-            picked[field] = record[field];
-          }
-          runtime.write(`${JSON.stringify(picked)}\n`);
-          return;
-        }
-        runtime.write(
-          renderTable(
-            ["FIELD", "VALUE"],
-            fields.map((field) => [field, formatCell(record[field])]),
-          ),
-        );
+        renderRecord(runtime, options, record);
       },
     );
   // The clearing convention is a promise about syntax, so it belongs in
@@ -1319,17 +1462,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         throw writeRejection(response.status, response.body);
       }
       const created = flattenHalRecord(response.body);
-      if (options.json === true) {
-        runtime.write(`${JSON.stringify(created)}\n`);
-        return;
-      }
-      const fields = selectedFields(undefined, created);
-      runtime.write(
-        renderTable(
-          ["FIELD", "VALUE"],
-          fields.map((field) => [field, formatCell(created[field])]),
-        ),
-      );
+      renderRecord(runtime, options, created);
     });
 
   wp.command("update")
@@ -1354,13 +1487,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--project <id>", "override the profile default project")
     .action(async (reference: string, options: UpdateOptions) => {
       runtime.setJsonMode(options.json === true);
-      if (!isIdForm(reference)) {
-        throw new OpCliError(
-          "USAGE_ERROR",
-          `work package "${reference}" is not an id.`,
-          "work packages are addressed by their numeric id.",
-        );
-      }
+      requireWpId(reference);
       const touchesSomething = options.subject !== undefined
         || options.type !== undefined
         || options.status !== undefined
@@ -1420,17 +1547,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         throw writeRejection(response.status, response.body, "update");
       }
       const updated = flattenHalRecord(response.body);
-      if (options.json === true) {
-        runtime.write(`${JSON.stringify(updated)}\n`);
-        return;
-      }
-      const fields = selectedFields(undefined, updated);
-      runtime.write(
-        renderTable(
-          ["FIELD", "VALUE"],
-          fields.map((field) => [field, formatCell(updated[field])]),
-        ),
-      );
+      renderRecord(runtime, options, updated);
     });
 
   // ---------------------------------------------------------------------------
@@ -1456,13 +1573,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "repeat the command with --yes to confirm the deletion.",
         );
       }
-      if (!isIdForm(reference)) {
-        throw new OpCliError(
-          "USAGE_ERROR",
-          `work package "${reference}" is not an id.`,
-          "work packages are addressed by their numeric id.",
-        );
-      }
+      requireWpId(reference);
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseOptionalId(options.project),
@@ -1473,5 +1584,225 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         `/api/v3/work_packages/${reference}`,
       );
       runtime.write(`Deleted work package ${reference}.\n`);
+    });
+
+  // ---------------------------------------------------------------------------
+  // Discussion, history, relations, schema
+
+  const collectionRuntime: CollectionRuntime = {
+    connect: async (options) => {
+      const profile = await runtime.resolve({
+        profile: typeof options.profile === "string" ? options.profile : undefined,
+        project: typeof options.project === "string"
+          ? parseOptionalId(options.project)
+          : undefined,
+      });
+      return (path) => apiGet(profile.instanceUrl, profile.apiKey, path);
+    },
+    write: runtime.write,
+    writeErr: runtime.writeErr,
+    setJsonMode: runtime.setJsonMode,
+  };
+
+  wp.addCommand(defineCollectionCommand(
+    {
+      name: "comments",
+      description: "List comments of one work package",
+      path: (id) => `/api/v3/work_packages/${id}/activities`,
+      row: commentRow,
+      columns: COMMENT_COLUMNS,
+      noun: "comments",
+    },
+    collectionRuntime,
+  ));
+
+  wp.addCommand(defineCollectionCommand(
+    {
+      name: "history",
+      description: "Show the activity history of one work package",
+      path: (id) => `/api/v3/work_packages/${id}/activities`,
+      row: activityRow,
+      columns: HISTORY_COLUMNS,
+      noun: "activities",
+    },
+    collectionRuntime,
+  ));
+
+  wp.addCommand(defineCollectionCommand(
+    {
+      name: "relations",
+      description: "List the relations of one work package",
+      path: involvedRelationsPath,
+      row: relationRow,
+      columns: RELATION_COLUMNS,
+      noun: "relations",
+    },
+    collectionRuntime,
+  ));
+
+  const recordOptions = {
+    json: "--json",
+    fields: "--fields <list>",
+    profile: "--profile <name>",
+    project: "--project <id>",
+  };
+
+  wp.command("comment")
+    .description("Add a comment to one work package")
+    .argument("<id>")
+    .argument("<text>", "markdown body of the comment")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project")
+    .action(async (reference: string, text: string, options: {
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      requireWpId(reference);
+      const profile = await openProfile(runtime, options);
+      const created = flattenHalRecord(await apiPost(
+        profile.instanceUrl,
+        profile.apiKey,
+        `/api/v3/work_packages/${reference}/activities`,
+        { comment: { raw: text } },
+      ));
+      renderRecord(runtime, options, created);
+    });
+
+  wp.command("relate")
+    .description("Relate one work package to another")
+    .argument("<id>")
+    .argument("<to>", "work package id this one relates to")
+    .option("--type <name>", `relation type: ${RELATION_TYPES.join(", ")}`, "relates")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project")
+    .action(async (reference: string, toReference: string, options: {
+      type?: string;
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      requireWpId(reference);
+      requireWpId(toReference);
+      const type = normalizeRelationType(options.type ?? "relates");
+      const profile = await openProfile(runtime, options);
+      const created = flattenHalRecord(await apiPost(
+        profile.instanceUrl,
+        profile.apiKey,
+        `/api/v3/work_packages/${reference}/relations`,
+        { type, _links: { to: { href: `/api/v3/work_packages/${toReference}` } } },
+      ));
+      renderRecord(runtime, options, created);
+    });
+
+  wp.command("unrelate")
+    .description("Remove every relation between two work packages")
+    .argument("<id>")
+    .argument("<other>", "work package id to unlink from")
+    .option(recordOptions.json, "emit a flat JSON array")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project")
+    .action(async (reference: string, other: string, options: {
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      requireWpId(reference);
+      requireWpId(other);
+      const profile = await openProfile(runtime, options);
+      const pair = [Number(reference), Number(other)];
+      const removed: Array<Record<string, unknown>> = [];
+      const getPage = (path: string): Promise<unknown> =>
+        apiGet(profile.instanceUrl, profile.apiKey, path);
+      for await (const element of halElements(
+        getPage,
+        withPageSize(involvedRelationsPath(reference), DEFAULT_PAGE_SIZE),
+      )) {
+        const relation = relationRow(element);
+        const from = linkIdOf(relation.from);
+        const to = linkIdOf(relation.to);
+        if (
+          (from === pair[0] && to === pair[1]) || (from === pair[1] && to === pair[0])
+        ) {
+          await apiDelete(
+            profile.instanceUrl,
+            profile.apiKey,
+            `/api/v3/relations/${String(relation.id)}`,
+          );
+          removed.push(relation);
+        }
+      }
+      if (removed.length === 0) {
+        throw new OpCliError(
+          "NOT_FOUND",
+          `no relation links work package ${reference} with ${other}.`,
+          "run wp relations <id> to see what is related.",
+        );
+      }
+      if (options.json === true) {
+        const picked = removed.map((relation) =>
+          Object.fromEntries(
+            selectedFields(options.fields, relation).map((field) => [
+              field,
+              relation[field],
+            ]),
+          ),
+        );
+        runtime.write(`${JSON.stringify(picked)}\n`);
+        return;
+      }
+      for (const relation of removed) {
+        renderRecord(runtime, options, relation);
+      }
+    });
+
+  wp.command("schema")
+    .description("Show the available fields of a work package's project and type")
+    .argument("<id>")
+    .option(recordOptions.json, "emit a flat JSON array")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project")
+    .action(async (reference: string, options: {
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      requireWpId(reference);
+      const profile = await openProfile(runtime, options);
+      const workPackage = flattenHalRecord(await apiGet(
+        profile.instanceUrl,
+        profile.apiKey,
+        `/api/v3/work_packages/${reference}`,
+      ));
+      const projectId = linkIdOf(workPackage.project);
+      const typeId = linkIdOf(workPackage.type);
+      if (projectId === null || typeId === null) {
+        throw new OpCliError(
+          "API_ERROR",
+          "the work package carried no project or type to resolve its schema.",
+          "check the work package with wp get.",
+        );
+      }
+      const schema = await apiGet(
+        profile.instanceUrl,
+        profile.apiKey,
+        `/api/v3/work_packages/schemas/${String(projectId)}-${String(typeId)}`,
+      );
+      emitRows(
+        { write: runtime.write, writeErr: runtime.writeErr },
+        SCHEMA_COLUMNS,
+        schemaRows(schema),
+        options,
+      );
     });
 }

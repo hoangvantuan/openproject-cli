@@ -1,3 +1,27 @@
+import { OpCliError } from "./errors.js";
+
+export const DEFAULT_PAGE_SIZE = 100;
+
+/** Same contract as the flag of `wp list`: a whole number of 1 or more. */
+export function parsePageSize(raw: string | undefined): number {
+  if (raw === undefined) {
+    return DEFAULT_PAGE_SIZE;
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `--limit "${raw}" is not a positive integer.`,
+      "pass a whole number of 1 or more.",
+    );
+  }
+  return Number(raw);
+}
+
+/** Append pageSize to an endpoint path that may or may not carry a query. */
+export function withPageSize(path: string, size: number): string {
+  return `${path}${path.includes("?") ? "&" : "?"}pageSize=${String(size)}`;
+}
+
 export interface HalLink {
   readonly href?: string;
 }

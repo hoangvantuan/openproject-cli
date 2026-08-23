@@ -1,3 +1,5 @@
+import { isFlatLink } from "../core/hal.js";
+
 export function renderTable(
   header: readonly string[],
   rows: readonly (readonly string[])[],
@@ -19,6 +21,23 @@ export function renderTable(
       .join("  ")
       .trimEnd();
   return [line(header), ...rows.map(line)].join("\n") + "\n";
+}
+
+/**
+ * One table cell from a flattened record: links show their name (or id),
+ * scalars pass through, everything else serialises as JSON.
+ */
+export function formatCell(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (isFlatLink(value)) {
+    return value.name ?? (value.id === null ? "" : String(value.id));
+  }
+  return JSON.stringify(value);
 }
 
 interface StatusRow {
