@@ -1251,3 +1251,137 @@ describe("wp create retry rule", () => {
     expect(postBodies[1]?.[customFieldKey(10)]).toEqual({ href: "/api/v3/users/15" });
   });
 });
+
+describe("wp create --parent", () => {
+  const parentFilters = encodeURIComponent(
+    JSON.stringify([{ subject: { operator: "=", values: ["Ship the thing"] } }]),
+  );
+  const PARENT_SEARCH_PATH =
+    `/api/v3/work_packages?filters=${parentFilters}&pageSize=100`;
+
+  function parentHit(id: number, subject: string): Record<string, unknown> {
+    return {
+      _type: "WorkPackage",
+      id,
+      subject,
+      _links: { self: { href: `/api/v3/work_packages/${String(id)}` } },
+    };
+  }
+
+  function collection(elements: unknown[]): Record<string, unknown> {
+    return {
+      _type: "Collection",
+      total: elements.length,
+      count: elements.length,
+      _embedded: { elements },
+    };
+  }
+
+  test("resolves an exact subject into the parent href of the payload", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({
+      packages: {
+        [PARENT_SEARCH_PATH]: collection([parentHit(675, "Ship the thing")]),
+      },
+      posts: [{ status: 201, body: createdElement(1500, "Sub task") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Sub task",
+      "--parent",
+      "Ship the thing",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(1);
+    const links = postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.parent.href).toBe("/api/v3/work_packages/675");
+  });
+
+  test("takes all-digits values as the parent id with no search traffic", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    // No GET is installed at all: any parent lookup would fail the agent.
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1501, "Sub task") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Sub task",
+      "--parent",
+      "675",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.parent.href).toBe("/api/v3/work_packages/675");
+  });
+
+  test("an ambiguous parent subject exits 1 naming every candidate", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    installMockApi({
+      packages: {
+        [PARENT_SEARCH_PATH]: collection([
+          parentHit(675, "Ship the thing"),
+          parentHit(900, "Ship the thing"),
+        ]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Sub task",
+      "--parent",
+      "Ship the thing",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("ambiguous");
+    expect(result.stderr).toContain("675");
+    expect(result.stderr).toContain("900");
+  });
+
+  test("a missing parent subject exits 1 and creates nothing", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    // No POST intercept: a create attempt would fail the whole agent.
+    installMockApi({
+      packages: { [PARENT_SEARCH_PATH]: collection([]) },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Sub task",
+      "--parent",
+      "Ship the thing",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('no work package has the subject "Ship the thing"');
+  });
+});
+
+describe("wp create --description", () => {
+  test("sends the text as a formattable raw object, not a plain string", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1510, "Documented") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Documented",
+      "--description",
+      "Body text with **markdown**.",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(1);
+    expect(postBodies[0]?.description).toEqual({ raw: "Body text with **markdown**." });
+  });
+
+  test("an empty value clears the field as an empty formattable", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1511, "Blank body") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Blank body",
+      "--description",
+      "",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies[0]?.description).toEqual({ raw: "" });
+  });
+});

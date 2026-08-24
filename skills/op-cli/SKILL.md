@@ -58,6 +58,11 @@ op-cli wp create Subject --type Bug --priority High
 op-cli wp update <id> --field Estimate=5
 # change status, assignee, version, category, priority
 op-cli wp update <id> --status Closed --assignee me
+# build hierarchies: nest under a parent work package
+op-cli wp create Sub-task --parent <id>
+op-cli wp update <id> --parent <parent-id>
+# give a work package a markdown body
+op-cli wp create <subject> --description <markdown>
 # delete needs explicit confirmation; bulk-create from a JSON array
 op-cli wp delete <id> --yes
 echo '[{"subject":"First"},{"subject":"Second"}]' | op-cli wp create --stdin
@@ -77,6 +82,10 @@ op-cli time report --from 7d --user me
 op-cli project list --search web
 op-cli project create Web --identifier web
 op-cli project copy <reference> Copy --identifier web-copy
+# add or remove project members; without membership, assignment is refused
+op-cli project member add <project> <user> <role>
+op-cli project member remove <project> <user>
+op-cli meta members
 # what a work package may use in a project
 op-cli project types <reference>
 # instance vocabulary; members, versions, categories, activities too

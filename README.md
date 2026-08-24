@@ -38,6 +38,7 @@ points beyond the quickstart:
 ```sh
 op-cli wp create "Fix login bug" --type Bug --priority High
 op-cli time log 42 --hours 1h30m --activity Development
+op-cli project member add web alice Manager   # join members so assignment works
 op-cli project list --search web
 op-cli doctor            # diagnose connectivity, credentials, versions
 ```
