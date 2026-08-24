@@ -16,8 +16,11 @@ and the tool turns names into ids itself. Run any command below with
   `credentials.json`; there is no passthrough by design.
 - Deletions need an explicit `--yes`: `wp delete <id> --yes`,
   `time delete <id> --yes`, `project delete <reference> --yes`. They are
-  irreversible; never work around a refused deletion through another route.
-  There is no `user delete`; report that gap instead of improvising.
+  irreversible; never work around a refused deletion through another
+  route. Deleting a work package cascades on the server: its descendants
+  are deleted with it, and `wp delete` names the descendant count in both
+  its refusal and its confirmation. There is no `user delete`; report
+  that gap instead of improvising.
 - Four conventions are easy to guess wrong:
   - A project in context narrows what you read: `--project`, or the
     profile default, scopes `wp list`, `wp count`, `time list`, and

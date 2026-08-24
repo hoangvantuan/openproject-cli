@@ -2205,6 +2205,29 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   // ---------------------------------------------------------------------------
   // wp delete
 
+  /**
+   * How many work packages the server would cascade-delete beside this
+   * one: every descendant, children and deeper, matched by the ancestor
+   * filter. Undefined when the instance will not say; a read that fails
+   * must not block a confirmed deletion, and the DELETE below stays the
+   * authority on what actually happened.
+   */
+  const countDescendants = async (
+    profile: ActiveProfile,
+    id: string,
+  ): Promise<number | undefined> => {
+    try {
+      const page = (await apiGet(
+        profile.instanceUrl,
+        profile.apiKey,
+        `${workPackagesPath([{ name: "ancestor", operator: "=", values: [id] }])}&pageSize=1`,
+      )) as WorkPackagePage;
+      return typeof page.total === "number" ? page.total : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   wp.command("delete")
     .description("Delete one work package after explicit confirmation")
     .argument("<id>")
@@ -2216,26 +2239,40 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       profile?: string;
       project?: string;
     }) => {
-      // The guard fires before any resolution or traffic: without --yes
-      // nothing is read, nothing is sent, with or without a terminal.
-      if (options.yes !== true) {
-        throw new OpCliError(
-          "USAGE_ERROR",
-          `wp delete refuses to remove work package ${reference} without confirmation.`,
-          "repeat the command with --yes to confirm the deletion.",
-        );
-      }
       requireWpId(reference);
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseOptionalId(options.project),
       });
+      // Without --yes the only traffic is the descendant read: the
+      // refusal names what the cascade would destroy, but no write ever
+      // leaves without the flag, terminal or not.
+      const descendants = await countDescendants(profile, reference);
+      if (options.yes !== true) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `wp delete refuses to remove work package ${reference} without confirmation.`
+            + (descendants !== undefined && descendants > 0
+              ? ` Work package ${reference} has ${descendants} `
+                + `${descendants === 1 ? "descendant" : "descendants"};`
+                + " they are deleted with it."
+              : ""),
+          "repeat the command with --yes to confirm the deletion.",
+        );
+      }
       await apiDelete(
         profile.instanceUrl,
         profile.apiKey,
         `/api/v3/work_packages/${reference}`,
       );
-      runtime.write(`Deleted work package ${reference}.\n`);
+      runtime.write(
+        `Deleted work package ${reference}`
+          + (descendants !== undefined && descendants > 0
+            ? ` and its ${descendants} `
+              + `${descendants === 1 ? "descendant" : "descendants"}`
+            : "")
+          + ".\n",
+      );
     });
 
   // ---------------------------------------------------------------------------
