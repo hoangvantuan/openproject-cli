@@ -47,6 +47,10 @@ op-cli doctor            # diagnose connectivity, credentials, versions
 - **Errors are a closed set.** Every failure prints a stable code on stderr,
   such as `[CONFLICT]` or `[PROFILE_NOT_FOUND]`, with exit codes 0 through 7.
   Run `op-cli doctor` when something does not work.
+- **A project in context narrows listings.** `--project`, or a profile's
+  default project, scopes `wp list`, `wp count`, `time list`, and
+  `time report` to that project and its subprojects. Without one, those
+  four commands report instance-wide.
 - **Deletion is guarded.** Deleting a project is irreversible: `wp delete`,
   `time delete`, and `project delete` all require an explicit `--yes`.
   `user delete` is not offered at all; there is no workaround by design.

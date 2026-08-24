@@ -1251,6 +1251,7 @@ async function resolveListFlags(
   options: FilterFlagOptions,
 ): Promise<WpListFlags> {
   const flags: {
+    project?: string;
     statuses?: Array<string>;
     types?: Array<string>;
     assignees?: Array<string>;
@@ -1261,6 +1262,12 @@ async function resolveListFlags(
     parents?: Array<string>;
     updatedAfter?: string;
   } = {};
+  // The project in context scopes the listing itself, not just the
+  // vocabularies resolved below; without it every listing is
+  // instance-wide (#19).
+  if (profile.project !== undefined) {
+    flags.project = String(profile.project);
+  }
   const status = options.status ?? [];
   if (status.length > 0) {
     flags.statuses = await resolveValues(

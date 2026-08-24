@@ -18,6 +18,11 @@ export interface WpFilter {
  * carries the raw user input and is turned into a date window here.
  */
 export interface WpListFlags {
+  /**
+   * The project in context, already resolved to its id. Present means
+   * every clause beside it is read inside that project (#19).
+   */
+  readonly project?: string | undefined;
   readonly statuses?: ReadonlyArray<string> | undefined;
   readonly open?: boolean | undefined;
   readonly closed?: boolean | undefined;
@@ -144,6 +149,12 @@ export function buildWpFilters(
   }
 
   const filters: Array<WpFilter> = [];
+  // The project leads: it is the scope every other clause narrows, and it
+  // is the same clause the project-scoped collection applies internally,
+  // subprojects included.
+  if (flags.project !== undefined) {
+    filters.push({ name: "project", operator: "=", values: [flags.project] });
+  }
   if (flags.open === true) {
     filters.push({ name: "status", operator: "o", values: [] });
   } else if (flags.closed === true) {

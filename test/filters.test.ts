@@ -26,6 +26,26 @@ describe("buildWpFilters", () => {
     expect(buildWpFilters({}, NOW)).toEqual([]);
   });
 
+  test("a project in context becomes a project clause", () => {
+    expect(buildWpFilters({ project: "33" }, NOW)).toEqual([
+      { name: "project", operator: "=", values: ["33"] },
+    ]);
+  });
+
+  test("the project clause leads and narrows every clause beside it", () => {
+    const filters = buildWpFilters(
+      { project: "33", statuses: ["1"], priorities: ["3"], updatedAfter: "today" },
+      NOW,
+    );
+    expect(filters.map((filter) => filter.name)).toEqual([
+      "project",
+      "status",
+      "priority",
+      "updated_at",
+    ]);
+    expect(filters[0]).toEqual({ name: "project", operator: "=", values: ["33"] });
+  });
+
   test("status ids map to the status filter with the = operator", () => {
     expect(buildWpFilters({ statuses: ["1", "5"] }, NOW)).toEqual([
       { name: "status", operator: "=", values: ["1", "5"] },
@@ -180,6 +200,16 @@ describe("updatedAtRange", () => {
 });
 
 describe("filtersQuery", () => {
+  test("a project clause reaches the wire as the leading filter", () => {
+    expect(filtersQuery(buildWpFilters({ project: "33", open: true }, NOW))).toBe(
+      encodeURIComponent(
+        '[{"project":{"operator":"=","values":["33"]}},' +
+          '{"status":{"operator":"o","values":[]}}]',
+      ),
+    );
+  });
+
+
   test("serialises clauses into the URL-encoded JSON the API expects", () => {
     const flags: WpListFlags = { open: true, parents: ["123"] };
     expect(filtersQuery(buildWpFilters(flags, NOW))).toBe(

@@ -169,14 +169,22 @@ function splitList(raws: ReadonlyArray<string>): Array<string> {
  * the Python predecessor documented lives here and nowhere else: the API
  * scopes by entity type and entity id, and this function is the only
  * place those names exist.
+ *
+ * `project` leads when a project is in context: there is no
+ * project-scoped time-entry collection to address instead, so the clause
+ * is the only way `--project` reaches the query at all (#19).
  */
 function buildTimeFilters(
+  project: number | undefined,
   wps: ReadonlyArray<string>,
   users: ReadonlyArray<string>,
   from: string | undefined,
   now: Date,
 ): ReadonlyArray<WpFilter> {
   const filters: Array<WpFilter> = [];
+  if (project !== undefined) {
+    filters.push({ name: "project", operator: "=", values: [String(project)] });
+  }
   if (wps.length > 0) {
     filters.push({ name: "entity_type", operator: "=", values: ["WorkPackage"] });
     filters.push({ name: "entity_id", operator: "=", values: [...wps] });
@@ -532,7 +540,13 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         project: parseOptionalId(options.project),
       });
       const users = await resolveUserValues(runtime.env, profile, splitList(options.user ?? []));
-      const filters = buildTimeFilters(wps, users, options.from, new Date());
+      const filters = buildTimeFilters(
+        profile.project,
+        wps,
+        users,
+        options.from,
+        new Date(),
+      );
       const limit = parsePageSize(options.limit);
       const startPath = withPageSize(
         `/api/v3/time_entries?filters=${filtersQuery(filters)}`,
@@ -751,7 +765,13 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         project: parseOptionalId(options.project),
       });
       const users = await resolveUserValues(runtime.env, profile, splitList(options.user ?? []));
-      const filters = buildTimeFilters(wps, users, options.from, new Date());
+      const filters = buildTimeFilters(
+        profile.project,
+        wps,
+        users,
+        options.from,
+        new Date(),
+      );
       // A total is only honest over the whole filtered set, so report
       // always walks every page; there is no --limit to half-count by.
       const startPath = withPageSize(

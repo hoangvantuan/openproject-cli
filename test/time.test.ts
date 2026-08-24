@@ -1036,3 +1036,64 @@ describe("time report", () => {
     expect(JSON.parse(jsonResult.stdout)).toEqual([]);
   });
 });
+
+describe("time list and time report project scope", () => {
+  test("a profile default project narrows both the listing and the report", async () => {
+    const root = await makeTempRoom("time-default-project-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [entryPath([{ project: { operator: "=", values: ["13"] } }], 100)]:
+          halCollection(1, [timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M")]),
+      },
+    });
+    // The strict mock proves both commands scope to the same project.
+    const listed = await runTime(configDir, cacheDir, ["list"]);
+    const reported = await runTime(configDir, cacheDir, ["report"]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stderr).toBe("");
+    expect(listed.stdout).toContain("Fix login redirect");
+    expect(reported.exitCode).toBe(0);
+    expect(reported.stdout).toContain("1.5");
+  });
+
+  test("the project clause leads and travels with the other filters", async () => {
+    const root = await makeTempRoom("time-project-override-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [entryPath([
+          { project: { operator: "=", values: ["33"] } },
+          { entity_type: { operator: "=", values: ["WorkPackage"] } },
+          { entity_id: { operator: "=", values: ["675"] } },
+        ], 100)]: halCollection(1, [
+          timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M"),
+        ]),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "list",
+      "--project",
+      "33",
+      "--wp",
+      "675",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Fix login redirect");
+  });
+
+  test("with no project in context the listing stays instance-wide", async () => {
+    const root = await makeTempRoom("time-no-project-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [entryPath([], 100)]: halCollection(1, [
+          timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M"),
+        ]),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, ["list"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Fix login redirect");
+  });
+});

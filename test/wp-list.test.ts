@@ -167,6 +167,17 @@ function listPath(filters: unknown, pageSize: number, extra = ""): string {
   );
 }
 
+/**
+ * The clause a project in context has to add to every listing: the tests
+ * below spell the whole path out, so a dropped project scope fails the
+ * mock agent instead of quietly widening the query (#19).
+ */
+const PROJECT_13 = { project: { operator: "=", values: ["13"] } };
+
+function scopedPath(filters: unknown[], pageSize: number, extra = ""): string {
+  return listPath([PROJECT_13, ...filters], pageSize, extra);
+}
+
 function vocabEndpoints(metadata: Record<string, unknown>): Record<string, unknown> {
   return {
     "/api/v3/types": halCollection(
@@ -217,7 +228,7 @@ describe("wp list filters", () => {
     await writeMetadataFile(cacheDir, baseMetadata());
     installMockApi({
       packages: {
-        [listPath([{ status: { operator: "=", values: ["1"] } }], 100)]: halCollection(
+        [scopedPath([{ status: { operator: "=", values: ["1"] } }], 100)]: halCollection(
           1,
           [wpElement(1520, "Fix login redirect")],
         ),
@@ -234,7 +245,7 @@ describe("wp list filters", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([{ status: { operator: "=", values: ["5"] } }], 100)]: halCollection(
+        [scopedPath([{ status: { operator: "=", values: ["5"] } }], 100)]: halCollection(
           0,
           [],
         ),
@@ -258,7 +269,7 @@ describe("wp list filters", () => {
     installMockApi({
       packages: {
         ...endpoints,
-        [listPath([{ status: { operator: "=", values: ["1"] } }], 100)]: halCollection(
+        [scopedPath([{ status: { operator: "=", values: ["1"] } }], 100)]: halCollection(
           1,
           [wpElement(1521, "Refreshed result")],
         ),
@@ -334,7 +345,7 @@ describe("wp list filters", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([{ status: { operator: "o", values: [] } }], 100)]: halCollection(
+        [scopedPath([{ status: { operator: "o", values: [] } }], 100)]: halCollection(
           0,
           [],
         ),
@@ -350,7 +361,7 @@ describe("wp list filters", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([{ status: { operator: "c", values: [] } }], 100)]: halCollection(
+        [scopedPath([{ status: { operator: "c", values: [] } }], 100)]: halCollection(
           0,
           [],
         ),
@@ -367,7 +378,7 @@ describe("wp list filters", () => {
     await writeMetadataFile(cacheDir, baseMetadata());
     installMockApi({
       packages: {
-        [listPath([{ priority: { operator: "=", values: ["3", "4"] } }], 100)]: halCollection(
+        [scopedPath([{ priority: { operator: "=", values: ["3", "4"] } }], 100)]: halCollection(
           0,
           [],
         ),
@@ -394,7 +405,7 @@ describe("wp list filters", () => {
     );
     installMockApi({
       packages: {
-        [listPath([
+        [scopedPath([
           { updated_at: { operator: "<>d", values: [start, end] } },
         ], 100)]: halCollection(0, []),
       },
@@ -419,11 +430,13 @@ describe("wp list filters", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
+        // Resolving a parent by subject is resolution, not a listing:
+        // it stays instance-wide, while the listing itself is scoped.
         [listPath([{ subject: { operator: "=", values: ["Fix login"] } }], 100)]: halCollection(
           1,
           [wpElement(900, "Fix login")],
         ),
-        [listPath([{ parent: { operator: "=", values: ["900"] } }], 100)]: halCollection(
+        [scopedPath([{ parent: { operator: "=", values: ["900"] } }], 100)]: halCollection(
           0,
           [],
         ),
@@ -453,7 +466,7 @@ describe("wp list pagination and shapes", () => {
     );
     installMockApi({
       packages: {
-        [listPath([], 100)]: halCollection(340, elements),
+        [scopedPath([], 100)]: halCollection(340, elements),
       },
     });
     const result = await runWp(configDir, cacheDir, ["list"]);
@@ -469,7 +482,7 @@ describe("wp list pagination and shapes", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([], 2)]: halCollection(2, [
+        [scopedPath([], 2)]: halCollection(2, [
           wpElement(1, "First"),
           wpElement(2, "Second"),
         ]),
@@ -485,12 +498,12 @@ describe("wp list pagination and shapes", () => {
   test("--all fetches every page and never warns", async () => {
     const root = await makeTempRoom("wp-list-all-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
-    const filters = filtersParam([]);
+    const filters = filtersParam([PROJECT_13]);
     installMockApi({
       packages: {
-        [listPath([], 100)]: halCollection(3, [wpElement(1, "One"), wpElement(2, "Two")],
+        [scopedPath([], 100)]: halCollection(3, [wpElement(1, "One"), wpElement(2, "Two")],
           `/api/v3/work_packages?filters=${filters}&pageSize=100&offset=2`),
-        [listPath([], 100, "&offset=2")]: halCollection(3, [wpElement(3, "Three")]),
+        [scopedPath([], 100, "&offset=2")]: halCollection(3, [wpElement(3, "Three")]),
       },
     });
     const result = await runWp(configDir, cacheDir, ["list", "--all"]);
@@ -506,7 +519,7 @@ describe("wp list pagination and shapes", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([], 100)]: halCollection(2, [
+        [scopedPath([], 100)]: halCollection(2, [
           wpElement(1, "One"),
           wpElement(2, "Two"),
         ]),
@@ -532,7 +545,7 @@ describe("wp list pagination and shapes", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([], 100)]: halCollection(5, [wpElement(1, "One"), wpElement(2, "Two")]),
+        [scopedPath([], 100)]: halCollection(5, [wpElement(1, "One"), wpElement(2, "Two")]),
       },
     });
     const result = await runWp(configDir, cacheDir, ["list", "--json"]);
@@ -543,12 +556,12 @@ describe("wp list pagination and shapes", () => {
   test("--all --json streams NDJSON, one record per line", async () => {
     const root = await makeTempRoom("wp-list-ndjson-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
-    const filters = filtersParam([]);
+    const filters = filtersParam([PROJECT_13]);
     installMockApi({
       packages: {
-        [listPath([], 100)]: halCollection(3, [wpElement(1, "One"), wpElement(2, "Two")],
+        [scopedPath([], 100)]: halCollection(3, [wpElement(1, "One"), wpElement(2, "Two")],
           `/api/v3/work_packages?filters=${filters}&pageSize=100&offset=2`),
-        [listPath([], 100, "&offset=2")]: halCollection(3, [wpElement(3, "Three")]),
+        [scopedPath([], 100, "&offset=2")]: halCollection(3, [wpElement(3, "Three")]),
       },
     });
     const result = await runWp(configDir, cacheDir, ["list", "--all", "--json"]);
@@ -568,7 +581,7 @@ describe("wp count", () => {
     await writeMetadataFile(cacheDir, baseMetadata());
     installMockApi({
       packages: {
-        [listPath([
+        [scopedPath([
           { status: { operator: "=", values: ["5"] } },
           { priority: { operator: "=", values: ["3"] } },
         ], 1)]: halCollection(42, []),
@@ -591,11 +604,68 @@ describe("wp count", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     installMockApi({
       packages: {
-        [listPath([], 1)]: halCollection(7, []),
+        [scopedPath([], 1)]: halCollection(7, []),
       },
     });
     const result = await runWp(configDir, cacheDir, ["count"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("7\n");
+  });
+});
+
+describe("wp list and wp count project scope", () => {
+  test("a profile default project narrows the listing", async () => {
+    const root = await makeTempRoom("wp-list-default-project-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [scopedPath([], 100)]: halCollection(1, [wpElement(1520, "Fix login redirect")]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Fix login redirect");
+  });
+
+  test("--project overrides the profile default project", async () => {
+    const root = await makeTempRoom("wp-list-project-override-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [listPath([{ project: { operator: "=", values: ["33"] } }], 100)]:
+          halCollection(1, [wpElement(3204, "Scratch item")]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--project", "33"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Scratch item");
+  });
+
+  test("wp count asks for the project total, not the instance total", async () => {
+    const root = await makeTempRoom("wp-count-project-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [listPath([{ project: { operator: "=", values: ["33"] } }], 1)]:
+          halCollection(3, []),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["count", "--project", "33"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("3\n");
+  });
+
+  test("with no project in context the listing stays instance-wide", async () => {
+    const root = await makeTempRoom("wp-list-no-project-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [listPath([], 100)]: halCollection(1, [wpElement(1520, "Fix login redirect")]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Fix login redirect");
   });
 });
