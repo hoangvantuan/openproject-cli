@@ -18,7 +18,7 @@ and the tool turns names into ids itself. Run any command below with
   `time delete <id> --yes`, `project delete <reference> --yes`. They are
   irreversible; never work around a refused deletion through another route.
   There is no `user delete`; report that gap instead of improvising.
-- Four conventions are easy to guess wrong:
+- Five conventions are easy to guess wrong:
   - A project in context narrows what you read: `--project`, or the
     profile default, scopes `wp list`, `wp count`, `time list`, and
     `time report` to that project and its subprojects. Without one, those
@@ -26,8 +26,12 @@ and the tool turns names into ids itself. Run any command below with
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it.
   - `--all --json` streams NDJSON: one JSON record per line, not an array.
-  - `--fields id,subject` narrows any record the CLI reports, `wp create`
-    and `wp update` included; without it `--json` carries the whole record.
+  - `--fields id,subject` narrows single-record and collection-row
+    commands: `wp get`/`create`/`update`, `wp history`/`comments`/
+    `relations`, `time log`/`get`/`update`, `project get`/`create`/
+    `update`/`copy`/`member`. List and count commands print fixed
+    columns instead, and `wp create --stdin` refuses the flag; without
+    it `--json` carries the whole record.
   - A truncated list warns on stderr ("Showing X of Y records. Pass --all")
     while data stays on stdout and the exit code stays 0.
 
@@ -85,10 +89,12 @@ op-cli project copy <reference> Copy --identifier web-copy
 # add or remove project members; without membership, assignment is refused
 op-cli project member add <project> <user> <role>
 op-cli project member remove <project> <user>
-op-cli meta members
 # what a work package may use in a project
 op-cli project types <reference>
-# instance vocabulary; members, versions, categories, activities too
+# project vocabulary: members, versions, categories, activities, fields;
+# a project context is required: pass --project <id> or set a default
+# project on the profile (meta types, statuses, priorities are instance-wide)
+op-cli meta members --project <id>
 op-cli meta fields
 # something does not work: diagnose connectivity, credentials, versions
 op-cli doctor

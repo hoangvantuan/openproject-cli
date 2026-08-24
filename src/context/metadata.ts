@@ -655,7 +655,11 @@ export async function loadProjectVocabulary(
   profile: ActiveProfile,
 ): Promise<ProjectVocabulary> {
   if (profile.project === undefined) {
-    throw new OpCliError("USAGE_ERROR");
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "the lookup needs a project to read its vocabulary from.",
+      "pass --project <id> or set a default project on the profile.",
+    );
   }
   return loadProjectVocabularyById(env, profile, profile.project);
 }
