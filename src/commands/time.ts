@@ -3,7 +3,13 @@ import type { Command } from "commander";
 import { PAGED_JSON_HELP } from "../core/define.js";
 import { isoToHours, parseDuration } from "../core/duration.js";
 import { OpCliError, writeRefusal } from "../core/errors.js";
-import { filtersQuery, isoDate, sinceDate, type WpFilter } from "../core/filters.js";
+import {
+  filtersQuery,
+  isoDate,
+  sinceDate,
+  untilDate,
+  type WpFilter,
+} from "../core/filters.js";
 import {
   flattenHalRecord,
   formattableRaw,
@@ -187,12 +193,18 @@ function splitList(raws: ReadonlyArray<string>): Array<string> {
  * `project` leads when a project is in context: there is no
  * project-scoped time-entry collection to address instead, so the clause
  * is the only way `--project` reaches the query at all (#19).
+ *
+ * `from`/`to` bound `spent_on`, a pure date column: the API's `<>d`
+ * includes BOTH bound dates (verified against a live instance on
+ * 2026-08-24; the #24 half-open rule is a timestamp-column behaviour,
+ * not this one). An open end is spelled "".
  */
 function buildTimeFilters(
   project: number | undefined,
   wps: ReadonlyArray<string>,
   users: ReadonlyArray<string>,
   from: string | undefined,
+  to: string | undefined,
   now: Date,
 ): ReadonlyArray<WpFilter> {
   const filters: Array<WpFilter> = [];
@@ -206,14 +218,34 @@ function buildTimeFilters(
   if (users.length > 0) {
     filters.push({ name: "user_id", operator: "=", values: [...users] });
   }
-  if (from !== undefined) {
-    // Same date grammar as --updated-after on `wp list`, applied to
-    // spent_on instead, open upper bound included (#24).
-    const since = sinceDate(from, now);
+  if (from !== undefined && to !== undefined) {
+    const since = sinceDate(from, now, "--from");
+    const until = untilDate(to, now);
+    if (until < since) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `--to ${until} is before --from ${since}.`,
+        "pass the end of the period after its start.",
+      );
+    }
     filters.push({
       name: "spent_on",
       operator: "<>d",
+      values: [since, until],
+    });
+  } else if (from !== undefined) {
+    const since = sinceDate(from, now, "--from");
+    filters.push({
+      name: "spent_on",
+      operator: "<>d",
+      // The empty upper bound keeps the window open-ended.
       values: [since, ""],
+    });
+  } else if (to !== undefined) {
+    filters.push({
+      name: "spent_on",
+      operator: "<>d",
+      values: ["", untilDate(to, now)],
     });
   }
   return filters;
@@ -520,6 +552,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--wp <id>", "work package id; repeat or comma-separate to OR values", collectValue, [])
     .option("--user <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--from <date>", "today, yesterday, days back such as 7d, or YYYY-MM-DD")
+    .option("--to <date>", "close the period on this day, inclusive; same date forms")
     .option("--json", PAGED_JSON_HELP)
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")
@@ -529,6 +562,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       wp?: Array<string>;
       user?: Array<string>;
       from?: string;
+      to?: string;
       json?: boolean;
       limit?: string;
       all?: boolean;
@@ -551,6 +585,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         wps,
         users,
         options.from,
+        options.to,
         new Date(),
       );
       const limit = parsePageSize(options.limit);
@@ -751,6 +786,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--wp <id>", "work package id; repeat or comma-separate to OR values", collectValue, [])
     .option("--user <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--from <date>", "today, yesterday, days back such as 7d, or YYYY-MM-DD")
+    .option("--to <date>", "close the period on this day, inclusive; same date forms")
     .option("--json", "emit a flat JSON array of per-work-package groups")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <name-or-id>", "override the profile default project")
@@ -758,6 +794,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       wp?: Array<string>;
       user?: Array<string>;
       from?: string;
+      to?: string;
       json?: boolean;
       profile?: string;
       project?: string;
@@ -778,6 +815,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         wps,
         users,
         options.from,
+        options.to,
         new Date(),
       );
       // A total is only honest over the whole filtered set, so report

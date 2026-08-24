@@ -44,6 +44,7 @@ import {
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
+import { resolveProjectRef } from "../context/projectref.js";
 import {
   loadProjectVocabulary,
   loadStoredMetadata,
@@ -207,6 +208,8 @@ interface FilterFlagOptions {
   readonly priority?: Array<string>;
   readonly parent?: Array<string>;
   readonly updatedAfter?: string;
+  readonly createdAfter?: string;
+  readonly search?: string;
   readonly open?: boolean;
   readonly closed?: boolean;
   readonly profile?: string;
@@ -231,6 +234,11 @@ function addFilterFlags(command: Command): Command {
       "--updated-after <value>",
       "today, yesterday, days back such as 7d, or YYYY-MM-DD",
     )
+    .option(
+      "--created-after <value>",
+      "only work packages created since; same date forms as --updated-after",
+    )
+    .option("--search <text>", "substring matched against work package subjects")
     .option("--open", "shorthand for every open status")
     .option("--closed", "shorthand for every closed status")
     .option("--profile <name>", "use this profile for this command only")
@@ -248,6 +256,8 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     priorities: options.priority,
     parents: options.parent,
     updatedAfter: options.updatedAfter,
+    createdAfter: options.createdAfter,
+    search: options.search,
     open: options.open,
     closed: options.closed,
   };
@@ -1386,6 +1396,8 @@ async function resolveListFlags(
     priorities?: Array<string>;
     parents?: Array<string>;
     updatedAfter?: string;
+    createdAfter?: string;
+    search?: string;
   } = {};
   // The project in context scopes the listing itself, not just the
   // vocabularies resolved below; without it every listing is
@@ -1472,6 +1484,12 @@ async function resolveListFlags(
   }
   if (options.updatedAfter !== undefined && options.updatedAfter !== "") {
     flags.updatedAfter = options.updatedAfter;
+  }
+  if (options.createdAfter !== undefined && options.createdAfter !== "") {
+    flags.createdAfter = options.createdAfter;
+  }
+  if (options.search !== undefined && options.search !== "") {
+    flags.search = options.search;
   }
   return { ...flags, open: options.open, closed: options.closed };
 }
@@ -2225,6 +2243,89 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       }
       const updated = flattenHalRecord(response.body);
       renderRecord(runtime, options, updated);
+    });
+
+  // -------------------------------------------------------------------------
+  // wp move
+
+  wp.command("move")
+    .description("Move one work package to another project")
+    .argument("<id>")
+    .argument("<project>", "target project, by id, identifier, or name")
+    .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated columns to show")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <name-or-id>", "override the profile default project")
+    .action(async (
+      reference: string,
+      projectRef: string,
+      options: { json?: boolean; fields?: string; profile?: string; project?: string },
+    ) => {
+      runtime.setJsonMode(options.json === true);
+      requireWpId(reference);
+      const profile = await openProfile(runtime, options);
+      const target = await resolveProjectRef(
+        (query) => apiGet(profile.instanceUrl, profile.apiKey, query),
+        projectRef,
+      );
+      const path = `/api/v3/work_packages/${reference}`;
+      // The optimistic-locking read: the payload below carries its
+      // lockVersion, and the refusal path names the project it came from.
+      const before = await apiGet(profile.instanceUrl, profile.apiKey, path);
+      const flatBefore = flattenHalRecord(before);
+      // A bad --fields name is refused while the work package is still
+      // untouched.
+      selectedFields(options.fields, flatBefore);
+      const currentProjectId = isFlatLink(flatBefore.project)
+        ? flatBefore.project.id
+        : null;
+      if (currentProjectId === target.id) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `work package ${reference} is already in project ${target.name} (${String(target.id)}).`,
+          "pass a different project to move it to.",
+        );
+      }
+      const payload: Record<string, unknown> = {
+        lockVersion: lockVersionOf(before),
+        _links: { project: { href: `/api/v3/projects/${String(target.id)}` } },
+      };
+      let response = await patchWp(profile, reference, payload);
+      if (response.status === 409) {
+        // Same race rule as wp update, but project-centric: the generic
+        // checker skips `project` on purpose, so the comparison here is
+        // explicit. A concurrent edit elsewhere is absorbed by one retry
+        // with the fresh lockVersion; a concurrent move is never
+        // overwritten, and a move that already landed exactly where this
+        // one aimed is reported as done.
+        const after = await apiGet(profile.instanceUrl, profile.apiKey, path);
+        const flatAfter = flattenHalRecord(after);
+        const afterProjectId = isFlatLink(flatAfter.project)
+          ? flatAfter.project.id
+          : null;
+        if (afterProjectId === target.id) {
+          renderRecord(runtime, options, flatAfter);
+          return;
+        }
+        if (afterProjectId !== currentProjectId) {
+          throw new OpCliError(
+            "CONFLICT",
+            `the work package was moved while this move ran: it is now in project ${String(afterProjectId)}.`,
+            "read the current project, decide again, and repeat the move.",
+            { moved_to: afterProjectId },
+          );
+        }
+        payload.lockVersion = lockVersionOf(after);
+        response = await patchWp(profile, reference, payload);
+      }
+      if (response.status >= 400) {
+        // A move the instance refuses is usually a type the target
+        // project does not offer; writeRejection quotes the instance's
+        // own explanation.
+        throw writeRejection(response.status, response.body, "move");
+      }
+      const moved = flattenHalRecord(response.body);
+      renderRecord(runtime, options, moved);
     });
 
   // ---------------------------------------------------------------------------

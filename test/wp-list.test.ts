@@ -416,6 +416,49 @@ describe("wp list filters", () => {
     expect(result.stderr).toBe("");
   });
 
+  test("--search sends the substring to the API's contains operator", async () => {
+    const root = await makeTempRoom("wp-list-search-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [scopedPath([
+          { subject: { operator: "~", values: ["login"] } },
+        ], 100)]: halCollection(1, [wpElement(41, "Fix login redirect")]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--search", "login"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Fix login redirect");
+    expect(result.stderr).toBe("");
+  });
+
+  test("--search with only whitespace is refused before any traffic", async () => {
+    const root = await makeTempRoom("wp-list-search-empty-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({});
+    const result = await runWp(configDir, cacheDir, ["list", "--search", "   "]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--search needs text");
+  });
+
+  test("--created-after sends the same open-ended window on created_at", async () => {
+    const root = await makeTempRoom("wp-list-created-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    const now = new Date();
+    const start = localIsoDate(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - 3),
+    );
+    installMockApi({
+      packages: {
+        [scopedPath([
+          { created_at: { operator: "<>d", values: [start, ""] } },
+        ], 100)]: halCollection(0, []),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--created-after", "3d"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+  });
   test("a project-scoped name without a project context exits 1", async () => {
     const root = await makeTempRoom("wp-list-noproject-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);

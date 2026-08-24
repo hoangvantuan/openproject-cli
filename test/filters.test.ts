@@ -5,6 +5,7 @@ import {
   buildWpFilters,
   filtersQuery,
   sinceDate,
+  untilDate,
   type WpListFlags,
 } from "../src/core/filters.js";
 
@@ -190,6 +191,34 @@ describe("buildWpFilters", () => {
       buildWpFilters({ updatedAfter: "2026-08-24" }, NOW),
     ).toThrow(/in the future/);
   });
+
+  test("search becomes a subject contains clause", () => {
+    expect(buildWpFilters({ search: "login" }, NOW)).toEqual([
+      { name: "subject", operator: "~", values: ["login"] },
+    ]);
+  });
+
+  test("search of only whitespace is refused", () => {
+    const caught = catchUsage(() => buildWpFilters({ search: "  " }, NOW));
+    expect(caught?.code).toBe("USAGE_ERROR");
+    expect(caught?.message).toContain("--search needs text");
+  });
+
+  test("createdAfter opens an open-ended window on created_at", () => {
+    expect(buildWpFilters({ createdAfter: "7d" }, NOW)).toEqual([
+      { name: "created_at", operator: "<>d", values: ["2026-08-16", ""] },
+    ]);
+  });
+
+  test("createdAfter names its own flag when refusing input", () => {
+    const caught = catchUsage(() =>
+      buildWpFilters({ createdAfter: "2026-08-24" }, NOW),
+    );
+    expect(caught?.hint).toContain("--created-after");
+    expect(catchUsage(() =>
+      buildWpFilters({ createdAfter: "soon" }, NOW),
+    )?.hint).toContain("--created-after accepts");
+  });
 });
 
 describe("sinceDate", () => {
@@ -207,6 +236,28 @@ describe("sinceDate", () => {
   test("month and year boundaries roll back correctly", () => {
     const march = new Date(2026, 2, 3, 8, 0, 0);
     expect(sinceDate("3d", march)).toBe("2026-02-28");
+  });
+});
+
+describe("untilDate", () => {
+  test.each([
+    ["today", "2026-08-23"],
+    ["yesterday", "2026-08-22"],
+    ["7d", "2026-08-16"],
+    ["2026-08-01", "2026-08-01"],
+  ])("%s -> %s", (raw, end) => {
+    expect(untilDate(raw, NOW)).toBe(end);
+  });
+
+  test("a future explicit date is let through: a period may be partly ahead", () => {
+    expect(untilDate("2026-09-30", NOW)).toBe("2026-09-30");
+  });
+
+  test("tokens it cannot read are refused with the flag named", () => {
+    const caught = catchUsage(() => untilDate("next week", NOW));
+    expect(caught?.code).toBe("USAGE_ERROR");
+    expect(caught?.message).toContain("cannot read \"next week\" as a to value");
+    expect(caught?.hint).toContain("--to accepts");
   });
 });
 

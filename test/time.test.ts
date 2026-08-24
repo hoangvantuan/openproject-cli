@@ -760,6 +760,69 @@ describe("time list", () => {
     expect(result.stdout).toContain("Fix login redirect");
   });
 
+  test("--from with --to closes the period on the closing day, inclusive", async () => {
+    const root = await makeTempRoom("time-list-to-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const now = new Date();
+    const yesterday = localIsoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+    installMockApi({
+      packages: {
+        [entryPath([
+          { spent_on: { operator: "<>d", values: [yesterday, yesterday] } },
+        ], 100)]: halCollection(1, [
+          timeEntryElement(3011, 675, "Boundary day entry", "PT1H"),
+        ]),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "list",
+      "--from",
+      "yesterday",
+      "--to",
+      "yesterday",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Boundary day entry");
+  });
+
+  test("--to alone bounds only the upper end", async () => {
+    const root = await makeTempRoom("time-list-to-only-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const now = new Date();
+    const lastWeek = localIsoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7));
+    installMockApi({
+      packages: {
+        [entryPath([
+          { spent_on: { operator: "<>d", values: ["", lastWeek] } },
+        ], 100)]: halCollection(1, [
+          timeEntryElement(3012, 675, "Older than the bound", "PT2H"),
+        ]),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "list",
+      "--to",
+      lastWeek,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Older than the bound");
+  });
+
+  test("--to before --from is refused before any traffic", async () => {
+    const root = await makeTempRoom("time-list-to-inverted-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({});
+    const result = await runTime(configDir, cacheDir, [
+      "list",
+      "--from",
+      "2026-08-10",
+      "--to",
+      "2026-08-01",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--to 2026-08-01 is before --from 2026-08-10");
+  });
+
   test("a larger total warns about truncation on stderr and still exits 0", async () => {
     const root = await makeTempRoom("time-list-truncated-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);

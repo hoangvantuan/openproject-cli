@@ -35,6 +35,9 @@ export interface WpListFlags {
   readonly priorities?: ReadonlyArray<string> | undefined;
   readonly parents?: ReadonlyArray<string> | undefined;
   readonly updatedAfter?: string | undefined;
+  /** Substring matched against subjects through the API's `~` operator. */
+  readonly search?: string | undefined;
+  readonly createdAfter?: string | undefined;
 }
 
 const DATE_FORMS = "today, yesterday, a number of days such as 7d, or an explicit YYYY-MM-DD date";
@@ -69,17 +72,14 @@ function daysAgo(now: Date, days: number): Date {
 }
 
 /**
- * Turn the raw `--updated-after` input into the local date the window
- * opens at: today, yesterday, N days ago, or an explicit date. The
- * upper bound is deliberately left open (#24): the API reads a closed
- * one as the start of that day, so every change made during the
- * closing day would drop out. Callers emit `<>d [date, ""]`.
+ * The shared grammar of every window date flag: today, yesterday, N
+ * days back, or an explicit date, all in local time. `flag` names the
+ * flag in the error messages.
  */
-export function sinceDate(raw: string, now: Date): string {
+function parseWindowDate(raw: string, now: Date, flag: string): string {
   const token = raw.trim().toLowerCase();
-  const today = isoDate(now);
   if (token === "today") {
-    return today;
+    return isoDate(now);
   }
   if (token === "yesterday") {
     return isoDate(daysAgo(now, 1));
@@ -96,23 +96,45 @@ export function sinceDate(raw: string, now: Date): string {
       throw new OpCliError(
         "USAGE_ERROR",
         `"${raw}" is not a real date.`,
-        `--updated-after accepts ${DATE_FORMS}.`,
-      );
-    }
-    if (token > today) {
-      throw new OpCliError(
-        "USAGE_ERROR",
-        `"${raw}" is in the future.`,
-        "--updated-after needs a date up to today.",
+        `${flag} accepts ${DATE_FORMS}.`,
       );
     }
     return token;
   }
   throw new OpCliError(
     "USAGE_ERROR",
-    `cannot read "${raw}" as an updated-after value.`,
-    `--updated-after accepts ${DATE_FORMS}.`,
+    `cannot read "${raw}" as a ${flag.slice(2)} value.`,
+    `${flag} accepts ${DATE_FORMS}.`,
   );
+}
+
+/**
+ * The date a window opens at. The future check keeps the opening
+ * anchored in the past (#24 grammar).
+ */
+export function sinceDate(
+  raw: string,
+  now: Date,
+  flag = "--updated-after",
+): string {
+  const token = parseWindowDate(raw, now, flag);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(token) && token > isoDate(now)) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `"${raw}" is in the future.`,
+      `${flag} needs a date up to today.`,
+    );
+  }
+  return token;
+}
+
+/**
+ * The `--to` input of `time list` / `time report`. Same grammar, but a
+ * future end is let through: a period such as `--from 2026-08-01 --to
+ * 2026-08-31` stays valid while only part of it has happened.
+ */
+export function untilDate(raw: string, now: Date, flag = "--to"): string {
+  return parseWindowDate(raw, now, flag);
 }
 
 function unique(values: ReadonlyArray<string>): Array<string> {
@@ -179,6 +201,27 @@ export function buildWpFilters(
   }
   if ((flags.parents ?? []).length > 0) {
     filters.push({ name: "parent", operator: "=", values: unique(flags.parents!) });
+  }
+  if (flags.search !== undefined) {
+    if (flags.search.trim() === "") {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "--search needs text to match against subjects.",
+        "pass a substring, e.g. --search login.",
+      );
+    }
+    // The only substring clause: `~` is the API's contains operator,
+    // matched server-side so case and diacritics follow the instance.
+    filters.push({ name: "subject", operator: "~", values: [flags.search.trim()] });
+  }
+  if (flags.createdAfter !== undefined) {
+    const since = sinceDate(flags.createdAfter, now, "--created-after");
+    filters.push({
+      name: "created_at",
+      operator: "<>d",
+      // Open upper bound, same reason as updated_at (#24).
+      values: [since, ""],
+    });
   }
   if (flags.updatedAfter !== undefined) {
     const since = sinceDate(flags.updatedAfter, now);
