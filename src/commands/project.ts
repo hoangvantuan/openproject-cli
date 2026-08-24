@@ -5,7 +5,7 @@ import { formatCell, renderTable } from "../output/table.js";
 import { OpCliError } from "../core/errors.js";
 import { filtersQuery, type WpFilter } from "../core/filters.js";
 import { emitRows, type CollectionColumn, type CollectionRuntime } from "../core/define.js";
-import { flattenHalRecord } from "../core/hal.js";
+import { flattenHalRecord, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
   apiGet,
@@ -507,7 +507,7 @@ export function registerProjectCommands(
       });
       const payload: Record<string, unknown> = { name, identifier };
       if (options.description !== undefined) {
-        payload.description = options.description;
+        payload.description = toFormattable(options.description);
       }
       if (options.public === true) {
         payload.public = true;
@@ -570,7 +570,7 @@ export function registerProjectCommands(
         payload.name = options.name;
       }
       if (options.description !== undefined) {
-        payload.description = options.description;
+        payload.description = toFormattable(options.description);
       }
       if (isPublic !== undefined) {
         payload.public = isPublic;

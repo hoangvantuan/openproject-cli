@@ -3,7 +3,13 @@ import type { Command } from "commander";
 import { isoToHours, parseDuration } from "../core/duration.js";
 import { OpCliError } from "../core/errors.js";
 import { filtersQuery, isoDate, updatedAtRange, type WpFilter } from "../core/filters.js";
-import { flattenHalRecord, isFlatLink, type FlatLink } from "../core/hal.js";
+import {
+  flattenHalRecord,
+  formattableRaw,
+  isFlatLink,
+  toFormattable,
+  type FlatLink,
+} from "../core/hal.js";
 import {
   apiDelete,
   apiGet,
@@ -83,7 +89,7 @@ function timeEntryRecord(element: unknown): Record<string, unknown> {
     user: (flat.user as FlatLink | undefined) ?? null,
     activity: (flat.activity as FlatLink | undefined) ?? null,
     project: (flat.project as FlatLink | undefined) ?? null,
-    comment: typeof flat.comment === "string" ? flat.comment : null,
+    comment: formattableRaw(flat.comment),
   };
 }
 
@@ -662,7 +668,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         payload.spentOn = spentOn;
       }
       if (options.comment !== undefined) {
-        payload.comment = options.comment;
+        payload.comment = toFormattable(options.comment);
       }
       if (options.activity !== undefined) {
         // The activity vocabulary hangs off the project the entry's own

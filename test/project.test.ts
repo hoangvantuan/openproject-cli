@@ -415,6 +415,9 @@ describe("project create", () => {
     expect(sent["name"]).toBe("New Project");
     expect(sent["identifier"]).toBe("new-project");
     expect(sent["public"]).toBe(true);
+    // description is Formattable: the API accepts a bare string, ignores
+    // it, and reports success, so the object form is the regression.
+    expect(sent["description"]).toEqual({ raw: "Fresh workspace." });
     const links = sent["_links"] as Record<string, { href: string }>;
     expect(links["parent"]?.href).toBe("/api/v3/projects/13");
   });
@@ -457,6 +460,36 @@ describe("project update", () => {
     expect(result.stdout).toContain("Demo Site Renamed");
     const sent = JSON.parse(api.writes[0]?.body ?? "{}") as Record<string, unknown>;
     expect(sent["name"]).toBe("Demo Site Renamed");
+  });
+
+  test("--description travels as a Formattable object and reads back", async () => {
+    const root = await makeTempRoom("project-update-description-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const stored = {
+      ...projectElement(21, "demo-site", "Demo Site"),
+      description: { format: "markdown", raw: "Mo ta **moi**" },
+    };
+    const api = installMockApi({
+      gets: { "/api/v3/projects/21": projectElement(21, "demo-site", "Demo Site") },
+      writes: [
+        { path: "/api/v3/projects/21", method: "PATCH", status: 200, body: stored },
+      ],
+    });
+    const result = await runProject(configDir, cacheDir, [
+      "update",
+      "21",
+      "--description",
+      "Mo ta **moi**",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const sent = JSON.parse(api.writes[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(sent["description"]).toEqual({ raw: "Mo ta **moi**" });
+    const record = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
+    expect(record["description"]).toEqual({
+      format: "markdown",
+      raw: "Mo ta **moi**",
+    });
   });
 
   test("without any change exits 1 before any request", async () => {

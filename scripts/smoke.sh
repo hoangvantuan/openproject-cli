@@ -70,14 +70,21 @@ if [ "$DRY" = "1" ]; then
 fi
 
 json_field() {
-  # Read JSON from stdin, print one top-level field, or fail loudly.
+  # Read JSON from stdin, print one field, or fail loudly. A dotted path
+  # walks into a nested object, so a Formattable field is read as
+  # "description.raw".
   # CAUTION: $1 is interpolated straight into the JavaScript literal below;
   # only call this helper with fixed literals from this script, never with
   # data read from the instance or the environment.
   node -e '
     const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
-    const value = data[process.argv[1]];
-    if (value === undefined) {
+    let value = data;
+    for (const step of process.argv[1].split(".")) {
+      value = value === null || typeof value !== "object"
+        ? undefined
+        : value[step];
+    }
+    if (value === undefined || value === null) {
       console.error("smoke: JSON record carries no '"$1"' field");
       process.exit(3);
     }
@@ -104,9 +111,18 @@ SCRATCH_IDENT="op-cli-smoke-$STAMP"
 
 # --- Project create --------------------------------------------------------
 
-step "create scratch project '$SCRATCH_IDENT'"
-PROJ_JSON="$($BIN project create "op-cli smoke $STAMP" --identifier "$SCRATCH_IDENT" --json)"
+step "create scratch project '$SCRATCH_IDENT' with a description"
+PROJ_DESC="smoke description **A**"
+PROJ_JSON="$($BIN project create "op-cli smoke $STAMP" --identifier "$SCRATCH_IDENT" \
+  --description "$PROJ_DESC" --json)"
 PROJ_ID="$(printf '%s' "$PROJ_JSON" | json_field id)"
+# description is Formattable: a plain-string payload is accepted, ignored,
+# and reported as success, so only an echo-back can see the difference.
+GOT_DESC="$(printf '%s' "$PROJ_JSON" | json_field description.raw)"
+if [ "$DRY" != "1" ] && [ "$GOT_DESC" != "$PROJ_DESC" ]; then
+  echo "smoke: project create echoed description '$GOT_DESC' instead of '$PROJ_DESC'" >&2
+  false
+fi
 
 # --- Work package create ----------------------------------------------------
 
@@ -143,6 +159,19 @@ ACT_NAME="$(node -e '
 step "log 1h30m on work package $WP_ID (activity '$ACT_NAME')"
 ENTRY_JSON="$($BIN time log "$WP_ID" --hours 1h30m --activity "$ACT_NAME" --json)"
 ENTRY_ID="$(printf '%s' "$ENTRY_JSON" | json_field id)"
+
+# --- Time entry update ------------------------------------------------------
+# comment is Formattable like a project description; the echo-back is the
+# only way to see a payload the API accepts and then ignores.
+
+step "update the comment of time entry $ENTRY_ID"
+ENTRY_COMMENT="smoke comment **B**"
+UPDATED_ENTRY_JSON="$($BIN time update "$ENTRY_ID" --comment "$ENTRY_COMMENT" --json)"
+GOT_COMMENT="$(printf '%s' "$UPDATED_ENTRY_JSON" | json_field comment)"
+if [ "$DRY" != "1" ] && [ "$GOT_COMMENT" != "$ENTRY_COMMENT" ]; then
+  echo "smoke: time update echoed comment '$GOT_COMMENT' instead of '$ENTRY_COMMENT'" >&2
+  false
+fi
 
 # --- Regression paths only reachable against a live API ---------------------
 # time list --wp builds the entity_type/entity_id filter pair; --updated-after
