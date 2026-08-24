@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { run } from "../src/run.js";
 import {
   baseMetadata,
+  CUSTOM_OPTIONS_HREF,
   customFieldKey,
   customFieldsFromSchema,
   INSTANCE,
@@ -61,7 +62,21 @@ async function writeSingleProfile(
 const WP_PATH = "/api/v3/work_packages/675";
 
 const PROJECT_VOCABULARY = projectVocabulary({
-  "2": customFieldsFromSchema(schemaFragment([{ index: 11, name: "Formula" }])),
+  "2": customFieldsFromSchema(schemaFragment([
+    { index: 11, name: "Formula" },
+    {
+      index: 6,
+      name: "Bug Type",
+      kind: "CustomOption",
+      options: [{ id: 4, name: "Logic/Code" }, { id: 5, name: "Lack specs" }],
+    },
+    {
+      index: 21,
+      name: "Bug Labels",
+      kind: "[]CustomOption",
+      options: [{ id: 30, name: "Medium" }, { id: 31, name: "Blocker" }],
+    },
+  ])),
 });
 
 function scopedMetadata(): Record<string, unknown> {
@@ -79,16 +94,30 @@ async function writeMetadataFile(
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "metadata.json"), JSON.stringify(metadata));
 }
-
 /** One stored work package in state `state`; `lockVersion` drives races. */
 function wpRecord(
   lockVersion: number,
-  state: "open" | "closed-by-b" | "field-touched-by-b",
+  state:
+    | "open"
+    | "closed-by-b"
+    | "field-touched-by-b"
+    | "option-touched-by-b"
+    | "labels-touched-by-b",
 ): Record<string, unknown> {
   const status = state === "closed-by-b"
     ? { href: "/api/v3/statuses/3", title: "Closed by B" }
     : { href: "/api/v3/statuses/1", title: "In progress" };
   const formula = state === "field-touched-by-b" ? "8" : "2";
+  // A list field's value lives under _links like any other resource, so
+  // that is also where a colleague's edit to it shows up.
+  const option = state === "option-touched-by-b"
+    ? { href: `${CUSTOM_OPTIONS_HREF}5`, title: "Lack specs" }
+    : { href: `${CUSTOM_OPTIONS_HREF}4`, title: "Logic/Code" };
+  // A multi-valued field carries one link per value, so an edit means a
+  // different set of hrefs, not a different single one.
+  const labels = state === "labels-touched-by-b"
+    ? [{ href: `${CUSTOM_OPTIONS_HREF}31`, title: "Blocker" }]
+    : [{ href: `${CUSTOM_OPTIONS_HREF}30`, title: "Medium" }];
   return {
     _type: "WorkPackage",
     id: 675,
@@ -102,6 +131,8 @@ function wpRecord(
       type: { href: "/api/v3/types/2", title: "Task" },
       status,
       priority: { href: "/api/v3/priorities/3", title: "High" },
+      [customFieldKey(6)]: option,
+      [customFieldKey(21)]: labels,
     },
   };
 }
@@ -209,6 +240,63 @@ describe("wp update", () => {
     const links = patchBodies[0]?._links as Record<string, { href: string }>;
     expect(links.status.href).toBe("/api/v3/statuses/5");
     expect(patchBodies[0]?.[customFieldKey(11)]).toBe("7");
+  });
+
+  test("a list field is patched as an href where its option lives", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "option-touched-by-b") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--field",
+      "Bug Type=Lack specs",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = patchBodies[0]?._links as Record<string, unknown>;
+    expect(links[customFieldKey(6)]).toEqual({ href: `${CUSTOM_OPTIONS_HREF}5` });
+    expect(patchBodies[0]).not.toHaveProperty(customFieldKey(6));
+  });
+
+  test("a list field somebody else moved stops the update with exit 5", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    // Actor B set Bug Type between the two reads; the agent writes the
+    // same field, so the conflict is real and never overwritten.
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open"), wpRecord(2, "option-touched-by-b")],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--field",
+      "Bug Type=Logic/Code",
+    ]);
+    expect(result.exitCode).toBe(5);
+    expect(result.stderr).toContain(customFieldKey(6));
+    expect(patchBodies).toHaveLength(1);
+  });
+
+  test("a multi-valued list field somebody else moved stops the update with exit 5", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    // Actor B swapped Bug Labels between the two reads; the href set of
+    // a multi-valued field is as much a colleague's edit as a single one.
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open"), wpRecord(2, "labels-touched-by-b")],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--field",
+      "Bug Labels=Medium",
+    ]);
+    expect(result.exitCode).toBe(5);
+    expect(result.stderr).toContain(customFieldKey(21));
+    expect(patchBodies).toHaveLength(1);
   });
 
   test("a pure race succeeds after exactly one retry", async () => {

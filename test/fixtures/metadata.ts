@@ -7,14 +7,34 @@ export function customFieldKey(index: number): string {
   return `customField${String(index)}`;
 }
 
+export interface CustomFieldOption {
+  readonly id: number;
+  readonly name: string;
+}
+
 export interface CustomFieldSpec {
   readonly index: number;
   readonly name: string;
-  /** Schema type; anything beyond Boolean/User passes through as text. */
-  readonly kind?: "Boolean" | "User";
+  /**
+   * Schema type; anything beyond Boolean/User/CustomOption passes through
+   * as text. The "[]" prefix is how the instance spells a multi-valued
+   * field.
+   */
+  readonly kind?: "Boolean" | "User" | "CustomOption" | "[]CustomOption";
+  /** Selectable values of a list field, as the create form embeds them. */
+  readonly options?: ReadonlyArray<CustomFieldOption>;
+  /** The schema marks the field required. */
+  readonly required?: boolean;
 }
 
-/** A work-package schema fragment shaped like the instance's form schemas. */
+export const CUSTOM_OPTIONS_HREF = "/api/v3/custom_options/";
+
+/**
+ * A work-package schema fragment shaped like the instance's create form:
+ * a list field carries its options as full CustomOption resources under
+ * _embedded.allowedValues and as bare links under _links.allowedValues,
+ * exactly the two shapes the store reads.
+ */
 export function schemaFragment(
   fields: ReadonlyArray<CustomFieldSpec>,
 ): Record<string, Record<string, unknown>> {
@@ -23,8 +43,28 @@ export function schemaFragment(
       customFieldKey(field.index),
       {
         writable: true,
-        name: field.name,
         ...(field.kind === undefined ? {} : { type: field.kind }),
+        name: field.name,
+        ...(field.required === undefined ? {} : { required: field.required }),
+        ...(field.options === undefined ? {} : {
+          location: "_links",
+          _embedded: {
+            allowedValues: field.options.map((option) => ({
+              _type: "CustomOption",
+              id: option.id,
+              value: option.name,
+              _links: {
+                self: { href: `${CUSTOM_OPTIONS_HREF}${String(option.id)}` },
+              },
+            })),
+          },
+          _links: {
+            allowedValues: field.options.map((option) => ({
+              href: `${CUSTOM_OPTIONS_HREF}${String(option.id)}`,
+              title: option.name,
+            })),
+          },
+        }),
       },
     ]),
   );
@@ -36,13 +76,32 @@ export function customFieldsFromSchema(
 ): Array<StoredCustomField> {
   return Object.entries(schema)
     .filter(([key]) => /^customField\d+$/.test(key))
-    .map(([key, property]) => ({
-      key,
-      id: Number(key.slice("customField".length)),
-      name: typeof property.name === "string" ? property.name : "",
-      ...(property.type === "Boolean" ? { is_boolean: true as const } : {}),
-      ...(property.type === "User" ? { is_user: true as const } : {}),
-    }));
+    .map(([key, property]) => {
+      const kind = typeof property.type === "string" ? property.type : "";
+      const embedded = (property._embedded ?? {}) as {
+        allowedValues?: ReadonlyArray<{ id: number; value: string }>;
+      };
+      const options = (embedded.allowedValues ?? []).map((option) => ({
+        id: option.id,
+        name: option.value,
+      }));
+      const isList = kind.replace(/^\[\]/, "") === "CustomOption";
+      return {
+        key,
+        id: Number(key.slice("customField".length)),
+        name: typeof property.name === "string" ? property.name : "",
+        // A list field keeps its options with their ids; every other kind
+        // keeps only the names the schema listed.
+        ...(!isList && options.length > 0
+          ? { allowed_values: options.map((option) => option.name) }
+          : {}),
+        ...(kind === "Boolean" ? { is_boolean: true as const } : {}),
+        ...(kind === "User" ? { is_user: true as const } : {}),
+        ...(isList ? { is_list: true as const, allowed_options: options } : {}),
+        ...(property.required === true ? { is_required: true as const } : {}),
+        ...(kind.startsWith("[]") ? { is_multi: true as const } : {}),
+      };
+    });
 }
 
 export interface BaseMetadataOptions {

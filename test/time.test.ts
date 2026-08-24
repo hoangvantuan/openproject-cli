@@ -230,7 +230,12 @@ function timeEntryElement(
     id,
     hours: hoursIso,
     spentOn: overrides?.spentOn ?? "2026-08-21",
-    comment: overrides?.comment ?? "pairing session",
+    // The API models comment as Formattable, never as a bare string.
+    comment: {
+      format: "markdown",
+      raw: overrides?.comment ?? "pairing session",
+      html: `<p>${overrides?.comment ?? "pairing session"}</p>`,
+    },
     createdOn: "2026-08-21T18:00:00Z",
     _links: {
       self: { href: `/api/v3/time_entries/${String(id)}` },
@@ -703,6 +708,34 @@ describe("time get", () => {
     expect(JSON.stringify(record)).not.toContain("_links");
   });
 
+  test("the comment reads back as the markdown behind the Formattable", async () => {
+    const root = await makeTempRoom("time-get-comment-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        "/api/v3/time_entries/3001": timeEntryElement(
+          3001,
+          675,
+          "Fix login redirect",
+          "PT1H30M",
+          { comment: "sua tu CLI" },
+        ),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "get",
+      "3001",
+      "--fields",
+      "id,hours,comment",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("sua tu CLI");
+
+    const jsonResult = await runTime(configDir, cacheDir, ["get", "3001", "--json"]);
+    const record = JSON.parse(jsonResult.stdout) as Record<string, unknown>;
+    expect(record.comment).toBe("sua tu CLI");
+  });
+
   test("a non-id reference is refused as usage", async () => {
     const root = await makeTempRoom("time-get-bad-ref-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
@@ -809,7 +842,7 @@ describe("time update", () => {
       {
         hours: "PT2H",
         spentOn: "2026-08-20",
-        comment: "reworked after review",
+        comment: { raw: "reworked after review" },
         _links: { activity: { href: "/api/v3/time_entries/activities/1" } },
       },
     ]);

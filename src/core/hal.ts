@@ -90,4 +90,29 @@ export function flattenHalRecord(
   return flat;
 }
 
+/**
+ * The write form of a Formattable field. API v3 models `description` and
+ * `comment` as `{ raw, format }`: a bare string is accepted, silently
+ * ignored, and reported as success, so every write goes through here.
+ */
+export function toFormattable(value: string): { readonly raw: string } {
+  return { raw: value };
+}
+
+/**
+ * The markdown behind a Formattable field as it arrives: the `raw` of the
+ * object the API returns, the string itself when an instance answers with
+ * one, null when the field carries nothing.
+ */
+export function formattableRaw(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const raw = (value as Record<string, unknown>).raw;
+  return typeof raw === "string" ? raw : null;
+}
+
 export { isFlatLink };

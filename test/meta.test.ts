@@ -64,6 +64,11 @@ interface InstallOptions {
   readonly activities?: Record<number, { readonly allowedValues: unknown[] }>;
   readonly projectTypes?: Record<number, unknown[]>;
   readonly schemas?: Record<string, Record<string, unknown>>;
+  /**
+   * Create-form schemas keyed "<projectId>-<typeId>": the only endpoint
+   * that fills a list field's allowed values.
+   */
+  readonly forms?: Record<string, Record<string, unknown>>;
 }
 function membership(
   membershipId: number,
@@ -255,6 +260,26 @@ function installMockApi(options: InstallOptions): MockAgent {
         method: "GET",
       })
       .reply(200, schema)
+      .persist();
+  }
+  for (const [key, schema] of Object.entries(options.forms ?? {})) {
+    const [projectId, typeId] = key.split("-");
+    pool
+      .intercept({
+        path: `/api/v3/projects/${String(projectId)}/work_packages/form`,
+        method: "POST",
+        body: (raw: unknown) => {
+          try {
+            const payload = JSON.parse(String(raw)) as {
+              _links?: { type?: { href?: string } };
+            };
+            return payload._links?.type?.href === `/api/v3/types/${String(typeId)}`;
+          } catch {
+            return false;
+          }
+        },
+      })
+      .reply(200, { _type: "Form", _embedded: { schema } })
       .persist();
   }
   return mockAgent;
@@ -1097,6 +1122,130 @@ describe("meta project vocabulary", () => {
       );
     }
     expect(rows).toHaveLength(cases.length);
+  });
+
+  test("a list field takes its allowed values from the create form", async () => {
+    const root = await makeTempRoom("op-cli-meta-listfield-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    // The bare schema names the field and says where its value lives, but
+    // never which values are allowed; only the form carries them.
+    const bareSchema: Record<string, unknown> = {
+      _type: "Schema",
+      customField6: {
+        type: "CustomOption",
+        name: "Bug Type",
+        required: true,
+        writable: true,
+        location: "_links",
+        _links: {},
+      },
+    };
+    const formSchema: Record<string, unknown> = {
+      _type: "Schema",
+      customField6: {
+        type: "CustomOption",
+        name: "Bug Type",
+        required: true,
+        writable: true,
+        location: "_links",
+        _embedded: {
+          allowedValues: [
+            {
+              _type: "CustomOption",
+              id: 4,
+              value: "Logic/Code",
+              _links: { self: { href: "/api/v3/custom_options/4" } },
+            },
+            {
+              _type: "CustomOption",
+              id: 5,
+              value: "Lack specs",
+              _links: { self: { href: "/api/v3/custom_options/5" } },
+            },
+          ],
+        },
+      },
+    };
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { 13: { allowedValues: [] } },
+      projectTypes: { 13: [{ _type: "Type", id: 7, name: "Bug", isMilestone: false }] },
+      schemas: { "13-7": bareSchema },
+      forms: { "13-7": formSchema },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const table = await run(["meta", "fields"], env, {});
+    const json = await run(["meta", "fields", "--json"], env, {});
+
+    expect(table.exitCode).toBe(0);
+    expect(table.stdout).toContain("Logic/Code, Lack specs");
+    const rows = JSON.parse(json.stdout) as Array<Record<string, unknown>>;
+    expect(rows).toEqual([
+      {
+        key: "customField6",
+        id: 6,
+        name: "Bug Type",
+        is_list: true,
+        is_required: true,
+        allowed_options: [
+          { id: 4, name: "Logic/Code" },
+          { id: 5, name: "Lack specs" },
+        ],
+      },
+    ]);
+  });
+
+  test("a form the caller may not open falls back to the bare schema", async () => {
+    const root = await makeTempRoom("op-cli-meta-formless-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    // No form endpoint installed: the request fails, and the refresh still
+    // records every field it can read from the schema.
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { 13: { allowedValues: [] } },
+      projectTypes: { 13: [{ _type: "Type", id: 7, name: "Bug", isMilestone: false }] },
+      schemas: {
+        "13-7": {
+          _type: "Schema",
+          customField6: {
+            type: "CustomOption",
+            name: "Bug Type",
+            writable: true,
+            required: true,
+            location: "_links",
+            _links: {
+              allowedValues: [
+                { href: "/api/v3/custom_options/4", title: "Logic/Code" },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const json = await run(["meta", "fields", "--json"], env, {});
+    expect(json.exitCode).toBe(0);
+    const rows = JSON.parse(json.stdout) as Array<Record<string, unknown>>;
+    expect(rows).toEqual([
+      {
+        key: "customField6",
+        id: 6,
+        name: "Bug Type",
+        is_list: true,
+        is_required: true,
+        allowed_options: [{ id: 4, name: "Logic/Code" }],
+      },
+    ]);
   });
 
   test("env-driven runs keep their project vocabulary under the env key", async () => {
