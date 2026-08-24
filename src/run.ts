@@ -3,11 +3,12 @@ import {
   removeProfile,
   requireStoredName,
   resolveProfile,
-  parseOptionalId,
+  parseProjectOverride,
   saveProfile,
   setActiveProfile,
   LOGIN_PROFILE,
 } from "./context/profile.js";
+import { resolveProjectOverride } from "./context/projectref.js";
 import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
 import { usageErrorFrom } from "./core/usage.js";
 import { authenticate, bindRequestTimeout } from "./core/http.js";
@@ -86,7 +87,7 @@ export async function run(
       "--profile <name>",
       'profile to create or update, defaults to "default"',
     )
-    .option("--project <id>", "default project stored on the profile")
+    .option("--project <name-or-id>", "default project stored on the profile")
     .action(async (options: { profile?: string; project?: string }) => {
       if (!io.prompt || io.stdinIsTTY !== true) {
         throw new OpCliError(
@@ -95,6 +96,8 @@ export async function run(
           "set OPENPROJECT_URL and OPENPROJECT_API_KEY in the environment for non-interactive use.",
         );
       }
+      // Flag misuse is refused before the interactive prompt starts.
+      const projectRef = parseProjectOverride(options.project);
 
       const enteredUrl = await io.prompt("Instance URL: ", false);
       const apiKey = await io.prompt("API key: ", true);
@@ -109,8 +112,11 @@ export async function run(
       }
       const instanceUrl = parsedUrl.toString().replace(/\/+$/, "");
       const profileName = options.profile ?? LOGIN_PROFILE;
-      const project = parseOptionalId(options.project);
       const user = await authenticate(instanceUrl, apiKey);
+      let project = projectRef;
+      if (typeof project === "string") {
+        project = await resolveProjectOverride(instanceUrl, apiKey, project);
+      }
       await saveProfile(env, instanceUrl, apiKey, profileName, project);
       stdout +=
         `Authenticated ${user.name} at ${instanceUrl} ` +
@@ -121,12 +127,12 @@ export async function run(
     .description("Show the active profile and authenticated user")
     .option("--json", "emit a JSON object")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (options: { json?: boolean; profile?: string; project?: string }) => {
       jsonOutput = options.json === true;
       const profile = await resolveProfile(env, {
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const user = await authenticate(profile.instanceUrl, profile.apiKey);
       if (options.json) {
@@ -179,11 +185,17 @@ export async function run(
     .command("use")
     .description("Set the active profile")
     .argument("<profile>")
-    .option("--project <id>", "change the profile's default project")
+    .option("--project <name-or-id>", "change the profile's default project")
     .action(async (profile: string, options: { project?: string }) => {
-      await setActiveProfile(env, profile, {
-        project: parseOptionalId(options.project),
-      });
+      // A named project resolves against the target profile's own
+      // instance so what gets stored is a numeric id, like every other
+      // surface; ids and an absent flag never touch the network.
+      let project = parseProjectOverride(options.project);
+      if (typeof project === "string") {
+        const target = await resolveProfile(env, { profile });
+        project = await resolveProjectOverride(target.instanceUrl, target.apiKey, project);
+      }
+      await setActiveProfile(env, profile, { project });
       stdout += `Switched to profile ${profile}.\n`;
     });
   auth
