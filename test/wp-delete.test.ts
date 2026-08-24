@@ -48,14 +48,24 @@ async function writeSingleProfile(
 const INSTANCE = "https://op.example.dev";
 const WP_PATH = "/api/v3/work_packages/675";
 
+/** The exact ancestor-filtered count request `wp delete` issues first. */
+function descendantCountPath(id: string): string {
+  const filters = encodeURIComponent(
+    JSON.stringify([{ ancestor: { operator: "=", values: [id] } }]),
+  );
+  return `/api/v3/work_packages?filters=${filters}&pageSize=1`;
+}
+
 /**
- * Installs only the listed DELETE replies; any other request fails the
- * whole agent (net connect disabled), so a green run proves a refused
- * delete touched nothing.
+ * Installs the DELETE reply and the descendant-count reply; any other
+ * request fails the whole agent (net connect disabled), so a green run
+ * proves a refused delete sent no write and touched nothing else.
+ * `descendants: "fail"` answers the count read with a 404.
  */
 function installDeleteApi(
   status: number,
-): { deleteCalls: () => number } {
+  descendants: number | "fail" = 0,
+): { deleteCalls: () => number; countCalls: () => number } {
   const mockAgent = new MockAgent();
   mockAgent.disableNetConnect();
   setGlobalDispatcher(mockAgent);
@@ -63,15 +73,32 @@ function installDeleteApi(
     await mockAgent.close();
     setGlobalDispatcher(new Agent());
   });
-  let calls = 0;
+  let deletes = 0;
   mockAgent.get(INSTANCE)
     .intercept({ path: WP_PATH, method: "DELETE" })
     .reply(() => {
-      calls += 1;
+      deletes += 1;
       return { statusCode: status, data: "" };
     })
     .persist();
-  return { deleteCalls: () => calls };
+  let counts = 0;
+  const count = mockAgent.get(INSTANCE)
+    .intercept({ path: descendantCountPath("675"), method: "GET" });
+  if (descendants === "fail") {
+    count.reply(() => {
+      counts += 1;
+      return { statusCode: 404, data: { message: "work package not found" } };
+    }).persist();
+  } else {
+    count.reply(() => {
+      counts += 1;
+      return {
+        statusCode: 200,
+        data: { total: descendants, count: descendants, _embedded: { elements: [] } },
+      };
+    }).persist();
+  }
+  return { deleteCalls: () => deletes, countCalls: () => counts };
 }
 
 async function runWpWithIo(
@@ -88,16 +115,17 @@ async function runWpWithIo(
 }
 
 describe("wp delete", () => {
-  test("without --yes exits 1 and sends nothing even without a terminal", async () => {
+  test("without --yes exits 1 and deletes nothing even without a terminal", async () => {
     const root = await makeTempRoom("wp-delete-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
-    installDeleteApi(204);
+    const api = installDeleteApi(204);
     const result = await runWpWithIo(configDir, cacheDir, ["delete", "675"], {});
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("--yes");
+    expect(api.deleteCalls()).toBe(0);
   });
 
-  test("without --yes exits 1 even with a terminal attached", async () => {
+  test("without --yes exits 1 and deletes nothing even with a terminal attached", async () => {
     const root = await makeTempRoom("wp-delete-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
     const api = installDeleteApi(204);
@@ -108,10 +136,33 @@ describe("wp delete", () => {
     expect(api.deleteCalls()).toBe(0);
   });
 
-  test("--yes deletes and reports it", async () => {
+  test("without --yes the refusal names the descendant count", async () => {
     const root = await makeTempRoom("wp-delete-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
-    const api = installDeleteApi(204);
+    const api = installDeleteApi(204, 2);
+    const result = await runWpWithIo(configDir, cacheDir, ["delete", "675"], {});
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "Work package 675 has 2 descendants; they are deleted with it.",
+    );
+    expect(result.stderr).toContain("--yes");
+    expect(api.deleteCalls()).toBe(0);
+  });
+
+  test("without --yes a single descendant stays singular", async () => {
+    const root = await makeTempRoom("wp-delete-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installDeleteApi(204, 1);
+    const result = await runWpWithIo(configDir, cacheDir, ["delete", "675"], {});
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("has 1 descendant;");
+    expect(result.stderr).not.toContain("1 descendants");
+  });
+
+  test("--yes deletes a leaf and reports exactly as before", async () => {
+    const root = await makeTempRoom("wp-delete-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installDeleteApi(204, 0);
     const result = await runWpWithIo(configDir, cacheDir, [
       "delete",
       "675",
@@ -119,19 +170,65 @@ describe("wp delete", () => {
     ], {});
     expect(result.exitCode).toBe(0);
     expect(api.deleteCalls()).toBe(1);
-    expect(result.stdout).toContain("675");
+    expect(result.stdout).toBe("Deleted work package 675.\n");
+  });
+
+  test("--yes on a parent states how many descendants were destroyed", async () => {
+    const root = await makeTempRoom("wp-delete-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installDeleteApi(204, 3);
+    const result = await runWpWithIo(configDir, cacheDir, [
+      "delete",
+      "675",
+      "--yes",
+    ], {});
+    expect(result.exitCode).toBe(0);
+    expect(api.deleteCalls()).toBe(1);
+    expect(result.stdout).toBe(
+      "Deleted work package 675 and its 3 descendants.\n",
+    );
+  });
+
+  test("--yes on a parent of one states one descendant", async () => {
+    const root = await makeTempRoom("wp-delete-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installDeleteApi(204, 1);
+    const result = await runWpWithIo(configDir, cacheDir, [
+      "delete",
+      "675",
+      "--yes",
+    ], {});
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      "Deleted work package 675 and its 1 descendant.\n",
+    );
   });
 
   test("a missing work package exits 4", async () => {
     const root = await makeTempRoom("wp-delete-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
-    installDeleteApi(404);
+    installDeleteApi(404, "fail");
     const result = await runWpWithIo(configDir, cacheDir, [
       "delete",
       "675",
       "--yes",
     ], {});
     expect(result.exitCode).toBe(4);
+  });
+
+  test("a failed descendant count does not block a confirmed deletion", async () => {
+    const root = await makeTempRoom("wp-delete-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installDeleteApi(204, "fail");
+    const result = await runWpWithIo(configDir, cacheDir, [
+      "delete",
+      "675",
+      "--yes",
+    ], {});
+    expect(result.exitCode).toBe(0);
+    expect(api.countCalls()).toBe(1);
+    expect(api.deleteCalls()).toBe(1);
+    expect(result.stdout).toBe("Deleted work package 675.\n");
   });
 
   test("refuses a non-numeric reference without any request", async () => {
@@ -145,5 +242,6 @@ describe("wp delete", () => {
     ], {});
     expect(result.exitCode).toBe(1);
     expect(api.deleteCalls()).toBe(0);
+    expect(api.countCalls()).toBe(0);
   });
 });

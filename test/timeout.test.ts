@@ -279,7 +279,15 @@ describe("the per-request timeout budget", () => {
         + "Hint: raise OP_CLI_TIMEOUT_MS and try again.\n",
     );
     // One attempt only: a replayed delete could destroy a second record.
+    // The descendant-count read times out first and is swallowed; the
+    // DELETE itself still runs exactly once.
+    const ancestorCount = `${INSTANCE}/api/v3/work_packages?filters=`
+      + encodeURIComponent(
+        JSON.stringify([{ ancestor: { operator: "=", values: ["675"] } }]),
+      )
+      + "&pageSize=1";
     expect(probe.calls).toEqual([
+      { url: ancestorCount, method: "GET" },
       { url: `${INSTANCE}/api/v3/work_packages/675`, method: "DELETE" },
     ]);
   });
