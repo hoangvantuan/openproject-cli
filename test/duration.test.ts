@@ -7,7 +7,7 @@ import {
   parseDuration,
 } from "../src/core/duration.js";
 
-function catchUsage(run: () => unknown): OpCliError {
+function catchOpCliError(run: () => unknown): OpCliError {
   try {
     run();
   } catch (error) {
@@ -50,10 +50,24 @@ describe("isoToHours", () => {
     expect(isoToHours("pt1h30m")).toBe(1.5);
   });
 
-  test("malformed forms are refused as usage errors", () => {
-    for (const bad of ["", "PT", "PT1H30", "1h30m", "P1D", "P1YT1H", "-PT1H", "abc"]) {
-      expect(() => isoToHours(bad)).toThrow(OpCliError);
-      expect(() => isoToHours(bad)).toThrow(/PT/i);
+  test("a day component is read, not refused", () => {
+    // OpenProject spells any duration of 24 hours or more with a day
+    // component, so the read path has to sum P3DT1H as 73 hours.
+    expect(isoToHours("P3DT1H")).toBe(73);
+    expect(isoToHours("P1D")).toBe(24);
+    expect(isoToHours("P1DT30M")).toBe(24.5);
+  });
+
+  test("a week component is read too", () => {
+    expect(isoToHours("P1W")).toBe(168);
+    expect(isoToHours("P1W2DT3H30M")).toBe(168 + 48 + 3.5);
+  });
+
+  test("calendar spans and malformed forms are refused as the instance's answer", () => {
+    for (const bad of ["", "P", "PT", "PT1H30", "1h30m", "P1DT", "P1YT1H", "P1M", "-PT1H", "abc", "P1DT1W"]) {
+      const error = catchOpCliError(() => isoToHours(bad));
+      expect(error.code).toBe("API_ERROR");
+      expect(error.message).toContain(bad === "" ? '""' : bad);
     }
   });
 });
@@ -152,8 +166,18 @@ describe("parseDuration", () => {
 
   test("unrecognisable shapes are refused with the accepted forms", () => {
     for (const bad of ["", "abc", "1h30", "h30m", "30m1h", "1h30h", "1.5.5", "1,5"]) {
-      const error = catchUsage(() => parseDuration(bad));
+      const error = catchOpCliError(() => parseDuration(bad));
       expect(error.code).toBe("USAGE_ERROR");
+    }
+  });
+
+  test("calendar components stay refused on the write path the read path accepts", () => {
+    // isoToHours reads P3DT1H because the instance emits it; --hours does
+    // not, because the hours field of one entry carries no calendar span.
+    for (const bad of ["P3DT1H", "P1D", "P1W", "1d", "1w"]) {
+      const error = catchOpCliError(() => parseDuration(bad));
+      expect(error.code).toBe("USAGE_ERROR");
+      expect(error.hint).toContain("PT1H30M");
     }
   });
 });

@@ -1020,6 +1020,25 @@ describe("time report", () => {
     expect(result.stdout).toContain("2.25");
   });
 
+  test("an entry the instance spells with a day component still totals", async () => {
+    const root = await makeTempRoom("time-report-days-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        // OpenProject spells any duration of 24 hours or more with a day
+        // component, so a report over real logged time meets P3DT1H.
+        [entryPath([], 100)]: halCollection(2, [
+          timeEntryElement(3001, 675, "Fix login redirect", "P3DT1H"),
+          timeEntryElement(3002, 675, "Fix login redirect", "PT30M"),
+        ]),
+      },
+    });
+    const result = await runTime(configDir, cacheDir, ["report"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("73.5");
+  });
+
   test("an empty filtered set reports zero without error", async () => {
     const root = await makeTempRoom("time-report-empty-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
