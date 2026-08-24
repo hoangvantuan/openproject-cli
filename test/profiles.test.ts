@@ -462,7 +462,9 @@ describe("context precedence", () => {
     );
 
     expect(JSON.parse(result.stdout)).toEqual({
-      profile: "default",
+      // The environment served this run, so it renders as the environment
+      // profile instead of claiming the overridden stored one (#20).
+      profile: "env",
       instance: "https://override.example",
       project: 99,
       user: { id: 7, name: "Proxy User", login: "proxy-user" },
@@ -861,6 +863,110 @@ describe("issue 21: an unknown profile name with no config file", () => {
 
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout).profile).toBe("env");
+    mockAgent.assertNoPendingInterceptors();
+  });
+});
+
+describe("profile flag carries its own values (#20)", () => {
+  test("an explicit --profile carries its stored url and key over conflicting environment", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-flag-values-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      { default: { url: "https://op-a.example" } },
+      { credentials: { default: "key-a" } },
+    );
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://op-a.example", "Ada Lovelace");
+
+    const result = await run(
+      ["auth", "status", "--json", "--profile", "default"],
+      {
+        OP_CLI_CONFIG_DIR: directory,
+        OPENPROJECT_URL: "https://override.example",
+        OPENPROJECT_API_KEY: "ov-key",
+      },
+      {},
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      profile: "default",
+      instance: "https://op-a.example",
+    });
+    // The request must have gone to the named profile's instance, never to
+    // the environment's; disableNetConnect makes any other origin fail.
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  test("auth status --profile and auth list agree on the named instance under conflict", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-agree-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      { default: { url: "https://op-a.example" } },
+      { credentials: { default: "key-a" } },
+    );
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://op-a.example", "Ada Lovelace");
+
+    const env = {
+      OP_CLI_CONFIG_DIR: directory,
+      OPENPROJECT_URL: "https://override.example",
+      OPENPROJECT_API_KEY: "ov-key",
+    };
+    const list = JSON.parse(
+      (await run(["auth", "list", "--json"], env, {})).stdout,
+    );
+    const status = JSON.parse(
+      (await run(["auth", "status", "--json", "--profile", "default"], env, {})).stdout,
+    );
+
+    expect(status.instance).toBe(list.profiles[0].instance);
+    expect(status.profile).toBe(list.profiles[0].name);
+  });
+
+  test("a run served by the environment stops claiming the overridden profile", async ({
+    onTestFinished,
+  }) => {
+    const root = await mkdtemp(join(tmpdir(), "op-cli-env-claim-"));
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const directory = await writeStoredProfiles(
+      root,
+      { default: { url: "https://op-a.example" } },
+      { credentials: { default: "key-a" } },
+    );
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://override.example", "Proxy User", 2);
+
+    const baseEnv = {
+      OP_CLI_CONFIG_DIR: directory,
+      OPENPROJECT_URL: "https://override.example",
+      OPENPROJECT_API_KEY: "ov-key",
+    };
+    const activeRun = await run(["auth", "status", "--json"], baseEnv, {});
+    const envTierRun = await run(
+      ["auth", "status", "--json"],
+      { ...baseEnv, OP_CLI_PROFILE: "default" },
+      {},
+    );
+
+    // No flag and no OP_CLI_PROFILE-free claim: the run is served by the
+    // environment, so it renders as the environment profile.
+    expect(JSON.parse(activeRun.stdout).profile).toBe("env");
+    expect(JSON.parse(activeRun.stdout).instance).toBe("https://override.example");
+    // OP_CLI_PROFILE stays in the environment tier with today's behaviour.
+    expect(JSON.parse(envTierRun.stdout).profile).toBe("env");
     mockAgent.assertNoPendingInterceptors();
   });
 });

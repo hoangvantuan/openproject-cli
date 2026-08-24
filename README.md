@@ -59,6 +59,11 @@ op-cli doctor            # diagnose connectivity, credentials, versions
   up without a CLI release; pass `--fields id,subject,status` on any
   record-returning command to keep only what you read. With `--all` a
   listing streams NDJSON, one record per line, not an array.
+- **Profiles beat the environment only when named.** An explicit
+  `--profile <name>` uses that profile's own instance URL and API key, even
+  when `OPENPROJECT_URL` / `OPENPROJECT_API_KEY` are exported; without the
+  flag the environment wins over the active profile. A command served by the
+  environment reports itself as the profile `env`.
 - **`project copy` copies properties only** (description, visibility, and
   parent). It does not copy work packages, members, or wiki pages.
 - **No escape hatch by design.** If a command is missing there is no raw
