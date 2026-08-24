@@ -443,7 +443,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       "decimal hours such as 1.5, a compound form such as 1h30m, "
         + "or an ISO 8601 duration such as PT1H30M",
     )
-    .option("--activity <name-or-id>", "activity of the project, by name or id")
+    .requiredOption("--activity <name-or-id>", "activity of the project, by name or id")
     .option(
       "--spent-on <date>",
       "calendar date the hours were spent, YYYY-MM-DD; defaults to today",
@@ -454,7 +454,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--project <id>", "override the profile default project")
     .action(async (reference: string, options: {
       hours: string;
-      activity?: string;
+      activity: string;
       spentOn?: string;
       json?: boolean;
       fields?: string;
@@ -490,15 +490,18 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
           "check the work package on the instance.",
         );
       }
-      const activityHref = options.activity === undefined
-        ? undefined
-        : await resolveActivityHref(runtime, profile, projectId, options.activity);
+      const activityHref = await resolveActivityHref(
+        runtime,
+        profile,
+        projectId,
+        options.activity,
+      );
       const response = await postEntry(profile, {
         hours: duration.iso,
         spentOn,
         _links: {
           workPackage: { href: `/api/v3/work_packages/${reference}` },
-          ...(activityHref === undefined ? {} : { activity: { href: activityHref } }),
+          activity: { href: activityHref },
         },
       });
       if (

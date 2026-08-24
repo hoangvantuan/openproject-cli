@@ -398,6 +398,8 @@ describe("time log", () => {
         "675",
         "--hours",
         hoursValue,
+        "--activity",
+        "1",
       ]);
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toBe("");
@@ -410,7 +412,10 @@ describe("time log", () => {
     expect(JSON.parse(payloads[0])).toEqual({
       hours: "PT1H30M",
       spentOn: localIsoDate(new Date()),
-      _links: { workPackage: { href: "/api/v3/work_packages/675" } },
+      _links: {
+        workPackage: { href: "/api/v3/work_packages/675" },
+        activity: { href: "/api/v3/time_entries/activities/1" },
+      },
     });
   });
 
@@ -436,6 +441,8 @@ describe("time log", () => {
       "675",
       "--hours",
       "1h30m",
+      "--activity",
+      "1",
       "--fields",
       "id,hours",
       "--json",
@@ -466,6 +473,8 @@ describe("time log", () => {
       "675",
       "--hours",
       "1h",
+      "--activity",
+      "1",
       "--fields",
       "hourz",
     ]);
@@ -475,6 +484,27 @@ describe("time log", () => {
     expect(result.stderr).toContain("time entry 3004 was logged");
     expect(result.stderr).toContain('field "hourz" is not a column');
   });
+  test("omitting --activity is refused as usage before any traffic", async () => {
+    const root = await makeTempRoom("time-log-activity-required-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    // No endpoint is installed and net connect is off, so the catalogued
+    // refusal below also proves nothing left the client: any request at
+    // all would have failed the agent instead.
+    const { postBodies } = installMockApi({});
+    const result = await runTime(configDir, cacheDir, [
+      "log",
+      "675",
+      "--hours",
+      "1h30m",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      '[USAGE_ERROR] required option "--activity <name-or-id>" is missing. '
+      + "Hint: run op-cli time log --help to see what it accepts.\n",
+    );
+    expect(postBodies).toHaveLength(0);
+  });
+
   test("--activity resolves by name through the create form of the work package's project", async () => {
     const root = await makeTempRoom("time-log-activity-form-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
@@ -574,6 +604,8 @@ describe("time log", () => {
         "675",
         "--hours",
         bad,
+        "--activity",
+        "1",
       ]);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("[USAGE_ERROR]");
@@ -603,6 +635,8 @@ describe("time log", () => {
       "675",
       "--hours",
       "1.5",
+      "--activity",
+      "1",
     ]);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("[API_ERROR]");
@@ -630,6 +664,8 @@ describe("time log", () => {
       "675",
       "--hours",
       "1.5",
+      "--activity",
+      "1",
     ]);
     expect(result.exitCode).toBe(6);
     expect(result.stderr).toContain("whether the entry was recorded is unknown");
