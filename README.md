@@ -43,6 +43,7 @@ op-cli time log 42 --hours 1h30m --activity Development
 op-cli project member add web alice Manager   # join members so assignment works
 op-cli project list --search web
 op-cli doctor            # diagnose connectivity, credentials, versions
+op-cli update            # self-update; prints the right command for Volta/Homebrew
 ```
 
 ## Things worth knowing
@@ -67,8 +68,10 @@ op-cli doctor            # diagnose connectivity, credentials, versions
   when `OPENPROJECT_URL` / `OPENPROJECT_API_KEY` are exported; without the
   flag the environment wins over the active profile. A command served by the
   environment reports itself as the profile `env`.
-- **`project copy` copies properties only** (description, visibility, and
-  parent). It does not copy work packages, members, or wiki pages.
+- **Update notices are interactive-only.** Commands run from a terminal
+  check npm for a newer release at most once a day and print one stderr
+  line; scripted use (stderr not a TTY) never checks, `--version` stays
+  offline, and `OP_CLI_NO_UPDATE_CHECK=1` disables the check entirely.
 - **No escape hatch by design.** If a command is missing there is no raw
   HTTP passthrough; report the gap instead of working around the tool.
 

@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
@@ -16,10 +18,21 @@ export interface PromptInput extends Readable {
   setRawMode?(enabled: boolean): void;
 }
 
+/** The stderr-side twin of PromptInput: any Writable that may be a TTY. */
+export interface PromptOutput extends Writable {
+  readonly isTTY?: boolean;
+}
+
 export interface NodeIo {
   readonly prompt: (message: string, secret: boolean) => Promise<string>;
   readonly readStdin: () => Promise<string>;
   readonly stdinIsTTY: boolean;
+  readonly stderrIsTTY: boolean;
+  readonly runExternal: (file: string, args: readonly string[]) => Promise<number>;
+  readonly captureExternal: (
+    file: string,
+    args: readonly string[],
+  ) => Promise<string | undefined>;
 }
 
 const ENV_HINT =
@@ -35,8 +48,10 @@ const ENV_HINT =
 export function createNodeIo(
   input: PromptInput = process.stdin,
   output: Writable = process.stdout,
+  errorOutput: PromptOutput = process.stderr,
 ): NodeIo {
   const stdinIsTTY = input.isTTY === true;
+  const stderrIsTTY = errorOutput.isTTY === true;
 
   // Executor form on purpose: Promise.withResolvers needs ES2024, and the
   // published engines field still supports Node 20.
@@ -120,6 +135,7 @@ export function createNodeIo(
 
   return {
     stdinIsTTY,
+    stderrIsTTY,
     prompt: (message, secret) => (secret ? readSecret(message) : askLine(message)),
     readStdin: async () => {
       const chunks: Array<Uint8Array> = [];
@@ -128,5 +144,25 @@ export function createNodeIo(
       }
       return Buffer.concat(chunks).toString("utf8");
     },
+    // 127 is the shell's "command not found": a spawn that never started
+    // and a child killed by a signal both collapse onto ordinary exit
+    // codes, so callers cannot mistake them for a hanging success.
+    runExternal: (file, args) =>
+      new Promise<number>((resolve) => {
+        const child = spawn(file, [...args], { stdio: "inherit" });
+        child.once("error", () => resolve(127));
+        child.once("close", (code) => resolve(code ?? 1));
+      }),
+    captureExternal: (file, args) =>
+      new Promise<string | undefined>((resolve) => {
+        const child = spawn(file, [...args], { stdio: ["ignore", "pipe", "ignore"] });
+        let captured = "";
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          captured += chunk;
+        });
+        child.once("error", () => resolve(undefined));
+        child.once("close", (code) => resolve(code === 0 ? captured : undefined));
+      }),
   };
 }
