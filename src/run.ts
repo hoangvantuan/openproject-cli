@@ -318,10 +318,16 @@ export async function run(
   });
 
   // Registered lazily and only at the root so a subcommand can reuse
-  // the "--version <value>" spelling as its own option (wp list).
+  // the "--version <value>" spelling as its own option (wp list); a
+  // root-level version flag hijacks that filter. Root help still
+  // advertises the invocation.
   if (argv[0] === "--version") {
     program.version(await buildVersionOutput(env), "--version", "print version information");
   }
+  program.addHelpText(
+    "after",
+    "\nRun op-cli --version for version information.",
+  );
 
   // Commands built declaratively start as standalone Command objects, so
   // they miss the root's exitOverride and output capture; without this

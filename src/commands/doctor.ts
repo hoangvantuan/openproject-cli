@@ -52,9 +52,12 @@ function errorCodeOf(error: unknown): ErrorCode {
 
 function versionSummary(info: RootInfo): string {
   if (info.apiVersion === null && info.coreVersion === null) {
-    return "api unknown, core unknown (stock instances may omit this)";
+    return "reported neither version; the root document is optional, so core 13+ may still be running";
   }
-  return `api ${info.apiVersion ?? "unknown"}, core ${info.coreVersion ?? "unknown"}`;
+  if (info.apiVersion === null) {
+    return `core ${info.coreVersion ?? "unknown"}; api version not reported, core 13+ is what the check reads`;
+  }
+  return `api ${info.apiVersion}, core ${info.coreVersion ?? "unknown"}`;
 }
 
 export function registerDoctorCommand(parent: Command, runtime: DoctorRuntime): void {

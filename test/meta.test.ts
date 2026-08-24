@@ -616,6 +616,55 @@ describe("meta store management", () => {
     });
   });
 
+  test("meta show and meta types accept --profile to read another profile's store", async () => {
+    const root = await makeTempRoom("op-cli-meta-profile-");
+    const configDir = join(root, "config");
+    const cacheDir = join(root, "cache");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      join(configDir, "config.json"),
+      JSON.stringify({
+        default_profile: "default",
+        active_profile: "default",
+        profiles: {
+          default: { url: "https://op.example" },
+          staging: { url: "https://staging.example" },
+        },
+      }),
+    );
+    await writeFile(
+      join(configDir, "credentials.json"),
+      JSON.stringify({
+        default: { api_key: "secret-key" },
+        staging: { api_key: "staging-key" },
+      }),
+      { mode: 0o600 },
+    );
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    // The staging store is filled through the very flag under test.
+    installMockApi(baseInstall("https://staging.example"));
+    const fetched = await run(
+      ["meta", "types", "--json", "--profile", "staging"],
+      env,
+      {},
+    );
+    expect(fetched.exitCode).toBe(0);
+    expect(JSON.parse(fetched.stdout)).toHaveLength(2);
+
+    const shown = await run(["meta", "show", "--profile", "staging"], env, {});
+    expect(shown.exitCode).toBe(0);
+    expect(shown.stdout).toMatch(/profile\s+staging/);
+    expect(shown.stdout).toMatch(/instance\s+https:\/\/staging\.example/);
+
+    // The active profile's store stays empty: the flag redirected every read.
+    const active = await run(["meta", "show"], env, {});
+    expect(active.stdout).toContain("No metadata stored yet.");
+
+    const missing = await run(["meta", "show", "--profile", "ghost"], env, {});
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("[PROFILE_NOT_FOUND]");
+  });
   test("deleting the store while idle leaves the CLI fully functional", async () => {
     const root = await makeTempRoom("op-cli-meta-clear-");
     const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example");

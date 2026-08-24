@@ -234,6 +234,26 @@ describe("op-cli doctor", () => {
     }
   });
 
+  test("a core-only root explains that the api version was not reported", async () => {
+    const room = await makeRoom(true);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    stubInstance(mockAgent, {
+      root: { status: 200, body: { _type: "Root", coreVersion: "17.7.0" } },
+    });
+    try {
+      const result = await run(["doctor"], room.env, {});
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("core 17.7.0");
+      expect(result.stdout).toContain("api version not reported");
+      expect(result.stdout).not.toContain("api unknown");
+      expect(result.stderr).toBe("");
+    } finally {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    }
+  });
   test("doctor without any configured profile reports the missing profile", async () => {
     const root = await mkdtemp(join(tmpdir(), "op-cli-doctor-empty-"));
     cleanups.push(async () => {

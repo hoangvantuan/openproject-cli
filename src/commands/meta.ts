@@ -45,10 +45,16 @@ const projectOption = {
   description: "override the profile default project",
 };
 
+const profileOption = {
+  flag: "--profile <name>",
+  description: "use this profile for this command only",
+};
+
 const typeLookup: LookupSpec<StoredType, StoredMetadata> = {
   name: "types",
   description: "List the work package types of the instance",
   select: (metadata) => metadata.types,
+  options: [profileOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -60,6 +66,7 @@ const statusLookup: LookupSpec<StoredStatus, StoredMetadata> = {
   name: "statuses",
   description: "List the work package statuses of the instance",
   select: (metadata) => metadata.statuses,
+  options: [profileOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -84,6 +91,7 @@ const priorityLookup: LookupSpec<StoredPriority, StoredMetadata> = {
   name: "priorities",
   description: "List the work package priorities of the instance",
   select: (metadata) => metadata.priorities,
+  options: [profileOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -95,7 +103,7 @@ const memberLookup: LookupSpec<StoredMember, ProjectVocabulary> = {
   name: "members",
   description: "List the members of the active project",
   select: (vocabulary) => vocabulary.members,
-  options: [projectOption],
+  options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.user_id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -111,7 +119,7 @@ const versionLookup: LookupSpec<StoredVersion, ProjectVocabulary> = {
   name: "versions",
   description: "List the versions of the active project",
   select: (vocabulary) => vocabulary.versions,
-  options: [projectOption],
+  options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -123,7 +131,7 @@ const categoryLookup: LookupSpec<StoredCategory, ProjectVocabulary> = {
   name: "categories",
   description: "List the categories of the active project",
   select: (vocabulary) => vocabulary.categories,
-  options: [projectOption],
+  options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -178,7 +186,7 @@ const fieldLookup: LookupSpec<FieldRow, FieldData> = {
   name: "fields",
   description: "List the custom fields of the active project",
   select: uniqueFields,
-  options: [projectOption],
+  options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -195,7 +203,7 @@ const activityLookup: LookupSpec<StoredActivity, ProjectVocabulary> = {
   name: "activities",
   description: "List the time entry activities of the active project",
   select: (vocabulary) => vocabulary.activities,
-  options: [projectOption],
+  options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
@@ -207,10 +215,11 @@ function registerShow(parent: Command, runtime: MetaRuntime): void {
   const command = parent
     .command("show")
     .description("Show the stored metadata of the active profile")
+    .option("--profile <name>", "use this profile for this command only")
     .option("--json", "emit a JSON object");
-  command.action(async (options: { json?: boolean }) => {
+  command.action(async (options: { profile?: string; json?: boolean }) => {
     runtime.setJsonMode(options.json === true);
-    const profile = await runtime.resolve();
+    const profile = await runtime.resolve({ profile: options.profile });
     const stored = await readStoredMetadata(runtime.env, profile);
     if (stored === undefined) {
       runtime.write(
@@ -248,15 +257,15 @@ function formatProjectRef(stored: StoredMetadata): string {
     ? ""
     : `${String(stored.project.id)} (${stored.project.identifier})`;
 }
-
 function registerRefresh(parent: Command, runtime: MetaRuntime): void {
   const command = parent
     .command("refresh")
     .description("Re-fetch the stored metadata and report what changed")
+    .option("--profile <name>", "use this profile for this command only")
     .option("--json", "emit a JSON object");
-  command.action(async (options: { json?: boolean }) => {
+  command.action(async (options: { profile?: string; json?: boolean }) => {
     runtime.setJsonMode(options.json === true);
-    const profile = await runtime.resolve();
+    const profile = await runtime.resolve({ profile: options.profile });
     const changes = await refreshStoredMetadata(runtime.env, profile);
     if (options.json === true) {
       runtime.write(
@@ -299,8 +308,9 @@ function registerClear(parent: Command, runtime: MetaRuntime): void {
   parent
     .command("clear")
     .description("Delete the stored metadata of the active profile")
-    .action(async () => {
-      const profile = await runtime.resolve();
+    .option("--profile <name>", "use this profile for this command only")
+    .action(async (options: { profile?: string }) => {
+      const profile = await runtime.resolve({ profile: options.profile });
       await clearStoredMetadata(runtime.env, profile);
       runtime.write(`Cleared stored metadata for profile ${profile.name}.\n`);
     });
@@ -323,18 +333,27 @@ function addLookup<Row, Data>(
   );
 }
 
-function instanceLoad(runtime: MetaRuntime): MetaLoader<StoredMetadata> {
-  return async () =>
-    loadStoredMetadata(runtime.env, await runtime.resolve());
+/** The `--profile` override a lookup was handed, if any. */
+function profileOverride(options: ParsedOptions): string | undefined {
+  return typeof options.profile === "string" ? options.profile : undefined;
 }
 
-/** The active profile under this run's --project override, if any. */
+function instanceLoad(runtime: MetaRuntime): MetaLoader<StoredMetadata> {
+  return async (options) =>
+    loadStoredMetadata(
+      runtime.env,
+      await runtime.resolve({ profile: profileOverride(options) }),
+    );
+}
+
+/** The active profile under this run's --profile/--project overrides. */
 async function projectProfile(
   runtime: MetaRuntime,
   options: ParsedOptions,
 ): Promise<ActiveProfile> {
   const raw = options.project;
   return runtime.resolve({
+    profile: profileOverride(options),
     project: parseProjectOverride(typeof raw === "string" ? raw : undefined),
   });
 }
