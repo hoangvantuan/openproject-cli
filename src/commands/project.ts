@@ -46,7 +46,7 @@ export interface ProjectRuntime {
   readonly setJsonMode: (on: boolean) => void;
 }
 
-const LIST_COLUMNS: ReadonlyArray<CollectionColumn> = [
+export const LIST_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "ID", field: "id" },
   { title: "IDENTIFIER", field: "identifier" },
   { title: "NAME", field: "name" },
@@ -54,18 +54,18 @@ const LIST_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "FAVORITED", field: "favorited" },
 ];
 
-const VERSION_COLUMNS: ReadonlyArray<CollectionColumn> = [
+export const VERSION_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "ID", field: "id" },
   { title: "NAME", field: "name" },
   { title: "STATUS", field: "status" },
 ];
 
-const CATEGORY_COLUMNS: ReadonlyArray<CollectionColumn> = [
+export const CATEGORY_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "ID", field: "id" },
   { title: "NAME", field: "name" },
 ];
 
-const TYPE_COLUMNS: ReadonlyArray<CollectionColumn> = [
+export const TYPE_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "ID", field: "id" },
   { title: "NAME", field: "name" },
   { title: "MILESTONE", field: "isMilestone" },

@@ -127,17 +127,45 @@ fi
 # --- Work package create ----------------------------------------------------
 
 step "create work package in project $PROJ_ID"
-WP_JSON="$($BIN wp create "smoke subject A" --project "$PROJ_ID" --type Task --json)"
+# description is Formattable here exactly as on the project: only the
+# echo-back can see a payload the API accepts and then ignores (#22).
+WP_DESC="smoke description **WP**"
+WP_JSON="$($BIN wp create "smoke subject A" --project "$PROJ_ID" --type Task \
+  --description "$WP_DESC" --json)"
 WP_ID="$(printf '%s' "$WP_JSON" | json_field id)"
+if [ "$DRY" != "1" ]; then
+  GOT_WP_DESC="$(printf '%s' "$WP_JSON" | json_field description.raw)"
+  [ "$GOT_WP_DESC" = "$WP_DESC" ]
+fi
 
 # --- Work package update ----------------------------------------------------
 
 step "update work package $WP_ID"
-UPDATED_JSON="$($BIN wp update "$WP_ID" --subject "smoke subject B" --json)"
+UPDATED_JSON="$($BIN wp update "$WP_ID" --subject "smoke subject B" \
+  --description "smoke description **WP2**" --json)"
 GOT_SUBJECT="$(printf '%s' "$UPDATED_JSON" | json_field subject)"
 if [ "$DRY" != "1" ] && [ "$GOT_SUBJECT" != "smoke subject B" ]; then
   echo "smoke: update echoed subject '$GOT_SUBJECT' instead of 'smoke subject B'" >&2
   false
+fi
+if [ "$DRY" != "1" ]; then
+  GOT_UPDATED_DESC="$(printf '%s' "$UPDATED_JSON" | json_field description.raw)"
+  [ "$GOT_UPDATED_DESC" = "smoke description **WP2**" ]
+fi
+
+step "add a comment to work package $WP_ID and read it back"
+COMMENT_TEXT="smoke comment **C**"
+$BIN wp comment "$WP_ID" "$COMMENT_TEXT" > /dev/null
+COMMENTS_JSON="$($BIN wp comments "$WP_ID" --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$COMMENTS_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const want = process.argv[1];
+    if (!Array.isArray(rows) || !rows.some((row) => row.comment === want)) {
+      console.error("smoke: reading the comments back found none equal to " + JSON.stringify(want));
+      process.exit(3);
+    }
+  ' "$COMMENT_TEXT"
 fi
 
 # --- List custom field ------------------------------------------------------
@@ -455,6 +483,58 @@ node -e '
     process.exit(3);
   }
 ' "$WP_ID" <<<"$WP_ROWS"
+
+step "wp list --updated-after today on project $PROJ_ID returns the fresh update"
+# The server evaluates <>d in its own timezone, so when the instance's
+# clock trails this host's a write stamped moments ago can land on the
+# instance's yesterday. One refresh re-stamps the record; only a second
+# miss fails, which keeps the oracle strict about dropped same-day
+# updates (#24) without letting timezone skew flake the gate.
+TODAY_ROWS="$($BIN wp list --project "$PROJ_ID" --updated-after today --json)"
+if ! printf '%s' "$TODAY_ROWS" | node -e '
+  const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  const id = Number(process.argv[1]);
+  process.exit(Array.isArray(rows) && rows.some((r) => r.id === id) ? 0 : 3);
+' "$WP_ID" 2> /dev/null; then
+  if [ "$DRY" != "1" ]; then
+    $BIN wp update "$WP_ID" --subject "smoke subject C" --json > /dev/null
+    TODAY_ROWS="$($BIN wp list --project "$PROJ_ID" --updated-after today --json)"
+    printf '%s' "$TODAY_ROWS" | node -e '
+      const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const id = Number(process.argv[1]);
+      if (!Array.isArray(rows) || !rows.some((r) => r.id === id)) {
+        console.error("smoke: wp list --updated-after today missed work package " + id);
+        process.exit(3);
+      }
+    ' "$WP_ID" <<<"$TODAY_ROWS"
+  fi
+fi
+
+step "wp list --all --json on project $PROJ_ID streams one JSON record per line"
+NDJSON="$($BIN wp list --project "$PROJ_ID" --all --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s\n' "$NDJSON" | node -e '
+    const lines = require("fs").readFileSync(0, "utf8").trimEnd().split("\n");
+    if (lines.length === 0 || lines[0] === "") {
+      console.error("smoke: --all --json produced no records");
+      process.exit(3);
+    }
+    for (const line of lines) {
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        console.error("smoke: --all --json emitted a line that is not JSON");
+        process.exit(3);
+      }
+      if (record === null || typeof record !== "object" || Array.isArray(record)
+          || typeof record.id !== "number") {
+        console.error("smoke: --all --json emitted a line that is not one flat record");
+        process.exit(3);
+      }
+    }
+  '
+fi
 
 step "star and unstar project $PROJ_ID (favourite endpoints)"
 $BIN project star "$PROJ_ID" > /dev/null

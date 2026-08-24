@@ -85,7 +85,7 @@ const PREFERRED_FIELDS = [
 ] as const;
 
 // The list table is fixed: these are the columns an agent scans first.
-const LIST_COLUMNS: ReadonlyArray<{ readonly title: string; readonly field: string }> = [
+export const LIST_COLUMNS: ReadonlyArray<{ readonly title: string; readonly field: string }> = [
   { title: "ID", field: "id" },
   { title: "SUBJECT", field: "subject" },
   { title: "TYPE", field: "type" },
@@ -1688,14 +1688,14 @@ async function resolveNamedValues(
 // The activity's text is called `comment` by the API, by these columns,
 // and by --fields on every command that renders one. It had two names
 // before, so --fields refused the name the table itself was using.
-const COMMENT_COLUMNS = [
+export const COMMENT_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "AUTHOR", field: "user" },
   { title: "COMMENT", field: "comment" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
-const HISTORY_COLUMNS = [
+export const HISTORY_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "KIND", field: "kind" },
   { title: "AUTHOR", field: "user" },
@@ -1703,7 +1703,7 @@ const HISTORY_COLUMNS = [
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
-const RELATION_COLUMNS = [
+export const RELATION_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "TYPE", field: "type" },
   { title: "FROM", field: "from" },
@@ -1712,7 +1712,7 @@ const RELATION_COLUMNS = [
   { title: "DESCRIPTION", field: "description" },
 ] as const;
 
-const SCHEMA_COLUMNS = [
+export const SCHEMA_COLUMNS = [
   { title: "FIELD", field: "field" },
   { title: "NAME", field: "name" },
   { title: "TYPE", field: "type" },
@@ -1767,7 +1767,7 @@ function linkIdOf(link: unknown): number | null {
  * The formattable `comment` collapses to its raw text so the one name
  * means one thing wherever an activity is rendered.
  */
-function activityRow(element: unknown): Record<string, unknown> {
+export function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
   const kind = typeof resource._type === "string"
     ? resource._type.replace(/^Activity::/, "")
@@ -1850,13 +1850,13 @@ function authorResolver(
 }
 
 /** Comments are the Comment-kind slice of the same activity stream. */
-function commentRow(element: unknown): Record<string, unknown> | undefined {
+export function commentRow(element: unknown): Record<string, unknown> | undefined {
   const row = activityRow(element);
   return row.kind === "Comment" ? row : undefined;
 }
 
 /** Only the typed fields and both ends; the action links carry no data. */
-function relationRow(element: unknown): Record<string, unknown> {
+export function relationRow(element: unknown): Record<string, unknown> {
   const record = flattenHalRecord(element);
   return {
     id: record.id,
@@ -1870,7 +1870,7 @@ function relationRow(element: unknown): Record<string, unknown> {
 }
 
 /** One row per available field of the project-and-type schema. */
-function schemaRows(schema: unknown): Array<Record<string, unknown>> {
+export function schemaRows(schema: unknown): Array<Record<string, unknown>> {
   return Object.entries(schema as Record<string, unknown>)
     .filter(([key, value]) =>
       !key.startsWith("_")

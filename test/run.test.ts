@@ -146,6 +146,29 @@ describe("op-cli entry function", () => {
     });
   });
 
+  // Issue #26 hung forever reading a stdin that would never speak, and a
+  // hang reads as a slow suite rather than a failure, so this test pins
+  // the termination property itself through its own explicit 2s vitest
+  // deadline instead of a wall-clock timer in the body (fake timers
+  // cannot arbitrate a promise that never settles). TODO(#26): piped-input
+  // automation itself stays open upstream; only non-termination is
+  // asserted here.
+  test(
+    "auth login answers a non-TTY stdin within an explicit deadline",
+    { timeout: 2000 },
+    async () => {
+      const result = await run(["auth", "login"], {}, {
+        prompt: async () => {
+          throw new Error("prompt must not be reached");
+        },
+        stdinIsTTY: false,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("[USAGE_ERROR]");
+    },
+  );
+
   test("auth login rejects an invalid instance URL as command misuse", async () => {
     const answers = ["not a URL", "secret-key"];
     const result = await run(
