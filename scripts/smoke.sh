@@ -140,6 +140,177 @@ if [ "$DRY" != "1" ] && [ "$GOT_SUBJECT" != "smoke subject B" ]; then
   false
 fi
 
+# --- List custom field ------------------------------------------------------
+# A list field's value is a CustomOption resource: the text form is accepted
+# and dropped, so only a live instance proves the href form lands. Which
+# fields a project exposes is instance configuration, so the step adapts and
+# skips when there is no list field to exercise.
+
+step "look for a list custom field on project $PROJ_ID"
+# meta fields loads the project vocabulary; meta show then hands over the
+# whole store, which is the only place the owning type of a field is
+# readable. A field is only usable with the type it hangs off. The defect
+# this step guards bites hardest on a required list field, so required
+# ones are preferred when the instance exposes several.
+$BIN meta fields --project "$PROJ_ID" > /dev/null
+META_JSON="$($BIN meta show --json)"
+LIST_PROBE="$(node -e '
+  const store = JSON.parse(require("fs").readFileSync(0, "utf8")) ?? {};
+  const scoped = store.projectScoped ?? {};
+  const byType = (scoped[process.argv[1]] ?? {}).custom_fields ?? {};
+  const typeName = new Map((store.types ?? []).map((t) => [String(t.id), t.name]));
+  const candidates = [];
+  for (const [typeId, fields] of Object.entries(byType)) {
+    if (!typeName.has(typeId)) {
+      continue;
+    }
+    for (const row of fields ?? []) {
+      if (row.is_list === true
+          && Array.isArray(row.allowed_options)
+          && row.allowed_options.length > 0) {
+        candidates.push({
+          key: row.key,
+          name: row.name,
+          options: row.allowed_options,
+          value: row.allowed_options[0].name,
+          type: typeName.get(typeId),
+          multi: row.is_multi === true,
+          required: row.is_required === true,
+        });
+      }
+    }
+  }
+  // A required single-valued field exercises the strictest path; a
+  // multi-valued one is the fallback, and the assertions below read both
+  // shapes. Creating on a type whose other required list fields sit empty
+  // would bounce off the API, so those ride along as extra pairs. A
+  // required field can never be cleared, so its second option is handed
+  // over for an update instead.
+  candidates.sort((a, b) =>
+    Number(b.required) - Number(a.required)
+    || Number(a.multi) - Number(b.multi));
+  const pick = candidates[0];
+  if (pick !== undefined) {
+    console.log(pick.key);
+    console.log(pick.name);
+    console.log(pick.value);
+    console.log(pick.type);
+    console.log(pick.multi ? 1 : 0);
+    console.log(pick.required ? 1 : 0);
+    console.log(pick.options[1] ? pick.options[1].name : "");
+    for (const other of candidates) {
+      if (other !== pick && other.type === pick.type && other.required) {
+        console.log(`${other.name}=${other.value}`);
+      }
+    }
+  }
+' "$PROJ_ID" <<<"$META_JSON")"
+LIST_KEY="$(printf '%s\n' "$LIST_PROBE" | sed -n 1p)"
+LIST_NAME="$(printf '%s\n' "$LIST_PROBE" | sed -n 2p)"
+LIST_VALUE="$(printf '%s\n' "$LIST_PROBE" | sed -n 3p)"
+LIST_TYPE="$(printf '%s\n' "$LIST_PROBE" | sed -n 4p)"
+LIST_MULTI="$(printf '%s\n' "$LIST_PROBE" | sed -n 5p)"
+LIST_REQUIRED="$(printf '%s\n' "$LIST_PROBE" | sed -n 6p)"
+LIST_SECOND="$(printf '%s\n' "$LIST_PROBE" | sed -n 7p)"
+if [ "$DRY" = "1" ]; then
+  LIST_KEY="customField0"
+  LIST_NAME="dry list field"
+  LIST_VALUE="dry option"
+  LIST_TYPE="Task"
+  LIST_MULTI="0"
+  LIST_REQUIRED="0"
+  LIST_SECOND="dry second option"
+fi
+EXTRA_FIELD_ARGS=()
+while IFS= read -r pair; do
+  [ -z "$pair" ] && continue
+  EXTRA_FIELD_ARGS+=(--field "$pair")
+done < <(printf '%s\n' "$LIST_PROBE" | tail -n +8)
+
+if [ -z "$LIST_NAME" ]; then
+  echo "[smoke] project $PROJ_ID exposes no list custom field; list step skipped."
+else
+  # json_field interpolates its argument into an inline script, so the key
+  # read off the instance is proven to be a bare customFieldN first.
+  case "$LIST_KEY" in
+    customField[0-9]*) ;;
+    *)
+      echo "smoke: '$LIST_KEY' is not a customFieldN key" >&2
+      false
+      ;;
+  esac
+
+  step "create a $LIST_TYPE setting list field '$LIST_NAME'"
+  LIST_WP_JSON="$($BIN wp create "smoke list field" --project "$PROJ_ID" \
+    --type "$LIST_TYPE" --field "$LIST_NAME=$LIST_VALUE" \
+    ${EXTRA_FIELD_ARGS[@]+"${EXTRA_FIELD_ARGS[@]}"} --json)"
+  LIST_WP_ID="$(printf '%s' "$LIST_WP_JSON" | json_field id)"
+  # A single-valued field flattens to one {id,name}; a multi-valued one
+  # to a list of them. The echo-back reads both shapes; in dry mode node
+  # is shadowed, so the check runs live only.
+  if [ "$DRY" != "1" ]; then
+    printf '%s' "$LIST_WP_JSON" | node -e '
+      const record = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const value = record[process.argv[1]];
+      const want = process.argv[2];
+      const names = Array.isArray(value)
+        ? value.map((entry) => entry && entry.name)
+        : [value && value.name];
+      if (!names.includes(want)) {
+        console.error("smoke: create echoed " + JSON.stringify(value)
+          + " instead of " + JSON.stringify(want));
+        process.exit(3);
+      }
+    ' "$LIST_KEY" "$LIST_VALUE"
+  fi
+
+  if [ "$LIST_REQUIRED" = "1" ]; then
+    # A required field can never read blank, so clearing is refused by
+    # design; moving it to another allowed option still proves the update
+    # path writes the href form.
+    if [ -n "$LIST_SECOND" ]; then
+      step "move list field '$LIST_NAME' to '$LIST_SECOND' on work package $LIST_WP_ID"
+      MOVED_JSON="$($BIN wp update "$LIST_WP_ID" --project "$PROJ_ID" \
+        --field "$LIST_NAME=$LIST_SECOND" --json)"
+      if [ "$DRY" != "1" ]; then
+        printf '%s' "$MOVED_JSON" | node -e '
+          const record = JSON.parse(require("fs").readFileSync(0, "utf8"));
+          const value = record[process.argv[1]];
+          const want = process.argv[2];
+          const names = Array.isArray(value)
+            ? value.map((entry) => entry && entry.name)
+            : [value && value.name];
+          if (!names.includes(want)) {
+            console.error("smoke: update echoed " + JSON.stringify(value)
+              + " instead of " + JSON.stringify(want));
+            process.exit(3);
+          }
+        ' "$LIST_KEY" "$LIST_SECOND"
+      fi
+    fi
+  else
+    step "clear list field '$LIST_NAME' on work package $LIST_WP_ID"
+    CLEARED_JSON="$($BIN wp update "$LIST_WP_ID" --project "$PROJ_ID" \
+      --field "$LIST_NAME=" --json)"
+    node -e '
+      const record = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const raw = record[process.argv[1]];
+      const entries = Array.isArray(raw) ? raw : [raw];
+      const left = entries.filter((entry) =>
+        entry !== null && entry !== undefined
+        && (typeof entry !== "object"
+          || (entry.id !== null && entry.id !== undefined)));
+      if (left.length > 0) {
+        console.error("smoke: clearing the list field left " + JSON.stringify(raw));
+        process.exit(3);
+      }
+    ' "$LIST_KEY" <<<"$CLEARED_JSON"
+  fi
+
+  step "delete work package $LIST_WP_ID"
+  $BIN wp delete "$LIST_WP_ID" --yes > /dev/null
+fi
+
 # --- Time log ---------------------------------------------------------------
 # The activity vocabulary hangs off the project; pick its first entry so the
 # script adapts to any instance instead of hardcoding "Development".

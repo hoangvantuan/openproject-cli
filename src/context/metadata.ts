@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { halRefId } from "../core/hal.js";
 import { apiGet, apiPost } from "../core/http.js";
 import { halElements } from "../core/paginate.js";
 import { OpCliError } from "../core/errors.js";
@@ -71,6 +72,12 @@ export interface StoredActivity {
   readonly is_default: boolean;
 }
 
+/** One selectable value of a list field, with the id behind its name. */
+export interface StoredCustomOption {
+  readonly id: number;
+  readonly name: string;
+}
+
 export interface StoredCustomField {
   readonly key: string;
   readonly id: number;
@@ -81,6 +88,26 @@ export interface StoredCustomField {
   // user-typed fields resolve values like --assignee.
   readonly is_boolean?: true;
   readonly is_user?: true;
+  /**
+   * A list field: its value is a CustomOption resource, so the payload
+   * carries an href under _links and never the option's text.
+   */
+  readonly is_list?: true;
+  /**
+   * The schema spells a multi-valued field "[]Kind". Only the list path
+   * reads this today; every other kind holds one value by construction.
+   */
+  readonly is_multi?: true;
+  /**
+   * The schema marks the field required: a work package of a type that
+   * carries it cannot be created without it.
+   */
+  readonly is_required?: true;
+  /**
+   * Every option of a list field, uncapped: resolution needs the id
+   * behind any name the caller may type, not a readable sample.
+   */
+  readonly allowed_options?: ReadonlyArray<StoredCustomOption>;
 }
 
 export interface ProjectVocabulary {
@@ -263,10 +290,57 @@ function toStoredCategory(element: HalElement): StoredCategory {
 // usable dropdown; the field keeps working, just without the list.
 const MAX_ALLOWED_VALUES = 50;
 
-function allowedValuesOf(property: HalElement): ReadonlyArray<string> {
+/**
+ * The selectable values of one schema property, in either shape an
+ * instance uses: full resources under `_embedded.allowedValues`, which is
+ * what the create form returns, or bare links under `_links.allowedValues`,
+ * which is all the schema endpoint ever carries. Anything without a
+ * readable id is dropped rather than resolved to a fabricated one.
+ */
+function allowedOptionsOf(property: HalElement): ReadonlyArray<StoredCustomOption> {
+  const embedded = (property._embedded ?? {}) as HalElement;
+  const resources = Array.isArray(embedded.allowedValues)
+    ? (embedded.allowedValues as ReadonlyArray<unknown>)
+    : [];
+  if (resources.length > 0) {
+    return resources.flatMap((value) => {
+      const option = value as HalElement;
+      const id = Number(option.id);
+      if (!Number.isFinite(id)) {
+        return [];
+      }
+      return [{
+        id,
+        // A CustomOption spells its text "value"; every other resource
+        // spells it "name".
+        name: asString(option.value ?? option.name),
+      }];
+    });
+  }
   const links = (property._links ?? {}) as HalElement;
-  const values = Array.isArray(links.allowedValues) ? links.allowedValues : [];
-  return values.map((value) => asString((value as HalElement).title));
+  const values = Array.isArray(links.allowedValues)
+    ? (links.allowedValues as ReadonlyArray<unknown>)
+    : [];
+  return values.flatMap((value) => {
+    const link = value as HalElement;
+    const id = halRefId(typeof link.href === "string" ? link.href : null);
+    return id === null ? [] : [{ id, name: asString(link.title) }];
+  });
+}
+
+/**
+ * The allowed values of one custom field as humans read them: the names of
+ * a list field's options, or the values the schema listed for any other
+ * kind. A vocabulary longer than MAX_ALLOWED_VALUES teaches nothing in a
+ * table cell, so it renders as nothing.
+ */
+export function customFieldAllowedNames(
+  field: StoredCustomField,
+): ReadonlyArray<string> {
+  const names = field.allowed_options === undefined
+    ? field.allowed_values ?? []
+    : field.allowed_options.map((option) => option.name);
+  return names.length > MAX_ALLOWED_VALUES ? [] : names;
 }
 
 function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
@@ -275,19 +349,31 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
     if (!/^customField\d+$/.test(key)) {
       continue;
     }
-    const values = allowedValuesOf(property as HalElement);
     // The schema `type` decides input validation downstream; anything
-    // beyond Boolean/User stays unmarked and passes through as text.
+    // beyond Boolean/User/CustomOption stays unmarked and passes through
+    // as text. A multi-valued field spells its kind "[]Kind".
     const kind = asString((property as HalElement).type).toLowerCase();
+    const single = kind.replace(/^\[\]/, "");
+    const isUser = kind === "user";
+    // A user field's allowed values are the project's members, which
+    // meta members already lists; keeping them here would only bloat the
+    // store.
+    const options = isUser ? [] : allowedOptionsOf(property as HalElement);
+    const isList = single === "customoption";
     fields.push({
       key,
       id: Number(key.slice("customField".length)),
       name: asString((property as HalElement).name),
-      ...(values.length > 0 && values.length <= MAX_ALLOWED_VALUES
-        ? { allowed_values: values }
+      ...((property as HalElement).required === true
+        ? { is_required: true as const }
+        : {}),
+      ...(!isList && options.length > 0 && options.length <= MAX_ALLOWED_VALUES
+        ? { allowed_values: options.map((option) => option.name) }
         : {}),
       ...(kind === "boolean" ? { is_boolean: true as const } : {}),
-      ...(kind === "user" ? { is_user: true as const } : {}),
+      ...(isUser ? { is_user: true as const } : {}),
+      ...(isList ? { is_list: true as const, allowed_options: options } : {}),
+      ...(kind.startsWith("[]") ? { is_multi: true as const } : {}),
     });
   }
   return fields;
@@ -362,6 +448,40 @@ async function fetchActivities(
   return sortByName(activities);
 }
 
+/**
+ * The schema of one project-and-type pair, from the richest source that
+ * answers. The bare schema endpoint names every custom field but leaves a
+ * list field's allowed values empty; only the create form fills them, so
+ * the form is asked first. A caller who may not open a create form still
+ * gets every field, just without the options.
+ */
+async function fetchTypeSchema(
+  profile: ActiveProfile,
+  projectId: number,
+  typeId: number,
+): Promise<HalElement> {
+  try {
+    const form = (await apiPost(
+      profile.instanceUrl,
+      profile.apiKey,
+      `/api/v3/projects/${String(projectId)}/work_packages/form`,
+      { _links: { type: { href: `/api/v3/types/${String(typeId)}` } } },
+    )) as HalElement;
+    const embedded = (form._embedded ?? {}) as HalElement;
+    const schema = embedded.schema;
+    if (typeof schema === "object" && schema !== null && !Array.isArray(schema)) {
+      return schema as HalElement;
+    }
+  } catch {
+    // The form is an enrichment, never the only source.
+  }
+  return (await apiGet(
+    profile.instanceUrl,
+    profile.apiKey,
+    `/api/v3/work_packages/schemas/${String(projectId)}-${String(typeId)}`,
+  )) as HalElement;
+}
+
 async function fetchCustomFields(
   profile: ActiveProfile,
   projectId: number,
@@ -373,11 +493,7 @@ async function fetchCustomFields(
   );
   const byType: Record<string, ReadonlyArray<StoredCustomField>> = {};
   for (const typeId of typeIds) {
-    const schema = (await apiGet(
-      profile.instanceUrl,
-      profile.apiKey,
-      `/api/v3/work_packages/schemas/${String(projectId)}-${String(typeId)}`,
-    )) as HalElement;
+    const schema = await fetchTypeSchema(profile, projectId, typeId);
     byType[String(typeId)] = sortByName(customFieldEntries(schema));
   }
   return byType;

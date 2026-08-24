@@ -2,6 +2,7 @@ import type { Command } from "commander";
 
 import {
   clearStoredMetadata,
+  customFieldAllowedNames,
   loadProjectVocabulary,
   loadStoredMetadata,
   readStoredMetadata,
@@ -154,7 +155,7 @@ const fieldLookup: LookupSpec<StoredCustomField, ProjectVocabulary> = {
     { title: "KEY", cell: (entry) => entry.key },
     {
       title: "ALLOWED VALUES",
-      cell: (entry) => (entry.allowed_values ?? []).join(", "),
+      cell: (entry) => customFieldAllowedNames(entry).join(", "),
     },
   ],
 };

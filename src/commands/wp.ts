@@ -460,7 +460,7 @@ async function prepareCreatePayload(
 ): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
   const { payload, refs } = await resolveNamedValues(runtime, profile, values, memo);
   payload.subject = subject;
-  const links = payload._links as Record<string, { href: string }>;
+  const links = payload._links as Record<string, LinkValue>;
   links.project = { href: `/api/v3/projects/${String(profile.project)}` };
   return { payload, refs };
 }
@@ -817,6 +817,17 @@ async function resolveFieldDefinition(
 }
 
 /**
+ * One value under `_links`: a single href, or one per value when the
+ * attribute holds several. A null href clears the attribute, which is the
+ * only way to empty something whose value is a resource.
+ */
+type LinkValue =
+  | { readonly href: string | null }
+  | ReadonlyArray<{ readonly href: string }>;
+
+const CUSTOM_OPTIONS_HREF = "/api/v3/custom_options/";
+
+/**
  * One attribute whose payload id was built by resolving a NAME against
  * metadata. Only these can be repaired by the proof-carrying retry of
  * ADR-0002; caller-given ids never depend on cached knowledge.
@@ -843,7 +854,7 @@ interface ResolvedAttribute {
  * retried after one real refresh.
  */
 async function resolveLinkOption(
-  links: Record<string, { href: string }>,
+  links: Record<string, LinkValue>,
   attribute: string,
   hrefBase: string,
   flag: string,
@@ -868,7 +879,7 @@ async function resolveLinkOption(
 async function resolveUserOption(
   runtime: WpRuntime,
   profile: ActiveProfile,
-  links: Record<string, { href: string }>,
+  links: Record<string, LinkValue>,
   attribute: string,
   hrefBase: string,
   flag: string,
@@ -938,6 +949,83 @@ async function userFieldValue(
     });
   }
   payload[field.key] = { href: `/api/v3/users/${String(id)}` };
+}
+
+/** The options of one list field, as a vocabulary names resolve against. */
+function listFieldSource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  field: StoredCustomField,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  return projectSource<number>(
+    runtime,
+    profile,
+    "field",
+    field.name,
+    // Read the options back out of the vocabulary rather than off the
+    // captured definition: after a refresh the store holds fresh ids, and
+    // a field attached to several types repeats one option list.
+    (vocabulary) =>
+      Object.values(vocabulary.custom_fields)
+        .flat()
+        .filter((entry) => entry.key === field.key)
+        .flatMap((entry) => entry.allowed_options ?? [])
+        .map((option) => ({
+          name: option.name,
+          owner: field.name,
+          value: option.id,
+        })),
+    memo,
+  );
+}
+
+/**
+ * A list field's value is a CustomOption resource: the payload carries its
+ * href under _links, never the option's text, which the API accepts and
+ * then ignores. Clearing empties the same place, because a value that
+ * lives under _links has no top-level form to null out.
+ */
+async function listFieldValues(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  field: StoredCustomField,
+  values: ReadonlyArray<string>,
+  links: Record<string, LinkValue>,
+  refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
+): Promise<void> {
+  if (values.length > 1 && field.is_multi !== true) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `--field "${field.name}" holds one value.`,
+      "a single-valued list field takes one option name or id.",
+    );
+  }
+  const source = listFieldSource(runtime, profile, field, memo);
+  const hrefs: Array<{ href: string }> = [];
+  for (const value of values) {
+    const id = isIdForm(value)
+      ? Number(value)
+      : Number(await resolveName(value, source));
+    if (!isIdForm(value)) {
+      refs.push({
+        attribute: field.key,
+        raw: value,
+        idBefore: id,
+        hrefBase: CUSTOM_OPTIONS_HREF,
+        source,
+        link: true,
+      });
+    }
+    const href = `${CUSTOM_OPTIONS_HREF}${String(id)}`;
+    if (!hrefs.some((entry) => entry.href === href)) {
+      hrefs.push({ href });
+    }
+  }
+  links[field.key] = field.is_multi === true
+    ? hrefs
+    : hrefs[0] ?? { href: null };
 }
 
 const RETRYABLE_WRITE_STATUSES: ReadonlyArray<number> = [404, 422];
@@ -1084,7 +1172,8 @@ function sameJson(left: unknown, right: unknown): boolean {
  * reads. Only fields in the patch matter: a colleague's edit elsewhere
  * is exactly the race the single retry exists to absorb, so it never
  * blocks. Link attributes compare by href, scalar and custom-field keys
- * by JSON value.
+ * by JSON value. A multi-valued link attribute holds one link per value,
+ * so its hrefs compare element-wise.
  */
 function conflictingFields(
   before: unknown,
@@ -1110,11 +1199,13 @@ function conflictingFields(
       }
       const beforeLinks = beforeRecord._links as Record<string, unknown> | undefined;
       const afterLinks = afterRecord._links as Record<string, unknown> | undefined;
-      const href = (link: unknown): unknown =>
-        typeof link === "object" && link !== null
-          ? (link as Record<string, unknown>).href
-          : link;
-      if (!sameJson(href(beforeLinks?.[key]), href(afterLinks?.[key]))) {
+      const hrefs = (link: unknown): unknown =>
+        Array.isArray(link)
+          ? link.map(hrefs)
+          : typeof link === "object" && link !== null
+            ? (link as Record<string, unknown>).href
+            : link;
+      if (!sameJson(hrefs(beforeLinks?.[key]), hrefs(afterLinks?.[key]))) {
         conflicts.push(key);
       }
     }
@@ -1162,7 +1253,7 @@ async function retryWithFreshIds(
   }
   await refreshStoredMetadata(runtime.env, profile);
   memo?.invalidate();
-  const links = payload._links as Record<string, { href: string }>;
+  const links = payload._links as Record<string, LinkValue>;
   let changedAny = false;
   for (const suspect of suspects) {
     // After the refresh the cache holds the fresh snapshot; a value that
@@ -1177,11 +1268,20 @@ async function retryWithFreshIds(
       continue;
     }
     changedAny = true;
-    if (suspect.link) {
-      links[suspect.attribute] = { href: `${suspect.hrefBase}${String(refreshed)}` };
-    } else {
-      payload[suspect.attribute] = { href: `${suspect.hrefBase}${String(refreshed)}` };
+    const patched = { href: `${suspect.hrefBase}${String(refreshed)}` };
+    if (!suspect.link) {
+      payload[suspect.attribute] = patched;
+      continue;
     }
+    // A multi-valued attribute keeps its other values: only the element
+    // built from this very name moves.
+    const current = links[suspect.attribute];
+    links[suspect.attribute] = Array.isArray(current)
+      ? current.map((entry) =>
+          entry.href === `${suspect.hrefBase}${String(suspect.idBefore)}`
+            ? patched
+            : entry)
+      : patched;
   }
   if (!changedAny) {
     return response;
@@ -1369,7 +1469,7 @@ async function resolveNamedValues(
   memo?: ResolutionMemo,
 ): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
   const refs: Array<ResolvedAttribute> = [];
-  const links: Record<string, { href: string }> = {};
+  const links: Record<string, LinkValue> = {};
   await resolveLinkOption(
     links,
     "type",
@@ -1476,7 +1576,25 @@ async function resolveNamedValues(
       );
     }
     if (cleared) {
-      payload[field.key] = null;
+      if (field.is_list === true) {
+        // Nothing to resolve, but the empty value still belongs where the
+        // option would have gone.
+        await listFieldValues(runtime, profile, field, [], links, refs, memo);
+      } else {
+        payload[field.key] = null;
+      }
+      continue;
+    }
+    if (field.is_list === true) {
+      await listFieldValues(
+        runtime,
+        profile,
+        field,
+        pairs.map((pair) => pair.value),
+        links,
+        refs,
+        memo,
+      );
       continue;
     }
     if (field.is_boolean === true) {

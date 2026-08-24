@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { run } from "../src/run.js";
 import {
   baseMetadata,
+  CUSTOM_OPTIONS_HREF,
   customFieldKey,
   customFieldsFromSchema,
   INSTANCE,
@@ -68,6 +69,24 @@ const TYPE_TASK_FIELDS = schemaFragment([
 ]);
 const TYPE_BUG_FIELDS = schemaFragment([
   { index: 12, name: "Impediment" },
+  {
+    index: 6,
+    name: "Bug Type",
+    kind: "CustomOption",
+    options: [
+      { id: 4, name: "Logic/Code" },
+      { id: 5, name: "Lack specs" },
+    ],
+  },
+  {
+    index: 21,
+    name: "Bug Labels",
+    kind: "[]CustomOption",
+    options: [
+      { id: 30, name: "Medium" },
+      { id: 31, name: "Blocker" },
+    ],
+  },
 ]);
 
 const PROJECT_VOCABULARY = projectVocabulary({
@@ -187,6 +206,48 @@ function refreshEndpoints(
   };
 }
 
+/**
+ * Everything one project-scoped metadata refresh reads, with the given
+ * schema answered by the create form of every type. A name that misses
+ * spends its one refresh here (ADR-0002) instead of hitting the network.
+ */
+function projectRefreshInstall(
+  schema: Record<string, unknown>,
+): InstallOptions {
+  const memberFilters = encodeURIComponent(
+    JSON.stringify([{ project: { operator: "=", values: ["13"] } }]),
+  );
+  const empty = {
+    _type: "Collection",
+    total: 0,
+    count: 0,
+    _embedded: { elements: [] },
+  };
+  return {
+    packages: {
+      ...refreshEndpoints(baseMetadata()),
+      [`/api/v3/memberships?filters=${memberFilters}`]: empty,
+      "/api/v3/projects/13/versions": empty,
+      "/api/v3/projects/13/categories": empty,
+      "/api/v3/projects/13/types": {
+        _type: "Collection",
+        total: 1,
+        count: 1,
+        _embedded: { elements: [{ _type: "Type", id: 6 }] },
+      },
+    },
+    postPackages: {
+      "/api/v3/time_entries/form": {
+        _embedded: { schema: { activity: { _embedded: { allowedValues: [] } } } },
+      },
+      "/api/v3/projects/13/work_packages/form": {
+        _type: "Form",
+        _embedded: { schema: { _type: "Schema", ...schema } },
+      },
+    },
+  };
+}
+
 async function runWp(
   configDir: string,
   cacheDir: string,
@@ -303,6 +364,147 @@ describe("wp create values by name", () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(postBodies[0]).toHaveProperty(customFieldKey(11), null);
+  });
+
+  test("a list field resolves its value to a custom_options href in _links", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1510, "QA bug") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Type=Logic/Code",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links[customFieldKey(6)]).toEqual({ href: `${CUSTOM_OPTIONS_HREF}4` });
+    // The option's text at the top level is exactly what the API ignores.
+    expect(postBodies[0]).not.toHaveProperty(customFieldKey(6));
+  });
+
+  test("a list field accepts the explicit id of an option", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1511, "QA bug") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Type=5",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links[customFieldKey(6)]).toEqual({ href: `${CUSTOM_OPTIONS_HREF}5` });
+  });
+
+  test("an unknown list value exits 1 listing the allowed values", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi(projectRefreshInstall(TYPE_BUG_FIELDS));
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Type=Logic",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain("Logic/Code");
+    expect(result.stderr).toContain("Lack specs");
+    expect(postBodies).toHaveLength(0);
+  });
+
+  test("a multi-valued list field carries one href per value", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1512, "QA bug") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Labels=Medium",
+      "--field",
+      "Bug Labels=Blocker",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, unknown>;
+    expect(links[customFieldKey(21)]).toEqual([
+      { href: `${CUSTOM_OPTIONS_HREF}30` },
+      { href: `${CUSTOM_OPTIONS_HREF}31` },
+    ]);
+  });
+
+  test("a single-valued list field refuses two values before any traffic", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({});
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Type=Logic/Code",
+      "--field",
+      "Bug Type=Lack specs",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Bug Type");
+    expect(postBodies).toHaveLength(0);
+  });
+
+  test("clearing a list field sends a null href where the option lives", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1513, "QA bug") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Type=",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, unknown>;
+    expect(links[customFieldKey(6)]).toEqual({ href: null });
+    expect(postBodies[0]).not.toHaveProperty(customFieldKey(6));
+  });
+
+  test("clearing a multi-valued list field sends an empty href list", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1514, "QA bug") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      "--field",
+      "Bug Labels=",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, unknown>;
+    expect(links[customFieldKey(21)]).toEqual([]);
   });
 
   test("refuses mixing a cleared and a set value for one field", async () => {
@@ -789,6 +991,108 @@ describe("wp create retry rule", () => {
     expect(result.exitCode).toBe(6);
     expect(result.stderr).toContain("[NETWORK_ERROR]");
     expect(result.stderr).toContain("unknown");
+  });
+
+  // The cache still says Logic/Code is option 4 and Medium is option 30;
+  // the fresh form says 44 and 40. A proof-carrying retry must land there.
+  const STALE_BUG_FIELDS = schemaFragment([
+    {
+      index: 6,
+      name: "Bug Type",
+      kind: "CustomOption",
+      options: [{ id: 4, name: "Logic/Code" }],
+    },
+    {
+      index: 21,
+      name: "Bug Labels",
+      kind: "[]CustomOption",
+      options: [{ id: 30, name: "Medium" }, { id: 31, name: "Blocker" }],
+    },
+  ]);
+  const FRESH_BUG_FIELDS = schemaFragment([
+    {
+      index: 6,
+      name: "Bug Type",
+      kind: "CustomOption",
+      options: [{ id: 44, name: "Logic/Code" }],
+    },
+    {
+      index: 21,
+      name: "Bug Labels",
+      kind: "[]CustomOption",
+      options: [{ id: 40, name: "Medium" }, { id: 31, name: "Blocker" }],
+    },
+  ]);
+
+  async function staleOptionRoom(
+    args: ReadonlyArray<string>,
+    attribute: string,
+  ): Promise<RetryRoom> {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, {
+      ...baseMetadata(),
+      projectScoped: {
+        "13": projectVocabulary({ "6": customFieldsFromSchema(STALE_BUG_FIELDS) }),
+      },
+    });
+    const { postBodies } = installMockApi({
+      ...projectRefreshInstall(FRESH_BUG_FIELDS),
+      posts: [
+        {
+          status: 422,
+          body: {
+            _type: "Error",
+            message: "Multiple field constraints have been violated.",
+            _embedded: { details: { attribute } },
+          },
+        },
+        { status: 201, body: createdElement(1520, "QA bug") },
+      ],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "QA bug",
+      "--type",
+      "Bug",
+      ...args,
+    ]);
+    return { result, postBodies };
+  }
+
+  test("retries once on 422 when the refresh moves a list option id", async () => {
+    const { result, postBodies } = await staleOptionRoom(
+      ["--field", "Bug Type=Logic/Code"],
+      customFieldKey(6),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(2);
+    const option = (body: Record<string, unknown>) =>
+      (body._links as Record<string, { href: string }>)[customFieldKey(6)];
+    expect(option(postBodies[0] as Record<string, unknown>)).toEqual({
+      href: `${CUSTOM_OPTIONS_HREF}4`,
+    });
+    expect(option(postBodies[1] as Record<string, unknown>)).toEqual({
+      href: `${CUSTOM_OPTIONS_HREF}44`,
+    });
+  });
+
+  test("the retry moves one option of a multi-valued field and keeps the rest", async () => {
+    const { result, postBodies } = await staleOptionRoom(
+      ["--field", "Bug Labels=Medium", "--field", "Bug Labels=Blocker"],
+      customFieldKey(21),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(2);
+    const options = (body: Record<string, unknown>) =>
+      (body._links as Record<string, unknown>)[customFieldKey(21)];
+    expect(options(postBodies[0] as Record<string, unknown>)).toEqual([
+      { href: `${CUSTOM_OPTIONS_HREF}30` },
+      { href: `${CUSTOM_OPTIONS_HREF}31` },
+    ]);
+    expect(options(postBodies[1] as Record<string, unknown>)).toEqual([
+      { href: `${CUSTOM_OPTIONS_HREF}40` },
+      { href: `${CUSTOM_OPTIONS_HREF}31` },
+    ]);
   });
 
   test("retries once on 422 for a user-typed field when the refresh moves the member id", async () => {
