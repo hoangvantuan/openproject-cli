@@ -55,6 +55,8 @@ op-cli wp update <id> --status Closed --assignee me
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>
+# give a work package a markdown body
+op-cli wp create <subject> --description <markdown>
 # delete needs explicit confirmation; bulk-create from a JSON array
 op-cli wp delete <id> --yes
 echo '[{"subject":"First"},{"subject":"Second"}]' | op-cli wp create --stdin

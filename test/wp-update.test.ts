@@ -500,3 +500,54 @@ describe("wp update --parent", () => {
     expect(patchBodies).toHaveLength(1);
   });
 });
+
+describe("wp update --description", () => {
+  function installPlainApi(): { patchBodies: Array<Record<string, unknown>> } {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    cleanups.push(async () => {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    });
+    const pool = mockAgent.get(INSTANCE);
+    pool.intercept({ path: WP_PATH, method: "GET" })
+      .reply(200, wpRecord(1, "open")).persist();
+    const patchBodies: Array<Record<string, unknown>> = [];
+    pool.intercept({ path: WP_PATH, method: "PATCH" }).reply((call) => {
+      patchBodies.push(JSON.parse(String(call.body)) as Record<string, unknown>);
+      return { statusCode: 200, data: wpRecord(2, "open") };
+    }).persist();
+    return { patchBodies };
+  }
+
+  test("patches the text as a formattable raw object with the lockVersion", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installPlainApi();
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--description",
+      "New body.",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]?.lockVersion).toBe(1);
+    expect(patchBodies[0]?.description).toEqual({ raw: "New body." });
+  });
+
+  test("--description alone satisfies the needs-a-value guard", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installPlainApi();
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--description",
+      "",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies[0]?.description).toEqual({ raw: "" });
+  });
+});

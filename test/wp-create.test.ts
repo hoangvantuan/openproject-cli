@@ -998,3 +998,36 @@ describe("wp create --parent", () => {
     expect(result.stderr).toContain('no work package has the subject "Ship the thing"');
   });
 });
+
+describe("wp create --description", () => {
+  test("sends the text as a formattable raw object, not a plain string", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1510, "Documented") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Documented",
+      "--description",
+      "Body text with **markdown**.",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(1);
+    expect(postBodies[0]?.description).toEqual({ raw: "Body text with **markdown**." });
+  });
+
+  test("an empty value clears the field as an empty formattable", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1511, "Blank body") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Blank body",
+      "--description",
+      "",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies[0]?.description).toEqual({ raw: "" });
+  });
+});

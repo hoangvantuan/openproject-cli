@@ -370,6 +370,7 @@ interface CreateValueFlags {
   readonly version?: string;
   readonly category?: string;
   readonly parent?: string;
+  readonly description?: string;
   readonly field?: Array<string>;
 }
 
@@ -506,6 +507,7 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "version",
   "category",
   "parent",
+  "description",
   "field",
 ];
 
@@ -544,6 +546,7 @@ function parseBulkItem(
     version?: string;
     category?: string;
     parent?: string;
+    description?: string;
     field?: Array<string>;
   } = {};
   const scalarKeys: ReadonlyArray<Exclude<keyof CreateValueFlags, "field">> = [
@@ -554,6 +557,7 @@ function parseBulkItem(
     "version",
     "category",
     "parent",
+    "description",
   ];
   for (const key of scalarKeys) {
     const rawValue = record[key];
@@ -729,6 +733,7 @@ interface UpdateOptions {
   readonly version?: string;
   readonly category?: string;
   readonly parent?: string;
+  readonly description?: string;
   readonly field?: Array<string>;
   readonly json?: boolean;
   readonly profile?: string;
@@ -1468,6 +1473,12 @@ async function resolveNamedValues(
   }
 
   const payload: Record<string, unknown> = { _links: links };
+
+  // Description is a Formattable on the wire: OpenProject drops a plain
+  // string silently, so it always travels as its raw property (#22).
+  if (options.description !== undefined) {
+    payload.description = { raw: options.description };
+  }
   const groups = new Map<string, {
     field: StoredCustomField;
     pairs: Array<FieldPair>;
@@ -1820,6 +1831,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--version <name-or-id>", "version of the project, by name or id")
     .option("--category <name-or-id>", "category of the project, by name or id")
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
+    .option("--description <text>", "markdown description of the work package")
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -1885,6 +1897,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--version <name-or-id>", "version of the project, by name or id")
     .option("--category <name-or-id>", "category of the project, by name or id")
     .option("--parent <id-or-subject>", "re-parent under this work package, by id or exact subject")
+    .option("--description <text>", "new markdown description of the work package")
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -1906,6 +1919,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.assignee !== undefined
         || options.version !== undefined
         || options.category !== undefined
+        || options.description !== undefined
         || (options.field?.length ?? 0) > 0;
       if (!touchesSomething) {
         throw new OpCliError(
