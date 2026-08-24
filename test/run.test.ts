@@ -46,14 +46,76 @@ describe("op-cli entry function", () => {
     expect(result.stdout).toContain("auth");
   });
 
-  test("command misuse returns the stable usage error", async () => {
+  test("command misuse names the unknown command under the stable code", async () => {
     const result = await run(["unknown"], {}, {});
 
     expect(result).toEqual({
       stdout: "",
       stderr:
-        "[USAGE_ERROR] Invalid command usage. Hint: run op-cli --help.\n",
+        '[USAGE_ERROR] unknown command "unknown". '
+        + "Hint: run op-cli --help to see what it accepts.\n",
       exitCode: 1,
+    });
+  });
+
+  test("an unrecognised flag names the flag and the command that refused it", async () => {
+    const result = await run(["wp", "get", "1", "--nope"], {}, {});
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        '[USAGE_ERROR] unknown option "--nope". '
+        + "Hint: run op-cli wp get --help to see what it accepts.\n",
+      exitCode: 1,
+    });
+  });
+
+  test("a missing required option names the option instead of the whole command", async () => {
+    const result = await run(["time", "log", "3204", "--activity", "Development"], {}, {});
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        '[USAGE_ERROR] required option "--hours <value>" is missing. '
+        + "Hint: run op-cli time log --help to see what it accepts.\n",
+      exitCode: 1,
+    });
+  });
+
+  test("a missing argument names the argument", async () => {
+    const result = await run(["wp", "get"], {}, {});
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        '[USAGE_ERROR] missing required argument "id". '
+        + "Hint: run op-cli wp get --help to see what it accepts.\n",
+      exitCode: 1,
+    });
+  });
+
+  test("a parse failure with no single culprit keeps Commander's own account", async () => {
+    const result = await run(["wp", "get", "1", "2", "3"], {}, {});
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        '[USAGE_ERROR] too many arguments for "get". Expected 1 argument but got 3. '
+        + "Hint: run op-cli wp get --help to see what it accepts.\n",
+      exitCode: 1,
+    });
+  });
+
+  test("a usage error stays one JSON object when the session emits JSON", async () => {
+    const result = await run(["wp", "get", "1", "--nope"], { OP_CLI_OUTPUT: "json" }, {});
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({
+      error: {
+        code: "USAGE_ERROR",
+        message: 'unknown option "--nope".',
+        hint: "run op-cli wp get --help to see what it accepts.",
+      },
     });
   });
 

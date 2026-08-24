@@ -54,6 +54,11 @@ op-cli doctor            # diagnose connectivity, credentials, versions
 - **Deletion is guarded.** Deleting a project is irreversible: `wp delete`,
   `time delete`, and `project delete` all require an explicit `--yes`.
   `user delete` is not offered at all; there is no workaround by design.
+- **JSON records follow the API, `--fields` narrows them.** `--json` emits
+  the flattened OpenProject record, so an instance's own custom fields show
+  up without a CLI release; pass `--fields id,subject,status` on any
+  record-returning command to keep only what you read. With `--all` a
+  listing streams NDJSON, one record per line, not an array.
 - **`project copy` copies properties only** (description, visibility, and
   parent). It does not copy work packages, members, or wiki pages.
 - **No escape hatch by design.** If a command is missing there is no raw

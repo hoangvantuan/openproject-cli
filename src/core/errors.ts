@@ -69,6 +69,39 @@ export class OpCliError extends Error {
   }
 }
 
+/** OpenProject's own explanation of a refusal, when the body carries one. */
+function explanationOf(body: unknown): string | undefined {
+  const message = typeof body === "object" && body !== null
+    ? (body as Record<string, unknown>).message
+    : undefined;
+  return typeof message === "string" ? message : undefined;
+}
+
+/**
+ * The catalogue entry for a write the instance refused. A refusal is not
+ * an outage: the same request will be refused the same way until the
+ * values change, so it must not borrow the "try again later" hint that
+ * belongs to an unreachable or overloaded instance. The one exception is
+ * 429, where waiting is exactly the repair.
+ */
+export function writeRefusal(
+  subject: string,
+  status: number,
+  body: unknown,
+): OpCliError {
+  const explanation = explanationOf(body);
+  const message = `OpenProject rejected the ${subject}`
+    + (explanation === undefined ? "." : `: ${explanation}`);
+  if (status === 429) {
+    return new OpCliError("API_ERROR", message);
+  }
+  return new OpCliError(
+    "API_ERROR",
+    message,
+    "fix the rejected values and repeat the command.",
+  );
+}
+
 export function renderTextError(error: OpCliError): string {
   return `[${error.code}] ${error.message} Hint: ${error.hint}\n`;
 }

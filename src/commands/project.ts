@@ -2,9 +2,14 @@ import type { Command } from "commander";
 
 import { formatCell, renderTable } from "../output/table.js";
 
-import { OpCliError } from "../core/errors.js";
+import { OpCliError, writeRefusal } from "../core/errors.js";
 import { filtersQuery, type WpFilter } from "../core/filters.js";
-import { emitRows, type CollectionColumn, type CollectionRuntime } from "../core/define.js";
+import {
+  emitRows,
+  PAGED_JSON_HELP,
+  type CollectionColumn,
+  type CollectionRuntime,
+} from "../core/define.js";
 import { flattenHalRecord, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
@@ -295,15 +300,7 @@ async function projectWrite(
         : "check whether the project exists before repeating the command.",
     );
   }
-  const detail = typeof response.body === "object"
-    && response.body !== null
-    && typeof (response.body as Record<string, unknown>).message === "string"
-    ? (response.body as Record<string, unknown>).message as string
-    : undefined;
-  throw new OpCliError(
-    "API_ERROR",
-    detail === undefined ? undefined : `OpenProject rejected the ${verb}: ${detail}`,
-  );
+  throw writeRefusal(verb, response.status, response.body);
 }
 
 function requireIdentifier(options: { identifier?: string }, verb: string): string {
@@ -354,7 +351,7 @@ export function registerProjectCommands(
     .option("--archived", "only archived projects")
     .option("--favorite", "only projects favourited by the current user")
     .option("--parent <id>", "parent project id; repeat to OR values", collectValue, [])
-    .option("--json", "emit a flat JSON array")
+    .option("--json", PAGED_JSON_HELP)
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")
     .option("--profile <name>", "use this profile for this command only")

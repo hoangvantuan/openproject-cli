@@ -9,6 +9,7 @@ import {
   LOGIN_PROFILE,
 } from "./context/profile.js";
 import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
+import { usageErrorFrom } from "./core/usage.js";
 import { authenticate } from "./core/http.js";
 import { renderProfilesTable, renderStatusTable } from "./output/table.js";
 import { registerMetaCommands } from "./commands/meta.js";
@@ -47,6 +48,10 @@ export async function run(
   // Spec story 51: one environment variable makes JSON the output for
   // the whole session, errors included, instead of a flag per command.
   let jsonOutput = env.OP_CLI_OUTPUT === "json";
+
+  // Keyed by the thrown error because Commander hands the failing command
+  // to its own exit callback and to nobody else.
+  const failedIn = new WeakMap<CommanderError, string>();
 
   const program = new Command()
     .name("op-cli")
@@ -275,10 +280,18 @@ export async function run(
   // they miss the root's exitOverride and output capture; without this
   // walk their --help would print to the real stdout and process.exit,
   // and the seam would never return.
-  const captureHelp = (command: Command): void => {
+  //
+  // The walk also records which command refused the parse: Commander
+  // throws from that command's own exitOverride, and nothing downstream
+  // could name it afterwards.
+  const captureHelp = (command: Command, path: string): void => {
     for (const child of command.commands) {
+      const childPath = `${path} ${child.name()}`;
       child
-        .exitOverride()
+        .exitOverride((error) => {
+          failedIn.set(error, childPath);
+          throw error;
+        })
         .configureOutput({
           writeOut: (text) => {
             stdout += text;
@@ -287,10 +300,10 @@ export async function run(
             stderr += text;
           },
         });
-      captureHelp(child);
+      captureHelp(child, childPath);
     }
   };
-  captureHelp(program);
+  captureHelp(program, program.name());
 
   try {
     await program.parseAsync([...argv], { from: "user" });
@@ -303,7 +316,7 @@ export async function run(
       return { stdout, stderr, exitCode: 0 };
     }
     if (error instanceof CommanderError) {
-      const usageError = new OpCliError("USAGE_ERROR");
+      const usageError = usageErrorFrom(error, failedIn.get(error) ?? program.name());
       return {
         stdout,
         // Text mode replaces Commander's prose with the catalogue line,

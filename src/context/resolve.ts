@@ -104,11 +104,22 @@ function missingError(
   source: LookupSource<unknown>,
   names: ReadonlyArray<string>,
 ): OpCliError {
+  const hint = "run op-cli meta refresh if the instance changed recently.";
+  // An empty vocabulary has nothing to rank, and "closest first: ." reads
+  // as a rendering fault rather than as the fact that there is no
+  // candidate at all.
+  if (names.length === 0) {
+    return new OpCliError(
+      "USAGE_ERROR",
+      `${source.label} "${raw}" not found; no ${source.label} is available to match.`,
+      hint,
+    );
+  }
   return new OpCliError(
     "USAGE_ERROR",
     `${source.label} "${raw}" not found. Valid values, closest first: `
       + `${rankByCloseness(raw, names).join(", ")}.`,
-    "run op-cli meta refresh if the instance changed recently.",
+    hint,
   );
 }
 

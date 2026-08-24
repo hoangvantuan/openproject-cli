@@ -26,6 +26,8 @@ and the tool turns names into ids itself. Run any command below with
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it.
   - `--all --json` streams NDJSON: one JSON record per line, not an array.
+  - `--fields id,subject` narrows any record the CLI reports, `wp create`
+    and `wp update` included; without it `--json` carries the whole record.
   - A truncated list warns on stderr ("Showing X of Y records. Pass --all")
     while data stays on stdout and the exit code stays 0.
 
@@ -92,7 +94,7 @@ Codes are a closed set with stable exit codes, 0 through 7.
 |---|---|---|
 | USAGE_ERROR | 1 | fix flags or arguments; run the command again with `--help` |
 | PROFILE_NOT_FOUND | 1 | run `op-cli auth login`; env vars alone also work |
-| API_ERROR | 2 | OpenProject rejected or failed the request; retry later |
+| API_ERROR | 2 | read the message: a rejected write needs different values, a failed request may be worth retrying |
 | INTERNAL_ERROR | 2 | retry once; if it persists, report with `op-cli doctor` output |
 | AUTH_FAILED | 3 | credentials or permissions changed; run `op-cli auth login` |
 | NOT_FOUND | 4 | check the id; run `op-cli meta refresh` if names changed recently |

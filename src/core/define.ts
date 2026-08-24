@@ -91,6 +91,14 @@ export function defineLookupCommand<Row, Data>(
   return command;
 }
 
+/**
+ * Help text of --json wherever --all exists. With --all the output is one
+ * record per line, not an array (#8), and a caller who reads only --help
+ * would otherwise write JSON.parse over the whole body.
+ */
+export const PAGED_JSON_HELP =
+  "emit a flat JSON array, or NDJSON (one record per line) with --all";
+
 export interface CollectionColumn {
   readonly title: string;
   readonly field: string;
@@ -203,7 +211,7 @@ export function defineCollectionCommand(
   const command = new Command(spec.name)
     .description(spec.description)
     .argument("<id>", "work package id")
-    .option("--json", "emit a flat JSON array")
+    .option("--json", PAGED_JSON_HELP)
     .option("--fields <list>", "comma-separated columns to show")
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")

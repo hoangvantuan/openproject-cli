@@ -310,6 +310,24 @@ function timeEntryFormFixture(): Record<string, unknown> {
   };
 }
 
+/** The same create form for a project that offers no activity at all. */
+function emptyActivityFormFixture(): Record<string, unknown> {
+  const form = timeEntryFormFixture();
+  const embedded = form._embedded as Record<string, unknown>;
+  const schema = embedded.schema as Record<string, unknown>;
+  const activity = schema.activity as Record<string, unknown>;
+  return {
+    ...form,
+    _embedded: {
+      ...embedded,
+      schema: {
+        ...schema,
+        activity: { ...activity, _embedded: { allowedValues: [] } },
+      },
+    },
+  };
+}
+
 /** Every vocabulary endpoint a metadata refresh walks, all empty. */
 function refreshEndpoints(): Record<string, unknown> {
   const memberFilters = encodeURIComponent(
@@ -396,6 +414,67 @@ describe("time log", () => {
     });
   });
 
+  test("--fields narrows the record the log reports", async () => {
+    const root = await makeTempRoom("time-log-fields-json-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    await writeMetadataFile(
+      cacheDir,
+      withVocabulary(baseMetadata(), [
+        { id: 1, name: "Development", is_default: true },
+      ]),
+    );
+    installMockApi({
+      packages: {
+        "/api/v3/work_packages/675": wpResource(675),
+      },
+      posts: [
+        { status: 201, body: timeEntryElement(3003, 675, "Fix login redirect", "PT1H30M") },
+      ],
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "log",
+      "675",
+      "--hours",
+      "1h30m",
+      "--fields",
+      "id,hours",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ id: 3003, hours: 1.5 });
+  });
+
+  test("an unknown --fields name says the entry was logged anyway", async () => {
+    const root = await makeTempRoom("time-log-fields-miss-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    await writeMetadataFile(
+      cacheDir,
+      withVocabulary(baseMetadata(), [
+        { id: 1, name: "Development", is_default: true },
+      ]),
+    );
+    installMockApi({
+      packages: {
+        "/api/v3/work_packages/675": wpResource(675),
+      },
+      posts: [
+        { status: 201, body: timeEntryElement(3004, 675, "Fix login redirect", "PT1H") },
+      ],
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "log",
+      "675",
+      "--hours",
+      "1h",
+      "--fields",
+      "hourz",
+    ]);
+    expect(result.exitCode).toBe(1);
+    // Repeating the command would log a second entry, so the message has
+    // to say the first one exists.
+    expect(result.stderr).toContain("time entry 3004 was logged");
+    expect(result.stderr).toContain('field "hourz" is not a column');
+  });
   test("--activity resolves by name through the create form of the work package's project", async () => {
     const root = await makeTempRoom("time-log-activity-form-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
@@ -458,6 +537,33 @@ describe("time log", () => {
     expect(result.stderr).toContain("Support");
   });
 
+  test("an unmatched activity in a project with none says so instead of listing nothing", async () => {
+    const root = await makeTempRoom("time-log-activity-empty-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    await writeMetadataFile(cacheDir, withVocabulary(baseMetadata(), []));
+    installMockApi({
+      packages: {
+        ...refreshEndpoints(),
+        "/api/v3/work_packages/675": wpResource(675),
+      },
+      form: emptyActivityFormFixture(),
+    });
+    const result = await runTime(configDir, cacheDir, [
+      "log",
+      "675",
+      "--hours",
+      "1h",
+      "--activity",
+      "KhongCo",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      '[USAGE_ERROR] activity "KhongCo" not found; no activity is available to match.',
+    );
+    // The bare full stop of an empty candidate list is what this replaces.
+    expect(result.stderr).not.toContain("closest first");
+  });
+
   test("an unreadable --hours fails as usage before any traffic", async () => {
     const root = await makeTempRoom("time-log-bad-hours-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
@@ -501,6 +607,7 @@ describe("time log", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("[API_ERROR]");
     expect(result.stderr).toContain("Hours is invalid.");
+    expect(result.stderr).not.toContain("try again later");
   });
 
   test("a network failure on create reports the unknown state", async () => {

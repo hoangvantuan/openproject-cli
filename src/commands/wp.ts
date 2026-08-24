@@ -1,13 +1,18 @@
 import type { Command } from "commander";
 
-import { OpCliError } from "../core/errors.js";
+import { OpCliError, writeRefusal } from "../core/errors.js";
 import {
   buildWpFilters,
   filtersQuery,
   type WpFilter,
   type WpListFlags,
 } from "../core/filters.js";
-import { defineCollectionCommand, emitRows, type CollectionRuntime } from "../core/define.js";
+import {
+  defineCollectionCommand,
+  emitRows,
+  PAGED_JSON_HELP,
+  type CollectionRuntime,
+} from "../core/define.js";
 import { flattenHalRecord, isFlatLink } from "../core/hal.js";
 import {
   apiDelete,
@@ -106,6 +111,12 @@ function defaultFields(record: Record<string, unknown>): Array<string> {
 function selectedFields(
   raw: string | undefined,
   record: Record<string, unknown>,
+  /**
+   * What already happened, when the record is the result of a completed
+   * write. A bad --fields name is still misuse, but the message has to
+   * say the write landed or it invites a repeat that writes twice.
+   */
+  done?: string,
 ): Array<string> {
   if (raw === undefined) {
     return defaultFields(record);
@@ -119,7 +130,8 @@ function selectedFields(
   if (first !== undefined) {
     throw new OpCliError(
       "USAGE_ERROR",
-      `field "${first}" is not a column. Valid fields, closest first: `
+      `${done === undefined ? "" : `${done}; `}`
+        + `field "${first}" is not a column. Valid fields, closest first: `
         + `${rankByCloseness(first, Object.keys(record)).join(", ")}.`,
       "run the command without --fields to list every available column.",
     );
@@ -146,8 +158,9 @@ function renderRecord(
   runtime: Pick<WpRuntime, "write">,
   options: { json?: boolean; fields?: string },
   record: Record<string, unknown>,
+  done?: string,
 ): void {
-  const fields = selectedFields(options.fields, record);
+  const fields = selectedFields(options.fields, record, done);
   if (options.json === true) {
     const picked: Record<string, unknown> = {};
     for (const field of fields) {
@@ -377,6 +390,7 @@ interface CreateOptions extends CreateValueFlags {
   readonly dryRun?: boolean;
   readonly failFast?: boolean;
   readonly json?: boolean;
+  readonly fields?: string;
   readonly profile?: string;
   readonly project?: string;
 }
@@ -602,6 +616,13 @@ async function runBulkCreate(
       "drop --json; each line is machine-readable as it is.",
     );
   }
+  if (options.fields !== undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "wp create --stdin reports a fixed result line per item, not a record.",
+      "drop --fields; run op-cli wp get --fields on an id from the output.",
+    );
+  }
   const readStdin = runtime.readStdin;
   if (readStdin === undefined) {
     throw new OpCliError(
@@ -726,6 +747,7 @@ interface UpdateOptions {
   readonly category?: string;
   readonly field?: Array<string>;
   readonly json?: boolean;
+  readonly fields?: string;
   readonly profile?: string;
   readonly project?: string;
 }
@@ -1053,8 +1075,7 @@ function pointedAttribute(body: unknown): string | undefined {
 /**
  * Catalogue mapping for a write that survived the proof-carrying retry:
  * 404 stays NOT_FOUND, 5xx becomes the unknown-state NETWORK_ERROR, and
- * everything else is API_ERROR carrying the server's own message when it
- * has one.
+ * everything else is the shared refusal mapping.
  */
 function writeRejection(status: number, body: unknown, verb = "create"): OpCliError {
   if (status === 404) {
@@ -1081,14 +1102,7 @@ function writeRejection(status: number, body: unknown, verb = "create"): OpCliEr
       hint,
     );
   }
-  const detail = typeof body === "object" && body !== null
-    && typeof (body as Record<string, unknown>).message === "string"
-    ? (body as Record<string, unknown>).message as string
-    : undefined;
-  return new OpCliError(
-    "API_ERROR",
-    detail === undefined ? undefined : `OpenProject rejected the ${verb}: ${detail}`,
-  );
+  return writeRefusal(verb, status, body);
 }
 
 /**
@@ -1868,7 +1882,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   addFilterFlags(
     wp.command("list")
       .description("List work packages by name-resolved filters")
-      .option("--json", "emit a flat JSON array")
+      .option("--json", PAGED_JSON_HELP)
       .option("--limit <n>", "maximum number of results to show")
       .option("--all", "fetch every page instead of one limited page"),
   ).action(async (options: FilterFlagOptions & { json?: boolean; limit?: string; all?: boolean }) => {
@@ -2008,6 +2022,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       [],
     )
     .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <id>", "override the profile default project")
     .action(async (subject: string | undefined, options: CreateOptions) => {
@@ -2051,7 +2066,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         options,
       );
       const body = await submitCreate(runtime, profile, payload, refs);
-      renderRecord(runtime, options, flattenHalRecord(body));
+      const created = flattenHalRecord(body);
+      renderRecord(
+        runtime,
+        options,
+        created,
+        `work package ${String(created.id)} was created`,
+      );
     });
 
   wp.command("update")
@@ -2072,6 +2093,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       [],
     )
     .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <id>", "override the profile default project")
     .action(async (reference: string, options: UpdateOptions) => {
@@ -2100,6 +2122,9 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // The optimistic-locking read: everything below compares against
       // this snapshot.
       const before = await apiGet(profile.instanceUrl, profile.apiKey, path);
+      // The read already names every column, so a bad --fields name is
+      // refused while the work package is still untouched.
+      selectedFields(options.fields, flattenHalRecord(before));
       const { payload, refs } = await resolveNamedValues(runtime, profile, options);
       if (options.subject !== undefined) {
         payload.subject = options.subject;
