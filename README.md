@@ -106,6 +106,11 @@ lifecycle against a scratch project on a live instance configured through
 broken step. There are no automated integration tests by design; this
 script is the regression net for real write paths before every publish.
 
+Releases after the first can ship from CI: once the package exists and its
+npm Trusted Publishers entry points at `.github/workflows/release.yml`,
+pushing a `v*` tag has GitHub Actions publish with a short-lived OIDC token
+and provenance; no npm token is stored anywhere.
+
 ## License
 
 MIT. See the NOTICE file for the trademark statement.

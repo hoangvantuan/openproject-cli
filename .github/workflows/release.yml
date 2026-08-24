@@ -1,0 +1,29 @@
+name: Release
+
+# Trusted publishing: npm issues a short-lived OIDC token to this workflow.
+# Requires the matching entry under the package's Trusted Publishers settings
+# on npmjs.com (repository: hoangvantuan/openproject-cli, workflow: release.yml)
+# and npm CLI 11.5.1+, hence Node 24 (Node 22 ships npm 10.x).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm publish --access public
