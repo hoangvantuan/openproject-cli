@@ -12,6 +12,9 @@ import { cliVersion } from "./version.js";
 const PACKAGE_SPEC = "@tuanhv/op-cli@latest";
 // Scoped package names must escape the slash for a registry path segment.
 const REGISTRY_URL = "https://registry.npmjs.org/@tuanhv%2Fop-cli/latest";
+// The bare name `npm ls -g` answers ownership with: exit 0 exactly when
+// npm's global tree holds the package.
+const PACKAGE_NAME = "@tuanhv/op-cli";
 
 // The notice is a convenience, never a delay: its lookup gets a budget far
 // below the API's own, and every failure path stays silent.
@@ -44,9 +47,14 @@ function isHomebrewPath(path: string): boolean {
 }
 
 // An install another manager owns would be overwritten by npm today and
-// reverted by that manager's next upgrade, so the exact command is printed
-// for the human to run instead. Detection is heuristic on purpose: npm's
-// global prefix and the resolved binary path name their manager plainly.
+// reverted by that manager's next upgrade, so the exact command is
+// printed for the human to run instead. Ownership is asked of npm
+// itself: `npm ls -g` exits 0 exactly when npm's global tree holds the
+// package, so a Homebrew-built Node with an npm -g install stays npm's.
+// A Homebrew *prefix* only names Node's installer; treating it as the
+// package's manager misroutes every npm -g install on such a Node.
+// Homebrew is claimed only when npm does not own the package and the
+// binary or prefix lands inside a Homebrew tree.
 async function detectManagingInstall(
   runtime: UpdateRuntime,
 ): Promise<{ label: string; command: string } | undefined> {
@@ -58,14 +66,16 @@ async function detectManagingInstall(
   if (prefix.includes("volta")) {
     return { label: "Volta", command: `volta install ${PACKAGE_SPEC}` };
   }
-  if (isHomebrewPath(prefix)) {
-    return { label: "Homebrew", command: "brew upgrade op-cli" };
-  }
   const bin = (await capture("which", ["op-cli"]))?.trim() ?? "";
   if (bin.includes("volta")) {
     return { label: "Volta", command: `volta install ${PACKAGE_SPEC}` };
   }
-  if (isHomebrewPath(bin)) {
+  // The exit code is the answer; the listing text itself is not read.
+  const ownedByNpm = await capture("npm", ["ls", "-g", PACKAGE_NAME]);
+  if (ownedByNpm !== undefined) {
+    return undefined;
+  }
+  if (isHomebrewPath(bin) || isHomebrewPath(prefix)) {
     return { label: "Homebrew", command: "brew upgrade op-cli" };
   }
   return undefined;

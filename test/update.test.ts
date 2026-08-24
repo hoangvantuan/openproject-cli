@@ -265,10 +265,35 @@ describe("new-version notice", () => {
 });
 
 describe("op-cli update", () => {
+  test("an npm-owned install under a Homebrew-built Node updates through npm", async () => {
+    const scratch = await scratchEnv("op-cli-update-npm-under-brew-");
+    // The exact machine that misrouted 0.2.0: Homebrew owns Node, so
+    // the prefix is /opt/homebrew, but `npm ls -g` holds the package.
+    const seam = spawnSeam({
+      captures: {
+        "prefix -g": "/opt/homebrew\n",
+        "op-cli": "/opt/homebrew/bin/op-cli\n",
+        "ls -g @tuanhv/op-cli": "/opt/homebrew/lib\n"
+          + "└── @tuanhv/op-cli@0.2.0\n",
+      },
+    });
+
+    const result = await run(["update"], scratch.env, seam);
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(result.stdout).not.toContain("Homebrew");
+    expect(seam.calls).toEqual([
+      { file: "npm", args: ["prefix", "-g"] },
+      { file: "which", args: ["op-cli"] },
+      { file: "npm", args: ["ls", "-g", "@tuanhv/op-cli"] },
+      { file: "npm", args: ["install", "-g", "@tuanhv/op-cli@latest"] },
+    ]);
+  });
+
   test("an unmanaged install runs npm install against the package", async () => {
     const scratch = await scratchEnv("op-cli-update-npm-");
-    // The `which op-cli` probe is absent from the capture table, so it
-    // resolves undefined and the npm path is taken.
+    // Every probe but the prefix is absent from the capture table, so
+    // ownership cannot be established and the npm path is taken.
     const seam = spawnSeam({ captures: { "prefix -g": "/usr\n" } });
 
     const result = await run(["update"], scratch.env, seam);
@@ -277,6 +302,7 @@ describe("op-cli update", () => {
     expect(seam.calls).toEqual([
       { file: "npm", args: ["prefix", "-g"] },
       { file: "which", args: ["op-cli"] },
+      { file: "npm", args: ["ls", "-g", "@tuanhv/op-cli"] },
       { file: "npm", args: ["install", "-g", "@tuanhv/op-cli@latest"] },
     ]);
   });
@@ -298,9 +324,16 @@ describe("op-cli update", () => {
     expect(seam.calls).toEqual([{ file: "npm", args: ["prefix", "-g"] }]);
   });
 
-  test("a Homebrew-owned install prints the brew command instead of running it", async () => {
+  test("a Homebrew formula npm does not own prints the brew command", async () => {
     const scratch = await scratchEnv("op-cli-update-brew-");
-    const seam = spawnSeam({ captures: { "prefix -g": "/opt/homebrew\n" } });
+    // npm's tree does not hold the package (`ls -g` fails), and the
+    // binary sits in a Homebrew tree.
+    const seam = spawnSeam({
+      captures: {
+        "prefix -g": "/opt/homebrew\n",
+        "op-cli": "/opt/homebrew/bin/op-cli\n",
+      },
+    });
 
     const result = await run(["update"], scratch.env, seam);
 
@@ -309,32 +342,20 @@ describe("op-cli update", () => {
       stderr: "",
       exitCode: 0,
     });
-    expect(seam.calls).toEqual([{ file: "npm", args: ["prefix", "-g"] }]);
-  });
-
-  test("a Homebrew binary is detected through which when the prefix is plain", async () => {
-    const scratch = await scratchEnv("op-cli-update-brew-bin-");
-    const seam = spawnSeam({
-      captures: {
-        "prefix -g": "/usr/local\n",
-        "op-cli": "/opt/homebrew/bin/op-cli\n",
-      },
-    });
-
-    const result = await run(["update"], scratch.env, seam);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("brew upgrade op-cli");
     expect(seam.calls).toEqual([
       { file: "npm", args: ["prefix", "-g"] },
       { file: "which", args: ["op-cli"] },
+      { file: "npm", args: ["ls", "-g", "@tuanhv/op-cli"] },
     ]);
   });
 
   test("a failing installer forwards its exit code and says so on stderr", async () => {
     const scratch = await scratchEnv("op-cli-update-failure-");
     const seam = spawnSeam({
-      captures: { "prefix -g": "/usr\n" },
+      captures: {
+        "prefix -g": "/usr\n",
+        "ls -g @tuanhv/op-cli": "/usr/lib\n└── @tuanhv/op-cli@0.2.0\n",
+      },
       installExitCode: 3,
     });
 
