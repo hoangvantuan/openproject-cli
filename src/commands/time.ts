@@ -50,7 +50,7 @@ export interface TimeRuntime {
 
 // One flat row per time entry; the work package sits on every row so a
 // multi-wp listing stays a single table instead of a nested grouping.
-const LIST_COLUMNS: ReadonlyArray<{ readonly title: string; readonly field: string }> = [
+export const LIST_COLUMNS: ReadonlyArray<{ readonly title: string; readonly field: string }> = [
   { title: "ID", field: "id" },
   { title: "WORK PACKAGE", field: "wp" },
   { title: "HOURS", field: "hours" },
@@ -78,7 +78,7 @@ const RECORD_FIELDS = [
  * {id, name}, hours becomes a decimal number, and the entity_type /
  * entity_id filter machinery never appears anywhere.
  */
-function timeEntryRecord(element: unknown): Record<string, unknown> {
+export function timeEntryRecord(element: unknown): Record<string, unknown> {
   const flat = flattenHalRecord(element);
   const iso = typeof flat.hours === "string" ? flat.hours : null;
   return {
