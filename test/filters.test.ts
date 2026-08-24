@@ -4,7 +4,7 @@ import { OpCliError } from "../src/core/errors.js";
 import {
   buildWpFilters,
   filtersQuery,
-  updatedAtRange,
+  sinceDate,
   type WpListFlags,
 } from "../src/core/filters.js";
 
@@ -137,29 +137,43 @@ describe("buildWpFilters", () => {
     expect(second).toEqual(first);
   });
 
-  test("updatedAfter today is the single-day window ending today", () => {
+  test("updatedAfter today opens at today and never closes", () => {
     expect(buildWpFilters({ updatedAfter: "today" }, NOW)).toEqual([
-      { name: "updated_at", operator: "<>d", values: ["2026-08-23", "2026-08-23"] },
+      { name: "updated_at", operator: "<>d", values: ["2026-08-23", ""] },
     ]);
   });
 
-  test("updatedAfter yesterday runs from yesterday through today", () => {
+  test("updatedAfter yesterday opens at yesterday and never closes", () => {
     expect(buildWpFilters({ updatedAfter: "yesterday" }, NOW)).toEqual([
-      { name: "updated_at", operator: "<>d", values: ["2026-08-22", "2026-08-23"] },
+      { name: "updated_at", operator: "<>d", values: ["2026-08-22", ""] },
     ]);
   });
 
-  test("updatedAfter 7d runs from seven days ago through today", () => {
+  test("updatedAfter 7d opens seven days back and never closes", () => {
     expect(buildWpFilters({ updatedAfter: "7d" }, NOW)).toEqual([
-      { name: "updated_at", operator: "<>d", values: ["2026-08-16", "2026-08-23"] },
+      { name: "updated_at", operator: "<>d", values: ["2026-08-16", ""] },
     ]);
   });
 
   test("updatedAfter accepts an explicit ISO date", () => {
     expect(buildWpFilters({ updatedAfter: "2026-08-01" }, NOW)).toEqual([
-      { name: "updated_at", operator: "<>d", values: ["2026-08-01", "2026-08-23"] },
+      { name: "updated_at", operator: "<>d", values: ["2026-08-01", ""] },
     ]);
   });
+
+  // The guard for #24: a closed upper bound is read as the start of that
+  // day, so anything changed during it drops out. No form may emit one.
+  test("no accepted form ever closes the upper bound", () => {
+    for (const raw of ["today", "yesterday", "1d", "7d", "30d", "2026-08-01"]) {
+      const [clause] = buildWpFilters({ updatedAfter: raw }, NOW);
+      expect(clause, raw).toEqual({
+        name: "updated_at",
+        operator: "<>d",
+        values: [expect.any(String), ""],
+      });
+    }
+  });
+
   test("updatedAfter rejects tokens it cannot read", () => {
     const caught = catchUsage(() => buildWpFilters({ updatedAfter: "last week" }, NOW));
     expect(caught?.code).toBe("USAGE_ERROR");
@@ -178,24 +192,21 @@ describe("buildWpFilters", () => {
   });
 });
 
-describe("updatedAtRange", () => {
+describe("sinceDate", () => {
   test.each([
-    ["today", "2026-08-23", "2026-08-23"],
-    ["yesterday", "2026-08-22", "2026-08-23"],
-    ["1d", "2026-08-22", "2026-08-23"],
-    ["7d", "2026-08-16", "2026-08-23"],
-    ["30d", "2026-07-24", "2026-08-23"],
-    ["2026-08-01", "2026-08-01", "2026-08-23"],
-  ])("%s -> [%s, %s]", (raw, start, end) => {
-    expect(updatedAtRange(raw, NOW)).toEqual({ start, end });
+    ["today", "2026-08-23"],
+    ["yesterday", "2026-08-22"],
+    ["1d", "2026-08-22"],
+    ["7d", "2026-08-16"],
+    ["30d", "2026-07-24"],
+    ["2026-08-01", "2026-08-01"],
+  ])("%s -> %s", (raw, start) => {
+    expect(sinceDate(raw, NOW)).toBe(start);
   });
 
   test("month and year boundaries roll back correctly", () => {
     const march = new Date(2026, 2, 3, 8, 0, 0);
-    expect(updatedAtRange("3d", march)).toEqual({
-      start: "2026-02-28",
-      end: "2026-03-03",
-    });
+    expect(sinceDate("3d", march)).toBe("2026-02-28");
   });
 });
 

@@ -595,7 +595,7 @@ describe("time list", () => {
         "/api/v3/users/me": { id: 5, name: "Tuan Ha", login: "tuan" },
         [entryPath([
           { user_id: { operator: "=", values: ["5"] } },
-          { spent_on: { operator: "<>d", values: [today, today] } },
+          { spent_on: { operator: "<>d", values: [today, ""] } },
         ], 100)]: halCollection(1, [
           timeEntryElement(3010, 675, "Fix login redirect", "PT0.5S"),
         ]),

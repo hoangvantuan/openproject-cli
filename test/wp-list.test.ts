@@ -395,18 +395,19 @@ describe("wp list filters", () => {
     expect(result.stderr).toBe("");
   });
 
-  test("--updated-after 7d sends the computed date window", async () => {
+  test("--updated-after 7d sends an open-ended window from seven days back", async () => {
     const root = await makeTempRoom("wp-list-7d-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
     const now = new Date();
-    const end = localIsoDate(now);
     const start = localIsoDate(
       new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7),
     );
     installMockApi({
       packages: {
+        // The empty upper bound is the fix for #24: a closed one drops
+        // everything changed during its own day.
         [scopedPath([
-          { updated_at: { operator: "<>d", values: [start, end] } },
+          { updated_at: { operator: "<>d", values: [start, ""] } },
         ], 100)]: halCollection(0, []),
       },
     });

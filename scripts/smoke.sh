@@ -207,9 +207,11 @@ node -e '
 ' "$ENTRY_ID" <<<"$TIME_ROWS"
 
 step "wp list --updated-after 1d on project $PROJ_ID (<>d operator)"
-# 1d instead of today: the instance evaluates <>d in its own timezone, so
-# a just-made update can carry yesterday's UTC stamp; the two-day window
-# stays immune while exercising the same operator.
+# 1d instead of today: the instance evaluates <>d in its own timezone,
+# so when it trails the operator's a just-made update can still carry
+# yesterday's stamp; the yesterday lower bound absorbs that skew. The
+# upper bound is open (#24), so this step now fails if same-day updates
+# drop out again.
 WP_ROWS="$($BIN wp list --project "$PROJ_ID" --updated-after 1d --json)"
 node -e '
   const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));

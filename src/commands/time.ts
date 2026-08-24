@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { isoToHours, parseDuration } from "../core/duration.js";
 import { OpCliError } from "../core/errors.js";
-import { filtersQuery, isoDate, updatedAtRange, type WpFilter } from "../core/filters.js";
+import { filtersQuery, isoDate, sinceDate, type WpFilter } from "../core/filters.js";
 import { flattenHalRecord, isFlatLink, type FlatLink } from "../core/hal.js";
 import {
   apiDelete,
@@ -194,12 +194,12 @@ function buildTimeFilters(
   }
   if (from !== undefined) {
     // Same date grammar as --updated-after on `wp list`, applied to
-    // spent_on instead.
-    const range = updatedAtRange(from, now);
+    // spent_on instead, open upper bound included (#24).
+    const since = sinceDate(from, now);
     filters.push({
       name: "spent_on",
       operator: "<>d",
-      values: [range.start, range.end],
+      values: [since, ""],
     });
   }
   return filters;
