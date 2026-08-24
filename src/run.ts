@@ -10,7 +10,7 @@ import {
 } from "./context/profile.js";
 import { OpCliError, renderJsonError, renderTextError } from "./core/errors.js";
 import { usageErrorFrom } from "./core/usage.js";
-import { authenticate } from "./core/http.js";
+import { authenticate, bindRequestTimeout } from "./core/http.js";
 import { renderProfilesTable, renderStatusTable } from "./output/table.js";
 import { registerMetaCommands } from "./commands/meta.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
@@ -310,6 +310,9 @@ export async function run(
   captureHelp(program, program.name());
 
   try {
+    // Environment misuse is refused before any command runs: a request
+    // budget that silently fell back would hide the user's mistake.
+    bindRequestTimeout(env);
     await program.parseAsync([...argv], { from: "user" });
     return { stdout, stderr, exitCode: 0 };
   } catch (error) {

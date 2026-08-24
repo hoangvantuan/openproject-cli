@@ -502,6 +502,9 @@ describe("wp list pagination and shapes", () => {
     const filters = filtersParam([PROJECT_13]);
     installMockApi({
       packages: {
+        // An empty root advertises no maximum, so the walk falls back
+        // to the collection default of 100.
+        "/api/v3/": {},
         [scopedPath([], 100)]: halCollection(3, [wpElement(1, "One"), wpElement(2, "Two")],
           `/api/v3/work_packages?filters=${filters}&pageSize=100&offset=2`),
         [scopedPath([], 100, "&offset=2")]: halCollection(3, [wpElement(3, "Three")]),
@@ -513,6 +516,33 @@ describe("wp list pagination and shapes", () => {
     expect(result.stdout).toContain("One");
     expect(result.stdout).toContain("Two");
     expect(result.stdout).toContain("Three");
+  });
+
+  test("--all sizes pages by the advertised maximum, not --limit", async () => {
+    const root = await makeTempRoom("wp-list-all-max-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    const elements = Array.from({ length: 7 }, (_, index) =>
+      wpElement(index + 1, `Work package ${String(index + 1)}`),
+    );
+    installMockApi({
+      // One-shot on purpose: a second collection request (the old
+      // ceil(7 / limit) walk at pageSize=5, or any repeat) fails the
+      // whole agent, so green pins the walk at exactly one page.
+      oneShots: {
+        "/api/v3/": { maximumAPIV3PageSize: 500 },
+        [listPath([], 500)]: halCollection(7, elements),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "list",
+      "--all",
+      "--limit",
+      "5",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Work package 1");
+    expect(result.stdout).toContain("Work package 7");
   });
 
   test("--json emits a flat array of flattened records", async () => {
@@ -560,6 +590,9 @@ describe("wp list pagination and shapes", () => {
     const filters = filtersParam([PROJECT_13]);
     installMockApi({
       packages: {
+        // An empty root advertises no maximum, so the walk falls back
+        // to the collection default of 100.
+        "/api/v3/": {},
         [scopedPath([], 100)]: halCollection(3, [wpElement(1, "One"), wpElement(2, "Two")],
           `/api/v3/work_packages?filters=${filters}&pageSize=100&offset=2`),
         [scopedPath([], 100, "&offset=2")]: halCollection(3, [wpElement(3, "Three")]),

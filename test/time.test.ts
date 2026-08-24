@@ -748,6 +748,7 @@ describe("time list", () => {
     const nextPath = `${entryPath(ENTITY_FILTERS, 100).replace("&pageSize=100", "")}&offset=2&pageSize=100`;
     installMockApi({
       packages: {
+        "/api/v3/": {},
         [entryPath(ENTITY_FILTERS, 100)]: pagedCollection(
           3,
           [timeEntryElement(3001, 675, "Fix login redirect", "PT1H30M")],

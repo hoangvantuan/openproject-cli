@@ -22,6 +22,7 @@ import {
 } from "../core/http.js";
 import {
   DEFAULT_PAGE_SIZE,
+  allPageSize,
   halElements,
   parsePageSize,
   withPageSize,
@@ -516,10 +517,16 @@ export function registerProjectCommands(
       }
       // No filter means a bare collection path, not an empty filters
       // parameter: the wire stays readable and mockable.
+      // --all sizes pages by the instance's advertised maximum; --limit
+      // only ever sizes the single non-all page.
       const basePath = filters.length > 0
         ? `${PROJECTS_COLLECTION}?filters=${filtersQuery(filters)}`
         : PROJECTS_COLLECTION;
-      const startPath = withPageSize(basePath, parsePageSize(options.limit));
+      const limit = parsePageSize(options.limit);
+      const startPath = withPageSize(
+        basePath,
+        options.all === true ? await allPageSize(getPage) : limit,
+      );
 
       if (options.all === true) {
         if (options.json === true) {

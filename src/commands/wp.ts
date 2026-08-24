@@ -24,6 +24,7 @@ import {
   type RawWriteResponse,
 } from "../core/http.js";
 import {
+  allPageSize,
   DEFAULT_PAGE_SIZE,
   halElements,
   parsePageSize,
@@ -1922,9 +1923,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     const now = new Date();
     const limit = parsePageSize(options.limit);
     const filters = buildWpFilters(await resolveListFlags(runtime, profile, options), now);
-    const startPath = withPageSize(workPackagesPath(filters), limit);
     const getPage = (path: string): Promise<unknown> =>
       apiGet(profile.instanceUrl, profile.apiKey, path);
+    // --all sizes pages by the instance's advertised maximum; --limit
+    // only ever sizes the single non-all page.
+    const startPath = withPageSize(
+      workPackagesPath(filters),
+      options.all === true ? await allPageSize(getPage) : limit,
+    );
 
     if (options.all === true) {
       const rows: Array<Record<string, unknown>> = [];

@@ -22,6 +22,24 @@ export function withPageSize(path: string, size: number): string {
   return `${path}${path.includes("?") ? "&" : "?"}pageSize=${String(size)}`;
 }
 
+/**
+ * The page size an --all walk requests: the largest page the instance
+ * allows, taken from the maximumAPIV3PageSize the API root advertises,
+ * with the collection default as the fallback. One root document read
+ * replaces a walk of dozens of --limit-sized pages.
+ */
+export async function allPageSize(
+  getPage: (path: string) => Promise<unknown>,
+): Promise<number> {
+  const root = (await getPage("/api/v3/")) as {
+    readonly maximumAPIV3PageSize?: unknown;
+  } | null;
+  const advertised = root?.maximumAPIV3PageSize;
+  return typeof advertised === "number" && advertised >= 1
+    ? advertised
+    : DEFAULT_PAGE_SIZE;
+}
+
 export interface HalLink {
   readonly href?: string;
 }

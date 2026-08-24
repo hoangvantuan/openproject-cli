@@ -2,7 +2,7 @@ import { Command } from "commander";
 
 import { OpCliError } from "./errors.js";
 import { formatCell, renderTable } from "../output/table.js";
-import { halElements, parsePageSize, withPageSize } from "./paginate.js";
+import { allPageSize, halElements, parsePageSize, withPageSize } from "./paginate.js";
 import { isIdForm, rankByCloseness } from "../context/resolve.js";
 
 export interface LookupColumn<Row> {
@@ -231,7 +231,10 @@ export function defineCollectionCommand(
     const getPage = await runtime.connect(options);
     const resolve = spec.resolve?.(getPage) ?? ((row) => Promise.resolve(row));
     const limit = parsePageSize(typeof options.limit === "string" ? options.limit : undefined);
-    const startPath = withPageSize(spec.path(reference), limit);
+    const startPath = withPageSize(
+      spec.path(reference),
+      options.all === true ? await allPageSize(getPage) : limit,
+    );
     if (options.all === true) {
       if (options.json === true) {
         for await (const element of halElements<unknown>(getPage, startPath)) {

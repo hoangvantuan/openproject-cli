@@ -347,6 +347,7 @@ describe("wp comments", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
     installMockApi({
       gets: {
+        "/api/v3/": {},
         [activitiesPath("?pageSize=100")]: halCollection(
           2,
           [commentActivity(1480, "First.", 9, "Linh Nguyen")],
