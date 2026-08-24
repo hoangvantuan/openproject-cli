@@ -862,7 +862,9 @@ describe("meta project vocabulary", () => {
     );
 
     expect(result.stderr).toBe(
-      "[USAGE_ERROR] Invalid command usage. Hint: run op-cli --help.\n",
+      "[USAGE_ERROR] the lookup needs a project to read its vocabulary "
+        + "from. Hint: pass --project <id> or set a default project on the "
+        + "profile.\n",
     );
     expect(result.exitCode).toBe(1);
   });
