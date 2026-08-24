@@ -1174,9 +1174,9 @@ describe("meta project vocabulary", () => {
       versions: { 13: [] },
       categories: { 13: [] },
       activities: { 13: { allowedValues: [] } },
-      projectTypes: { 13: [{ _type: "Type", id: 7, name: "Bug", isMilestone: false }] },
-      schemas: { "13-7": bareSchema },
-      forms: { "13-7": formSchema },
+      projectTypes: { 13: [taskType()] },
+      schemas: { "13-2": bareSchema },
+      forms: { "13-2": formSchema },
     });
     const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
 
@@ -1197,7 +1197,7 @@ describe("meta project vocabulary", () => {
           { id: 4, name: "Logic/Code" },
           { id: 5, name: "Lack specs" },
         ],
-        types: ["Bug"],
+        types: ["Task"],
       },
     ]);
   });
@@ -1214,9 +1214,9 @@ describe("meta project vocabulary", () => {
       versions: { 13: [] },
       categories: { 13: [] },
       activities: { 13: { allowedValues: [] } },
-      projectTypes: { 13: [{ _type: "Type", id: 7, name: "Bug", isMilestone: false }] },
+      projectTypes: { 13: [taskType()] },
       schemas: {
-        "13-7": {
+        "13-2": {
           _type: "Schema",
           customField6: {
             type: "CustomOption",
@@ -1246,7 +1246,7 @@ describe("meta project vocabulary", () => {
         is_list: true,
         is_required: true,
         allowed_options: [{ id: 4, name: "Logic/Code" }],
-        types: ["Bug"],
+        types: ["Task"],
       },
     ]);
   });
