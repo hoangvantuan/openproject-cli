@@ -7,9 +7,9 @@
 > GmbH; this tool only speaks the REST API of the OpenProject application you
 > already run. See the NOTICE file for the full statement.
 >
-> **Early release.** This is version 0.1.0 of a young tool. The command
-> surface may still change between releases; pin your version if that
-> matters to you.
+> **Early release.** This is an early 0.x release of a young tool. The
+> command surface may still change between releases; pin your version
+> if that matters to you.
 
 A resolving CLI for OpenProject: every flag accepts a human name or an id,
 and the tool turns names into ids itself. Errors carry stable `[CODE]`
@@ -39,9 +39,12 @@ points beyond the quickstart:
 
 ```sh
 op-cli wp create "Fix login bug" --type Bug --priority High
+op-cli wp list --search login          # server-side subject search
 op-cli time log 42 --hours 1h30m --activity Development
+op-cli time report --from 2026-08-01 --to 2026-08-31   # closed period
 op-cli project member add web alice Manager   # join members so assignment works
 op-cli project list --search web
+op-cli wp move 42 archive              # move a work package to another project
 op-cli doctor            # diagnose connectivity, credentials, versions
 op-cli update            # self-update; prints the right command for Volta/Homebrew
 ```
@@ -55,6 +58,13 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
   default project, scopes `wp list`, `wp count`, `time list`, and
   `time report` to that project and its subprojects. Without one, those
   four commands report instance-wide.
+- **Finding things needs no id.** `wp list --search <text>` matches
+  subjects server-side, `--created-after` / `--updated-after` bound by
+  date, and `time list` / `time report` take `--from` and an inclusive
+  `--to`. Every name flag also accepts the human name or the id.
+- **Tables respect the terminal.** Read from a terminal, a table is
+  bounded to its width and long cells are cut with an ellipsis; `--json`
+  output is never truncated.
 - **Deletion is guarded.** Deleting a project is irreversible: `wp delete`,
   `time delete`, and `project delete` all require an explicit `--yes`.
   `user delete` is not offered at all; there is no workaround by design.
@@ -115,5 +125,5 @@ pushing a `v*` tag has GitHub Actions publish with a short-lived OIDC token
 and provenance; no npm token is stored anywhere.
 
 ## License
-
-MIT. See the NOTICE file for the trademark statement.
+MIT; see the LICENSE file. See the NOTICE file for the trademark
+statement.

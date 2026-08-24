@@ -55,6 +55,8 @@ auth status reports no profile or failed authentication, run
 ```sh
 # find work packages; repeat a filter flag to OR values
 op-cli wp list --open --type Task --assignee me --updated-after 7d
+# find by words in the subject, server-side
+op-cli wp list --search login
 # how many match, without paginating; fetch every page with --all
 op-cli wp count --priority High
 # inspect one work package, optionally narrowing columns
@@ -84,7 +86,8 @@ op-cli wp schema <id>
 # log and manage time; hours accept 1.5, 1h30m, PT1H30M
 op-cli time log <id> --hours 1h30m --activity Development
 op-cli time list --wp <id> --from today
-op-cli time report --from 7d --user me
+# report a closed period; --to is inclusive of its day, alone or with --from
+op-cli time report --from 7d --to yesterday --user me
 # projects: search, inspect, create with explicit identifier, copy
 op-cli project list --search web
 op-cli project create Web --identifier web
@@ -92,6 +95,8 @@ op-cli project copy <reference> Copy --identifier web-copy
 # add or remove project members; without membership, assignment is refused
 op-cli project member add <project> <user> <role>
 op-cli project member remove <project> <user>
+# move a work package to another project, by id, identifier, or name
+op-cli wp move <id> <project>
 # what a work package may use in a project
 op-cli project types <reference>
 # project vocabulary: members, versions, categories, activities, fields;
@@ -102,6 +107,13 @@ op-cli meta fields
 # something does not work: diagnose connectivity, credentials, versions
 op-cli doctor
 ```
+
+`wp list` and `wp count` also take `--created-after <value>` with the
+same date forms as `--updated-after`. Tables read from a terminal are
+bounded to its width, long cells cut with an ellipsis; `--json` output
+is never truncated. Set `OP_CLI_NO_UPDATE_CHECK=1` to silence the
+once-a-day new-version notice, and run `op-cli update` to self-update
+(it prints the right command for Volta and Homebrew installs).
 
 ## Error contract
 

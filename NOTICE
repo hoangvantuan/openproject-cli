@@ -11,5 +11,5 @@ OpenProject in the documentation and command output describe
 interoperability with the OpenProject REST API only; they are nominative
 references to that product, not claims of association.
 
-op-cli is released under the MIT license; see the "license" field of
-package.json.
+op-cli is released under the MIT license; see the LICENSE file. The
+"license" field of package.json carries the same grant.
