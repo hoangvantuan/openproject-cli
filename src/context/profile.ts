@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 import type { RunEnvironment } from "../run.js";
 import { OpCliError } from "../core/errors.js";
+import { isIdForm } from "./resolve.js";
+import { resolveProjectOverride } from "./projectref.js";
 
 export const LOGIN_PROFILE = "default";
 
@@ -225,7 +227,9 @@ export async function removeProfile(
 
 export const ENV_PROFILE_NAME = "env";
 
-function firstDefined(...values: Array<string | undefined>): string | undefined {
+function firstDefined<T extends string | number>(
+  ...values: Array<T | undefined>
+): T | undefined {
   for (const value of values) {
     if (value) {
       return value;
@@ -245,9 +249,26 @@ export function parseOptionalId(raw: string | undefined): number | undefined {
   return value;
 }
 
+/**
+ * The parsed `--project` value: digit forms validate as ids through
+ * parseOptionalId above, anything else stays a string for the instance
+ * to resolve by identifier or name (#34).
+ */
+export function parseProjectOverride(
+  raw: number | string | undefined,
+): number | string | undefined {
+  if (raw === undefined || raw === "") {
+    return undefined;
+  }
+  if (typeof raw === "number") {
+    return raw;
+  }
+  return isIdForm(raw) ? parseOptionalId(raw) : raw;
+}
+
 export interface ContextOverrides {
   readonly profile?: string | undefined;
-  readonly project?: number | undefined;
+  readonly project?: number | string | undefined;
 }
 
 export async function resolveProfile(
@@ -297,14 +318,21 @@ export async function resolveProfile(
     name !== undefined &&
     instanceUrl === entry.url.replace(/\/+$/, "") &&
     apiKey === secret;
+  // A project named on the flag or in OP_CLI_PROJECT resolves against
+  // the instance before the profile is handed on, so every consumer
+  // sees a numeric id; numeric overrides keep the no-traffic fast path.
+  const override = firstDefined(
+    parseProjectOverride(overrides.project),
+    parseProjectOverride(env.OP_CLI_PROJECT),
+  );
+  const project = typeof override === "string"
+    ? await resolveProjectOverride(instanceUrl, apiKey, override)
+    : (override ?? entry?.project);
   return {
     name: claimsProfile ? name : ENV_PROFILE_NAME,
     instanceUrl,
     apiKey,
-    project:
-      overrides.project ??
-      parseOptionalId(env.OP_CLI_PROJECT) ??
-      entry?.project,
+    project,
   };
 }
 

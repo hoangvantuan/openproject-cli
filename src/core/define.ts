@@ -216,7 +216,7 @@ export function defineCollectionCommand(
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project");
+    .option("--project <name-or-id>", "override the profile default project");
   command.action(async (reference: string, options: ParsedOptions) => {
     runtime.setJsonMode(options.json === true);
     // Flag misuse is refused before any traffic.

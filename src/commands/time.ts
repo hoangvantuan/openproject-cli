@@ -27,7 +27,7 @@ import {
   type LookupSource,
 } from "../context/resolve.js";
 import {
-  parseOptionalId,
+  parseProjectOverride,
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
@@ -230,7 +230,7 @@ function membersSource(
         throw new OpCliError(
           "USAGE_ERROR",
           "--user needs a project to look member names up in.",
-          "pass --project <id> or set a default project on the profile.",
+          "pass --project <name-or-id> or set a default project on the profile.",
         );
       }
       const select = (
@@ -451,7 +451,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       hours: string;
       activity?: string;
@@ -471,7 +471,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
         : requireIsoDate(options.spentOn);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       // The activity vocabulary hangs off the project the work package
       // belongs to, not off the profile default.
@@ -521,7 +521,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (options: {
       wp?: Array<string>;
       user?: Array<string>;
@@ -540,7 +540,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       }
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const users = await resolveUserValues(runtime.env, profile, splitList(options.user ?? []));
       const filters = buildTimeFilters(
@@ -601,7 +601,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       json?: boolean;
       fields?: string;
@@ -612,7 +612,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       requireId(reference, "time entry");
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const record = timeEntryRecord(
         await apiGet(
@@ -638,7 +638,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       hours?: string;
       activity?: string;
@@ -671,7 +671,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       }
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const payload: Record<string, unknown> = {};
       if (hours !== undefined) {
@@ -719,7 +719,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .argument("<id>", "time entry id")
     .option("--yes", "confirm the deletion")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       yes?: boolean;
       profile?: string;
@@ -737,7 +737,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       requireId(reference, "time entry");
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       await deleteEntry(profile, reference);
       runtime.write(`Deleted time entry ${reference}.\n`);
@@ -750,7 +750,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--from <date>", "today, yesterday, days back such as 7d, or YYYY-MM-DD")
     .option("--json", "emit a flat JSON array of per-work-package groups")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (options: {
       wp?: Array<string>;
       user?: Array<string>;
@@ -767,7 +767,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       }
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const users = await resolveUserValues(runtime.env, profile, splitList(options.user ?? []));
       const filters = buildTimeFilters(

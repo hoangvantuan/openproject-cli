@@ -20,7 +20,7 @@ import {
   type StoredType,
 } from "../context/metadata.js";
 import type { ActiveProfile } from "../context/profile.js";
-import { parseOptionalId, type ContextOverrides } from "../context/profile.js";
+import { parseProjectOverride, type ContextOverrides } from "../context/profile.js";
 import type { RunEnvironment } from "../run.js";
 import {
   defineLookupCommand,
@@ -41,7 +41,7 @@ function star(value: unknown): string {
 }
 
 const projectOption = {
-  flag: "--project <id>",
+  flag: "--project <name-or-id>",
   description: "override the profile default project",
 };
 
@@ -335,7 +335,7 @@ async function projectProfile(
 ): Promise<ActiveProfile> {
   const raw = options.project;
   return runtime.resolve({
-    project: parseOptionalId(typeof raw === "string" ? raw : undefined),
+    project: parseProjectOverride(typeof raw === "string" ? raw : undefined),
   });
 }
 

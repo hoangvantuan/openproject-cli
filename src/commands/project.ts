@@ -35,10 +35,11 @@ import {
   type NamedEntry,
 } from "../context/resolve.js";
 import {
-  parseOptionalId,
+  parseProjectOverride,
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
+import { PROJECTS_COLLECTION, resolveProjectRef } from "../context/projectref.js";
 
 export interface ProjectRuntime {
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
@@ -92,7 +93,7 @@ async function connect(
   runtime.setJsonMode(options.json === true);
   const profile = await runtime.resolve({
     profile: options.profile,
-    project: parseOptionalId(options.project),
+    project: parseProjectOverride(options.project),
   });
   return {
     getPage: (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
@@ -103,118 +104,10 @@ function collectValue(value: string, previous: Array<string>): Array<string> {
   return [...previous, value];
 }
 
-/**
- * One project a reference can resolve to. Every resolution goes through
- * this shape so ambiguity and suggestions speak in ids and names only.
- */
-interface ProjectHit {
-  readonly id: number;
-  readonly identifier: string;
-  readonly name: string;
-}
-
-function hitOf(element: unknown): ProjectHit | undefined {
-  const candidate = element as {
-    readonly id?: unknown;
-    readonly identifier?: unknown;
-    readonly name?: unknown;
-  };
-  return typeof candidate.id === "number"
-    && typeof candidate.identifier === "string"
-    && typeof candidate.name === "string"
-    ? { id: candidate.id, identifier: candidate.identifier, name: candidate.name }
-    : undefined;
-}
-
-const PROJECTS_COLLECTION = "/api/v3/projects";
-
 const PRINCIPALS_COLLECTION = "/api/v3/principals";
 const ROLES_COLLECTION = "/api/v3/roles";
 const MEMBERSHIPS_COLLECTION = "/api/v3/memberships";
 
-/**
- * Every visible project, page by page in server order. Resolution walks
- * instead of filtering server-side because the exact-match filter set
- * differs between instance versions; the collection endpoint does not.
- */
-async function walkProjects(getPage: GetPage): Promise<Array<ProjectHit>> {
-  const hits: Array<ProjectHit> = [];
-  for await (const element of halElements<unknown>(
-    getPage,
-    withPageSize(PROJECTS_COLLECTION, DEFAULT_PAGE_SIZE),
-  )) {
-    const hit = hitOf(element);
-    if (hit !== undefined) {
-      hits.push(hit);
-    }
-  }
-  return hits;
-}
-
-function missingProjectError(raw: string, known: ReadonlyArray<string>): OpCliError {
-  return new OpCliError(
-    "NOT_FOUND",
-    `project "${raw}" not found.`,
-    known.length > 0
-      ? `known projects, closest first: ${rankByCloseness(raw, known).slice(0, 6).join(", ")}.`
-      : "check the spelling or list projects with op-cli project list.",
-  );
-}
-
-/**
- * Resolve one reference that may be an id, an identifier, or a name.
- * All-digits means an id and is fetched directly. Anything else matches
- * identifier and name exactly across every visible project; one distinct
- * match wins, several distinct projects fail loudly instead of guessing.
- */
-async function resolveProjectRef(
-  getPage: GetPage,
-  raw: string,
-): Promise<ProjectHit> {
-  if (isIdForm(raw)) {
-    try {
-      const hit = hitOf(await getPage(`${PROJECTS_COLLECTION}/${raw}`));
-      if (hit !== undefined) {
-        return hit;
-      }
-      throw new OpCliError(
-        "NOT_FOUND",
-        `project "${raw}" not found.`,
-        "check the id; run op-cli project list to see what is visible.",
-      );
-    } catch (error) {
-      if (error instanceof OpCliError && error.code === "USAGE_ERROR") {
-        throw error;
-      }
-      if (error instanceof OpCliError && error.code === "NOT_FOUND") {
-        throw new OpCliError(
-          "NOT_FOUND",
-          `project "${raw}" not found.`,
-          "check the id; run op-cli project list to see what is visible.",
-        );
-      }
-      throw error;
-    }
-  }
-  const all = await walkProjects(getPage);
-  const matches = all.filter((hit) => hit.identifier === raw || hit.name === raw);
-  const distinct = [...new Map(matches.map((hit) => [hit.id, hit])).values()];
-  if (distinct.length === 1) {
-    return distinct[0] as ProjectHit;
-  }
-  if (distinct.length > 1) {
-    const listed = distinct.map((hit) => `${String(hit.id)} (${hit.name})`).join(", ");
-    throw new OpCliError(
-      "USAGE_ERROR",
-      `project "${raw}" is ambiguous. Candidates: ${listed}.`,
-      "repeat the value as the explicit id of one candidate.",
-    );
-  }
-  throw missingProjectError(
-    raw,
-    all.flatMap((hit) => [hit.identifier, hit.name]),
-  );
-}
 
 /**
  * One live lookup over an uncached collection. Stored metadata has a
@@ -462,7 +355,7 @@ export function registerProjectCommands(
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (options: {
       search?: string;
       active?: boolean;
@@ -578,7 +471,7 @@ export function registerProjectCommands(
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated fields to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: ScopeOptions) => {
       const { getPage } = await connect(runtime, options);
       const hit = await resolveProjectRef(getPage, reference);
@@ -602,7 +495,7 @@ export function registerProjectCommands(
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated fields to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (name: string, options: {
       identifier?: string;
       description?: string;
@@ -613,7 +506,7 @@ export function registerProjectCommands(
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const payload: Record<string, unknown> = { name, identifier };
       if (options.description !== undefined) {
@@ -648,7 +541,7 @@ export function registerProjectCommands(
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated fields to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       name?: string;
       description?: string;
@@ -672,7 +565,7 @@ export function registerProjectCommands(
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       const payload: Record<string, unknown> = {};
@@ -711,7 +604,7 @@ export function registerProjectCommands(
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated fields to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, name: string, options: {
       identifier?: string;
     } & ScopeOptions) => {
@@ -719,7 +612,7 @@ export function registerProjectCommands(
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       const source = (await getPage(
@@ -753,12 +646,12 @@ export function registerProjectCommands(
     .description("Mark one project as favourited for the current user")
     .argument("<reference>")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: { profile?: string; project?: string }) => {
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       await apiPost(
@@ -775,12 +668,12 @@ export function registerProjectCommands(
     .description("Remove one project from the current user's favourites")
     .argument("<reference>")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: { profile?: string; project?: string }) => {
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       await apiDelete(
@@ -813,7 +706,7 @@ export function registerProjectCommands(
       .option("--json", "emit a flat JSON array")
       .option("--fields <list>", "comma-separated columns to show")
       .option("--profile <name>", "use this profile for this command only")
-      .option("--project <id>", "override the profile default project")
+      .option("--project <name-or-id>", "override the profile default project")
       .action(async (reference: string, options: ScopeOptions) => {
         const { getPage } = await connect(runtime, options);
         const hit = await resolveProjectRef(getPage, reference);
@@ -863,7 +756,7 @@ export function registerProjectCommands(
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated fields to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (
       reference: string,
       principal: string,
@@ -874,7 +767,7 @@ export function registerProjectCommands(
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       const principalId = await resolvePrincipalId(profile, principal);
@@ -906,7 +799,7 @@ export function registerProjectCommands(
     .argument("<reference>", "project, by id, identifier, or name")
     .argument("<principal>", "user or group, by name, id, or me")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, principal: string, options: {
       profile?: string;
       project?: string;
@@ -914,7 +807,7 @@ export function registerProjectCommands(
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       const principalId = await resolvePrincipalId(profile, principal);
@@ -982,7 +875,7 @@ export function registerProjectCommands(
     .argument("<reference>", "project, by id, identifier, or name")
     .option("--yes", "confirm the deletion")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       yes?: boolean;
       profile?: string;
@@ -1001,7 +894,7 @@ export function registerProjectCommands(
       const { getPage } = await connect(runtime, options);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const hit = await resolveProjectRef(getPage, reference);
       await apiDelete(

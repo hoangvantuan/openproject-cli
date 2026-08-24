@@ -40,7 +40,7 @@ import {
   type NamedEntry,
 } from "../context/resolve.js";
 import {
-  parseOptionalId,
+  parseProjectOverride,
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
@@ -189,7 +189,7 @@ async function openProfile(
   runtime.setJsonMode(options.json === true);
   return runtime.resolve({
     profile: options.profile,
-    project: parseOptionalId(options.project),
+    project: parseProjectOverride(options.project),
   });
 }
 
@@ -234,7 +234,7 @@ function addFilterFlags(command: Command): Command {
     .option("--open", "shorthand for every open status")
     .option("--closed", "shorthand for every closed status")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project");
+    .option("--project <name-or-id>", "override the profile default project");
 }
 
 function rawListFlags(options: FilterFlagOptions): WpListFlags {
@@ -292,7 +292,7 @@ function projectSource<V>(
         throw new OpCliError(
           "USAGE_ERROR",
           `--${flag} needs a project to look names up in.`,
-          "pass --project <id> or set a default project on the profile.",
+          "pass --project <name-or-id> or set a default project on the profile.",
         );
       }
       return select(await (memo === undefined
@@ -662,13 +662,13 @@ async function runBulkCreate(
 
   const profile = await runtime.resolve({
     profile: options.profile,
-    project: parseOptionalId(options.project),
+    project: parseProjectOverride(options.project),
   });
   if (profile.project === undefined) {
     throw new OpCliError(
       "USAGE_ERROR",
       "wp create needs a project to create the work package in.",
-      "pass --project <id> or set a default project on the profile.",
+      "pass --project <name-or-id> or set a default project on the profile.",
     );
   }
 
@@ -815,7 +815,7 @@ async function resolveFieldDefinition(
     throw new OpCliError(
       "USAGE_ERROR",
       "--field needs a project to look field names up in.",
-      "pass --project <id> or set a default project on the profile.",
+      "pass --project <name-or-id> or set a default project on the profile.",
     );
   }
   const metadata = memo === undefined
@@ -1918,7 +1918,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     buildWpFilters(rawListFlags(options), new Date());
     const profile = await runtime.resolve({
       profile: options.profile,
-      project: parseOptionalId(options.project),
+      project: parseProjectOverride(options.project),
     });
     const now = new Date();
     const limit = parsePageSize(options.limit);
@@ -1971,7 +1971,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       buildWpFilters(rawListFlags(options), new Date());
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const filters = buildWpFilters(
         await resolveListFlags(runtime, profile, options),
@@ -1999,7 +1999,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(
       async (
         reference: string,
@@ -2014,7 +2014,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         requireWpId(reference);
         const profile = await runtime.resolve({
           profile: options.profile,
-          project: parseOptionalId(options.project),
+          project: parseProjectOverride(options.project),
         });
         const record = flattenHalRecord(
           await apiGet(
@@ -2058,7 +2058,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (subject: string | undefined, options: CreateOptions) => {
       if (options.stdin === true) {
         await runBulkCreate(runtime, subject, options);
@@ -2084,13 +2084,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       }
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       if (profile.project === undefined) {
         throw new OpCliError(
           "USAGE_ERROR",
           "wp create needs a project to create the work package in.",
-          "pass --project <id> or set a default project on the profile.",
+          "pass --project <name-or-id> or set a default project on the profile.",
         );
       }
       const { payload, refs } = await prepareCreatePayload(
@@ -2131,7 +2131,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--json", "emit a flat JSON record")
     .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: UpdateOptions) => {
       runtime.setJsonMode(options.json === true);
       requireWpId(reference);
@@ -2154,7 +2154,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       }
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       const path = `/api/v3/work_packages/${reference}`;
       // The optimistic-locking read: everything below compares against
@@ -2210,7 +2210,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .argument("<id>")
     .option("--yes", "confirm the deletion")
     .option("--profile <name>", "use this profile for this command only")
-    .option("--project <id>", "override the profile default project")
+    .option("--project <name-or-id>", "override the profile default project")
     .action(async (reference: string, options: {
       yes?: boolean;
       profile?: string;
@@ -2228,7 +2228,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       requireWpId(reference);
       const profile = await runtime.resolve({
         profile: options.profile,
-        project: parseOptionalId(options.project),
+        project: parseProjectOverride(options.project),
       });
       await apiDelete(
         profile.instanceUrl,
@@ -2246,7 +2246,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       const profile = await runtime.resolve({
         profile: typeof options.profile === "string" ? options.profile : undefined,
         project: typeof options.project === "string"
-          ? parseOptionalId(options.project)
+          ? parseProjectOverride(options.project)
           : undefined,
       });
       return (path) => apiGet(profile.instanceUrl, profile.apiKey, path);
@@ -2295,7 +2295,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     json: "--json",
     fields: "--fields <list>",
     profile: "--profile <name>",
-    project: "--project <id>",
+    project: "--project <name-or-id>",
   };
 
   wp.command("comment")

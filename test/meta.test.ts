@@ -57,7 +57,8 @@ interface InstallOptions {
   readonly nextPage?: { readonly path: string; readonly elements: unknown[] };
   readonly statuses?: unknown[];
   readonly priorities?: unknown[];
-  readonly root?: Record<string, unknown>;
+  /** Every visible project, for --project values given by name (#34). */
+  readonly projectsCollection?: unknown[];
   readonly project?: Record<string, unknown>;
   readonly members?: Record<number, unknown[]>;
   readonly versions?: Record<number, unknown[]>;
@@ -161,6 +162,12 @@ function installMockApi(options: InstallOptions): MockAgent {
     pool
       .intercept({ path: `/api/v3/projects/${String(options.project.id)}`, method: "GET" })
       .reply(200, options.project)
+      .persist();
+  }
+  if (options.projectsCollection !== undefined) {
+    pool
+      .intercept({ path: "/api/v3/projects?pageSize=100", method: "GET" })
+      .reply(200, halCollection(options.projectsCollection))
       .persist();
   }
   for (const [projectId, elements] of Object.entries(options.members ?? {})) {
@@ -896,16 +903,28 @@ describe("meta project vocabulary", () => {
     expect(Object.keys(scoped).sort()).toEqual(["13", "14"]);
   });
 
-  test("--project accepts positive integers only", async () => {
+  test("--project digit forms validate as ids; names resolve instead", async () => {
     const root = await makeTempRoom("op-cli-meta-projectid-");
     const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example");
     const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
 
-    for (const bad of ["abc", "0", "-5", "13.5"]) {
-      const result = await run(["meta", "members", "--project", bad], env, {});
-      expect(result.stderr).toContain("[USAGE_ERROR]");
-      expect(result.exitCode).toBe(1);
-    }
+    // An id-shaped value that is not a valid id is still usage misuse.
+    const zero = await run(["meta", "members", "--project", "0"], env, {});
+    expect(zero.stderr).toContain("[USAGE_ERROR]");
+    expect(zero.exitCode).toBe(1);
+
+    // Anything else resolves by name: a miss names the project and
+    // suggests the close ones instead of a bare usage error (#34).
+    installMockApi({
+      instanceUrl: "https://op.example",
+      projectsCollection: [
+        { _type: "Project", id: 13, identifier: "operations", name: "Operations" },
+      ],
+    });
+    const missing = await run(["meta", "members", "--project", "abc"], env, {});
+    expect(missing.exitCode).toBe(4);
+    expect(missing.stderr).toContain('project "abc" not found');
+    expect(missing.stderr).toContain("Operations");
   });
 
   function versionElement(
