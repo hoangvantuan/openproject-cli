@@ -75,7 +75,13 @@ async function readStored(env: RunEnvironment): Promise<StoredState | undefined>
       // Credentials are optional when only the profile identity is needed,
       // e.g. --version reading cached metadata without an API key.
     }
-    return { config, credentials };
+    // `profiles` is required by the type but comes straight from JSON, so a
+    // config file that parses without it would otherwise reach every caller
+    // as a missing map. Normalising here keeps the guards downstream simple.
+    return {
+      config: { ...config, profiles: config.profiles ?? {} },
+      credentials,
+    };
   } catch {
     return undefined;
   }
@@ -250,11 +256,11 @@ export async function resolveProfile(
 ): Promise<ActiveProfile> {
   const state = await readStored(env);
   const explicitName = firstDefined(overrides.profile, env.OP_CLI_PROFILE);
-  if (
-    explicitName !== undefined &&
-    state !== undefined &&
-    !state.config.profiles[explicitName]
-  ) {
+  // A named profile has to exist, whether or not a config file was ever
+  // written: environment variables alone form an implicit *unnamed* profile,
+  // so no name can select it. Falling through here would run the named
+  // command against the environment instance and report it as healthy.
+  if (explicitName !== undefined && !state?.config.profiles[explicitName]) {
     throw new OpCliError("PROFILE_NOT_FOUND");
   }
   const storedName = state ? storedSelectedName(state) : undefined;

@@ -531,15 +531,20 @@ describe("review round 1", () => {
     });
   });
 
-  test("a profile flag over pure environment variables without files still works", async ({
+  // Superseded by issue #21: naming a profile that was never stored is an
+  // error even when the environment could serve the request, because
+  // environment variables alone form an implicit *unnamed* profile that no
+  // name can select.
+  test("a profile flag naming nothing on disk fails even with no config file", async ({
     onTestFinished,
   }) => {
     const root = await mkdtemp(join(tmpdir(), "op-cli-flag-env-only-"));
     onTestFinished(async () => {
       await rm(root, { recursive: true, force: true });
     });
+    // No interceptor is registered: net connect stays disabled, so any
+    // request at all would surface as a different error than the refusal.
     const mockAgent = installMockAgent();
-    mockUser(mockAgent, "https://ci.example", "CI User");
 
     const result = await run(
       ["auth", "status", "--json", "--profile", "ghost"],
@@ -551,8 +556,8 @@ describe("review round 1", () => {
       {},
     );
 
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout).profile).toBe("env");
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("PROFILE_NOT_FOUND");
     mockAgent.assertNoPendingInterceptors();
   });
 
@@ -718,5 +723,144 @@ describe("login into named profiles and stored default projects", () => {
       project: 13,
     });
     expect(config.profiles.default).toEqual({ url: "https://op-a.example" });
+  });
+});
+
+describe("issue 21: an unknown profile name with no config file", () => {
+  // The environment carries working credentials in every test here, so a
+  // refusal can only come from the name itself and never from a missing
+  // instance URL or API key.
+  const environmentCredentials = {
+    OPENPROJECT_URL: "https://real.example.com",
+    OPENPROJECT_API_KEY: "env-key",
+  };
+
+  async function emptyConfigDirectory(label: string): Promise<{
+    readonly root: string;
+    readonly directory: string;
+  }> {
+    const root = await mkdtemp(join(tmpdir(), `op-cli-${label}-`));
+    const directory = join(root, "config");
+    await mkdir(directory, { recursive: true });
+    return { root, directory };
+  }
+
+  test("a work package command refuses instead of running against the environment", async ({
+    onTestFinished,
+  }) => {
+    const { root, directory } = await emptyConfigDirectory("issue21-wp");
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const mockAgent = installMockAgent();
+
+    const result = await run(
+      ["wp", "list", "--profile", "khongcoprofile"],
+      { ...environmentCredentials, OP_CLI_CONFIG_DIR: directory },
+      {},
+    );
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        "[PROFILE_NOT_FOUND] No active profile. Hint: run op-cli auth login.\n",
+      exitCode: 1,
+    });
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  test("doctor refuses the unknown name instead of reporting every check as pass", async ({
+    onTestFinished,
+  }) => {
+    const { root, directory } = await emptyConfigDirectory("issue21-doctor");
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const mockAgent = installMockAgent();
+
+    const result = await run(
+      ["doctor", "--profile", "khongcoprofile"],
+      {
+        ...environmentCredentials,
+        OP_CLI_CONFIG_DIR: directory,
+        OP_CLI_CACHE_DIR: join(root, "cache"),
+      },
+      {},
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(/^\[PROFILE_NOT_FOUND\]/);
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  test("OP_CLI_PROFILE naming nothing stored is refused like the flag", async ({
+    onTestFinished,
+  }) => {
+    const { root, directory } = await emptyConfigDirectory("issue21-env-var");
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const mockAgent = installMockAgent();
+
+    const result = await run(
+      ["auth", "status"],
+      {
+        ...environmentCredentials,
+        OP_CLI_CONFIG_DIR: directory,
+        OP_CLI_PROFILE: "khongcoprofile",
+      },
+      {},
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/^\[PROFILE_NOT_FOUND\]/);
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  // A config file that parses but carries no `profiles` key must refuse the
+  // same way rather than crashing on the missing map.
+  test("a config file without a profiles map refuses the named profile", async ({
+    onTestFinished,
+  }) => {
+    const { root, directory } = await emptyConfigDirectory("issue21-no-map");
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    await writeFile(join(directory, "config.json"), JSON.stringify({}));
+    const mockAgent = installMockAgent();
+
+    const result = await run(
+      ["auth", "status", "--profile", "khongcoprofile"],
+      { ...environmentCredentials, OP_CLI_CONFIG_DIR: directory },
+      {},
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/^\[PROFILE_NOT_FOUND\]/);
+    mockAgent.assertNoPendingInterceptors();
+  });
+
+  // The unnamed environment profile stays reachable: the refusal is about the
+  // name, not about running without a config file.
+  test("the same environment without a profile name still serves the command", async ({
+    onTestFinished,
+  }) => {
+    const { root, directory } = await emptyConfigDirectory("issue21-unnamed");
+    onTestFinished(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+    const mockAgent = installMockAgent();
+    mockUser(mockAgent, "https://real.example.com", "Env User");
+
+    const result = await run(
+      ["auth", "status", "--json"],
+      { ...environmentCredentials, OP_CLI_CONFIG_DIR: directory },
+      {},
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).profile).toBe("env");
+    mockAgent.assertNoPendingInterceptors();
   });
 });
