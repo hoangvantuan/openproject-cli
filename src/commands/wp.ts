@@ -1645,10 +1645,13 @@ async function resolveNamedValues(
 // ---------------------------------------------------------------------------
 // Activities, relations, schemas
 
+// The activity's text is called `comment` by the API, by these columns,
+// and by --fields on every command that renders one. It had two names
+// before, so --fields refused the name the table itself was using.
 const COMMENT_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "AUTHOR", field: "user" },
-  { title: "COMMENT", field: "note" },
+  { title: "COMMENT", field: "comment" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -1656,7 +1659,7 @@ const HISTORY_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "KIND", field: "kind" },
   { title: "AUTHOR", field: "user" },
-  { title: "NOTE", field: "note" },
+  { title: "COMMENT", field: "comment" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -1721,8 +1724,10 @@ function linkIdOf(link: unknown): number | null {
 /**
  * One flat row per activity; the raw _type becomes the KIND column and
  * survives flattening because flattenHalRecord drops _type from records.
+ * The formattable `comment` collapses to its raw text so the one name
+ * means one thing wherever an activity is rendered.
  */
-function activityRow(element: unknown): Record<string, unknown> | undefined {
+function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
   const kind = typeof resource._type === "string"
     ? resource._type.replace(/^Activity::/, "")
@@ -1733,15 +1738,81 @@ function activityRow(element: unknown): Record<string, unknown> | undefined {
     id: record.id,
     kind,
     user: record.user,
-    note: typeof comment?.raw === "string" ? comment.raw : "",
+    comment: typeof comment?.raw === "string" ? comment.raw : "",
     createdAt: record.createdAt,
+  };
+}
+
+/**
+ * The key set of an activityRow output, so `wp comment` can refuse a bad
+ * --fields before it writes. Taken FROM the row builder rather than
+ * restated beside it: a declaration that drifts from the record it
+ * describes is the bug this ticket is about.
+ */
+const ACTIVITY_ROW_SHAPE: Record<string, unknown> = activityRow({});
+
+/**
+ * One principal's name, or null when this instance will not give it. The
+ * principals collection is the only one filterable by id, so a single
+ * request answers for one author.
+ *
+ * A name is a nicety: an instance whose key cannot read principals must
+ * still be able to list comments, so a refusal degrades to null. Network
+ * and server failures are NOT swallowed; turning those into a bare id
+ * would hide a broken instance behind a cosmetic fallback.
+ */
+async function principalName(
+  getPage: (path: string) => Promise<unknown>,
+  id: number,
+): Promise<string | null> {
+  const filters = encodeURIComponent(
+    JSON.stringify([{ id: { operator: "=", values: [String(id)] } }]),
+  );
+  try {
+    const page = (await getPage(`/api/v3/principals?filters=${filters}`)) as {
+      _embedded?: { elements?: ReadonlyArray<{ name?: unknown }> };
+    };
+    const name = page._embedded?.elements?.[0]?.name;
+    return typeof name === "string" ? name : null;
+  } catch (error) {
+    if (
+      error instanceof OpCliError
+      && (error.code === "AUTH_FAILED" || error.code === "NOT_FOUND")
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fills in the author name an activities collection leaves out: a real
+ * instance links the user by href with no title, and this CLI exists to
+ * show names rather than the ids the API speaks. Each id is looked up at
+ * most once per run, and a row that already carries a name costs nothing.
+ */
+function authorResolver(
+  getPage: (path: string) => Promise<unknown>,
+): (row: Record<string, unknown>) => Promise<Record<string, unknown>> {
+  const named = new Map<number, string | null>();
+  return async (row) => {
+    const user = row.user;
+    if (!isFlatLink(user) || user.id === null || user.name !== null) {
+      return row;
+    }
+    const id = user.id;
+    if (!named.has(id)) {
+      named.set(id, await principalName(getPage, id));
+    }
+    const name = named.get(id) ?? null;
+    return name === null ? row : { ...row, user: { id, name } };
   };
 }
 
 /** Comments are the Comment-kind slice of the same activity stream. */
 function commentRow(element: unknown): Record<string, unknown> | undefined {
   const row = activityRow(element);
-  return row?.kind === "Comment" ? row : undefined;
+  return row.kind === "Comment" ? row : undefined;
 }
 
 /** Only the typed fields and both ends; the action links carry no data. */
@@ -2129,6 +2200,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: (id) => `/api/v3/work_packages/${id}/activities`,
       row: commentRow,
       columns: COMMENT_COLUMNS,
+      resolve: authorResolver,
     },
     collectionRuntime,
   ));
@@ -2140,6 +2212,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: (id) => `/api/v3/work_packages/${id}/activities`,
       row: activityRow,
       columns: HISTORY_COLUMNS,
+      resolve: authorResolver,
     },
     collectionRuntime,
   ));
@@ -2177,14 +2250,20 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       project?: string;
     }) => {
       requireWpId(reference);
+      // Writing: --fields misuse is refused before the comment exists, so
+      // a caller who fixes the flag and retries cannot post it twice.
+      selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
       const profile = await openProfile(runtime, options);
-      const created = flattenHalRecord(await apiPost(
+      const created = activityRow(await apiPost(
         profile.instanceUrl,
         profile.apiKey,
         `/api/v3/work_packages/${reference}/activities`,
         { comment: { raw: text } },
       ));
-      renderRecord(runtime, options, created);
+      const named = await authorResolver(
+        (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
+      )(created);
+      renderRecord(runtime, options, named);
     });
 
   wp.command("relate")

@@ -130,29 +130,60 @@ const categoryLookup: LookupSpec<StoredCategory, ProjectVocabulary> = {
   ],
 };
 
-/**
- * One row per (type, custom field) pair: when a custom field is attached
- * to several work package types it appears SEVERAL times here under the
- * same name (distinct keys), so the result is not unique by name. The wp
- * create resolver relies on exactly this duplication to declare a shared
- * name ambiguous.
- */
-function flattenFields(
-  vocabulary: ProjectVocabulary,
-): ReadonlyArray<StoredCustomField> {
-  const fields = Object.values(vocabulary.custom_fields).flat();
-  return [...fields].sort((a, b) => a.name.localeCompare(b.name));
+/** What the fields lookup reads: the vocabulary plus the type names. */
+interface FieldData {
+  readonly metadata: StoredMetadata;
+  readonly vocabulary: ProjectVocabulary;
 }
 
-const fieldLookup: LookupSpec<StoredCustomField, ProjectVocabulary> = {
+/** One custom field with the work package types that expose it. */
+interface FieldRow extends StoredCustomField {
+  readonly types: ReadonlyArray<string>;
+}
+
+/**
+ * One row per custom field, however many work package types carry it.
+ * `custom_fields` is stored keyed by type id, so flattening it repeats a
+ * shared field once per type; a custom field is defined once for the
+ * instance, so those copies differ only in which type exposes them and
+ * that difference belongs in the TYPES column, not in extra rows.
+ *
+ * The `wp create` resolver keeps reading the per-type map directly: there
+ * a shared name repeated across types is exactly what makes it ambiguous.
+ */
+function uniqueFields(data: FieldData): ReadonlyArray<FieldRow> {
+  const typeName = new Map(
+    data.metadata.types.map((entry) => [String(entry.id), entry.name]),
+  );
+  const byKey = new Map<string, { field: StoredCustomField; types: Array<string> }>();
+  for (const [typeId, fields] of Object.entries(data.vocabulary.custom_fields)) {
+    const owner = typeName.get(typeId) ?? typeId;
+    for (const field of fields) {
+      const existing = byKey.get(field.key);
+      if (existing === undefined) {
+        byKey.set(field.key, { field, types: [owner] });
+        continue;
+      }
+      if (!existing.types.includes(owner)) {
+        existing.types.push(owner);
+      }
+    }
+  }
+  return [...byKey.values()]
+    .map((entry) => ({ ...entry.field, types: entry.types }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const fieldLookup: LookupSpec<FieldRow, FieldData> = {
   name: "fields",
   description: "List the custom fields of the active project",
-  select: flattenFields,
+  select: uniqueFields,
   options: [projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
     { title: "NAME", cell: (entry) => entry.name },
     { title: "KEY", cell: (entry) => entry.key },
+    { title: "TYPES", cell: (entry) => entry.types.join(", ") },
     {
       title: "ALLOWED VALUES",
       cell: (entry) => customFieldAllowedNames(entry).join(", "),
@@ -297,12 +328,35 @@ function instanceLoad(runtime: MetaRuntime): MetaLoader<StoredMetadata> {
     loadStoredMetadata(runtime.env, await runtime.resolve());
 }
 
+/** The active profile under this run's --project override, if any. */
+async function projectProfile(
+  runtime: MetaRuntime,
+  options: ParsedOptions,
+): Promise<ActiveProfile> {
+  const raw = options.project;
+  return runtime.resolve({
+    project: parseOptionalId(typeof raw === "string" ? raw : undefined),
+  });
+}
+
 function projectLoad(runtime: MetaRuntime): MetaLoader<ProjectVocabulary> {
+  return async (options) =>
+    loadProjectVocabulary(runtime.env, await projectProfile(runtime, options));
+}
+
+/**
+ * The fields lookup needs the instance types too, to name them. Instance
+ * metadata is loaded first because the vocabulary is stored inside it, so
+ * an empty cache is filled by one fetch of each rather than two.
+ */
+function fieldLoad(runtime: MetaRuntime): MetaLoader<FieldData> {
   return async (options) => {
-    const raw = options.project;
-    const project = parseOptionalId(typeof raw === "string" ? raw : undefined);
-    const profile = await runtime.resolve({ project });
-    return loadProjectVocabulary(runtime.env, profile);
+    const profile = await projectProfile(runtime, options);
+    const metadata = await loadStoredMetadata(runtime.env, profile);
+    return {
+      metadata,
+      vocabulary: await loadProjectVocabulary(runtime.env, profile),
+    };
   };
 }
 
@@ -316,7 +370,7 @@ export function registerMetaCommands(parent: Command, runtime: MetaRuntime): voi
   addLookup(parent, runtime, memberLookup, project);
   addLookup(parent, runtime, versionLookup, project);
   addLookup(parent, runtime, categoryLookup, project);
-  addLookup(parent, runtime, fieldLookup, project);
+  addLookup(parent, runtime, fieldLookup, fieldLoad(runtime));
   addLookup(parent, runtime, activityLookup, project);
   registerShow(parent, runtime);
   registerRefresh(parent, runtime);

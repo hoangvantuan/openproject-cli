@@ -104,6 +104,15 @@ export interface CollectionSpec {
   /** One flat output row per element; returning undefined drops it. */
   readonly row: (element: unknown) => Record<string, unknown> | undefined;
   readonly columns: ReadonlyArray<CollectionColumn>;
+  /**
+   * Optional second pass over each row, for facts the collection only
+   * links to. The factory runs once per invocation so the resolver can
+   * memoise across rows; it is handed the same page getter the listing
+   * uses, and returning the row untouched costs nothing.
+   */
+  readonly resolve?: (
+    getPage: (path: string) => Promise<unknown>,
+  ) => (row: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 export interface CollectionRuntime {
@@ -212,6 +221,7 @@ export function defineCollectionCommand(
       );
     }
     const getPage = await runtime.connect(options);
+    const resolve = spec.resolve?.(getPage) ?? ((row) => Promise.resolve(row));
     const limit = parsePageSize(typeof options.limit === "string" ? options.limit : undefined);
     const startPath = withPageSize(spec.path(reference), limit);
     if (options.all === true) {
@@ -219,7 +229,7 @@ export function defineCollectionCommand(
         for await (const element of halElements<unknown>(getPage, startPath)) {
           const row = spec.row(element);
           if (row !== undefined) {
-            runtime.write(`${JSON.stringify(pick(row))}\n`);
+            runtime.write(`${JSON.stringify(pick(await resolve(row)))}\n`);
           }
         }
         return;
@@ -228,7 +238,7 @@ export function defineCollectionCommand(
       for await (const element of halElements<unknown>(getPage, startPath)) {
         const row = spec.row(element);
         if (row !== undefined) {
-          rows.push(row);
+          rows.push(await resolve(row));
         }
       }
       runtime.write(renderRowsTable(view, rows));
@@ -239,9 +249,13 @@ export function defineCollectionCommand(
       _embedded?: { elements?: readonly unknown[] };
     };
     const elements = page._embedded?.elements ?? [];
-    const rows = elements
-      .map(spec.row)
-      .filter((row): row is Record<string, unknown> => row !== undefined);
+    const rows: Array<Record<string, unknown>> = [];
+    for (const element of elements) {
+      const row = spec.row(element);
+      if (row !== undefined) {
+        rows.push(await resolve(row));
+      }
+    }
     emitRows(runtime, spec.columns, rows, options);
     // The notice compares against what the API delivered on the page, not
     // the post-filter count: a comments listing drops other activity kinds
