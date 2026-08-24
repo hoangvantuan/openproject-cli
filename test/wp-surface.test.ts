@@ -176,7 +176,21 @@ function systemActivity(id: number, userName: string): Record<string, unknown> {
     _type: "Activity",
     id,
     comment: { format: "markdown", raw: "" },
-    details: [],
+    // The wire shape of an attribute change: the instance pre-spells the
+    // sentence, the CLI only joins the raw texts.
+    details: [
+      {
+        format: "custom",
+        raw: "Status changed from New to In progress",
+        html: "<strong>Status</strong> changed from <i>New</i> to <i>In progress</i>",
+      },
+      {
+        format: "custom",
+        raw: "Assignee set to Tuan Ha",
+        html: "<strong>Assignee</strong> set to <i>Tuan Ha</i>",
+      },
+    ],
+    internal: false,
     createdAt: "2026-08-20T14:02:11Z",
     updatedAt: "2026-08-20T14:02:11Z",
     _links: {
@@ -300,6 +314,7 @@ describe("wp comments", () => {
         kind: "Comment",
         user: { id: 9, name: "Linh Nguyen" },
         comment: "Looks fixed on staging.",
+        details: "",
         createdAt: "2026-08-21T09:30:12Z",
       },
     ]);
@@ -507,14 +522,61 @@ describe("wp history", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe(
       renderTable(
-        ["ID", "KIND", "AUTHOR", "COMMENT", "CREATED"],
+        ["ID", "KIND", "AUTHOR", "COMMENT", "DETAILS", "CREATED"],
         [
-          ["1479", "Activity", "Tuan Ha", "", "2026-08-20T14:02:11Z"],
-          ["1480", "Comment", "Linh Nguyen", "Looks fixed on staging.", "2026-08-21T09:30:12Z"],
+          [
+            "1479",
+            "Activity",
+            "Tuan Ha",
+            "",
+            "Status changed from New to In progress; Assignee set to Tuan Ha",
+            "2026-08-20T14:02:11Z",
+          ],
+          ["1480", "Comment", "Linh Nguyen", "Looks fixed on staging.", "", "2026-08-21T09:30:12Z"],
         ],
       ),
     );
   });
+
+  test("--fields picks the details column in both shapes", async () => {
+    const root = await makeTempRoom("op-cli-wp-history-fields-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      gets: {
+        [activitiesPath("?pageSize=100")]: halCollection(1, [
+          systemActivity(1479, "Tuan Ha"),
+        ]),
+      },
+    });
+
+    const table = await runWp(configDir, cacheDir, [
+      "history",
+      "1520",
+      "--fields",
+      "id,details",
+    ]);
+    const json = await runWp(configDir, cacheDir, [
+      "history",
+      "1520",
+      "--fields",
+      "id,details",
+      "--json",
+    ]);
+
+    expect(table.exitCode).toBe(0);
+    expect(table.stdout).toBe(
+      renderTable([
+        "ID", "DETAILS",
+      ], [[
+        "1479", "Status changed from New to In progress; Assignee set to Tuan Ha",
+      ]]),
+    );
+    expect(json.exitCode).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual([
+      { id: 1479, details: "Status changed from New to In progress; Assignee set to Tuan Ha" },
+    ]);
+  });
+
 });
 
 describe("wp relations", () => {
@@ -604,6 +666,7 @@ describe("wp comment", () => {
           ["kind", "Comment"],
           ["user", "Linh Nguyen"],
           ["comment", "Deployed to staging."],
+          ["details", ""],
         ],
       ),
     );
@@ -637,6 +700,7 @@ describe("wp comment", () => {
       kind: "Comment",
       user: { id: 9, name: "Linh Nguyen" },
       comment: "Deployed to staging.",
+      details: "",
     });
   });
 

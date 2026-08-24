@@ -76,6 +76,20 @@ const EDIT_ACTIVITY_ELEMENT = {
   ...COMMENT_ACTIVITY_ELEMENT,
   _type: "Activity::Edit",
   comment: { format: "markdown", raw: "", html: "" },
+  // The instance spells each change as one formattable sentence; the
+  // API never hands back structured old/new pairs to re-derive them.
+  details: [
+    {
+      format: "custom",
+      raw: "Status changed from New to In progress",
+      html: "<strong>Status</strong> changed from <i>New</i> to <i>In progress</i>",
+    },
+    {
+      format: "custom",
+      raw: "Assignee set to Tuan Ha",
+      html: "<strong>Assignee</strong> set to <i>Tuan Ha</i>",
+    },
+  ],
 };
 
 const RELATION_ELEMENT = {
@@ -275,6 +289,14 @@ describe("the column fixtures track the wire shapes they stand in for", () => {
     expect(row.status).toEqual({ id: 1, name: "In progress" });
     expect(row.assignee).toEqual({ id: 9, name: "Linh Nguyen" });
     expect(row.subject).toBe("Fix login redirect");
+  });
+
+  test("wp history joins the instance-spelled changes into one details line", () => {
+    const row = activityRow(EDIT_ACTIVITY_ELEMENT);
+    expect(row.details).toBe(
+      "Status changed from New to In progress; Assignee set to Tuan Ha",
+    );
+    expect(activityRow(COMMENT_ACTIVITY_ELEMENT).details).toBe("");
   });
 
   test("wp history derives KIND from the prefixed _type and keeps the raw text", () => {

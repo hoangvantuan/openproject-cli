@@ -1701,6 +1701,7 @@ export const HISTORY_COLUMNS = [
   { title: "KIND", field: "kind" },
   { title: "AUTHOR", field: "user" },
   { title: "COMMENT", field: "comment" },
+  { title: "DETAILS", field: "details" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -1761,12 +1762,16 @@ function involvedRelationsPath(id: string): string {
 function linkIdOf(link: unknown): number | null {
   return isFlatLink(link) ? link.id : null;
 }
-
 /**
  * One flat row per activity; the raw _type becomes the KIND column and
  * survives flattening because flattenHalRecord drops _type from records.
  * The formattable `comment` collapses to its raw text so the one name
  * means one thing wherever an activity is rendered.
+ *
+ * `details` carries the audit half the comment never could: the changes
+ * behind a system activity, one instance-spelled sentence per attribute
+ * ("Status changed from New to In progress"). A comment activity changed
+ * nothing, so its details render empty rather than absent.
  */
 export function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
@@ -1780,8 +1785,28 @@ export function activityRow(element: unknown): Record<string, unknown> {
     kind,
     user: record.user,
     comment: typeof comment?.raw === "string" ? comment.raw : "",
+    details: activityDetails(record.details),
     createdAt: record.createdAt,
   };
+}
+
+/**
+ * The changes of one activity as a single line: each detail arrives as the
+ * instance already spells it, so joining the raw texts keeps the summary
+ * honest in every locale instead of re-deriving it from values the API
+ * does not hand back. Details without raw text contribute nothing.
+ */
+function activityDetails(details: unknown): string {
+  if (!Array.isArray(details)) {
+    return "";
+  }
+  return details
+    .map((detail) => {
+      const raw = (detail as { raw?: unknown } | null)?.raw;
+      return typeof raw === "string" ? raw : "";
+    })
+    .filter((text) => text !== "")
+    .join("; ");
 }
 
 /**
