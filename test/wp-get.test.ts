@@ -96,6 +96,12 @@ function workPackageFixture(): Record<string, unknown> {
       version: { href: "/api/v3/versions/21", title: "0.1.0" },
       category: { href: null, title: null },
       attachments: { href: "/api/v3/work_packages/1520/attachments" },
+      // Operations, not resources: a real record carries dozens of them.
+      update: { href: "/api/v3/work_packages/1520/form", method: "post" },
+      updateImmediately: { href: "/api/v3/work_packages/1520", method: "patch" },
+      delete: { href: "/api/v3/work_packages/1520", method: "delete" },
+      pdf: { href: "/api/v3/work_packages/1520/pdf" },
+      configureForm: { href: "/api/v3/types/2/edit/form_configuration" },
     },
   };
 }
@@ -142,7 +148,6 @@ describe("wp get", () => {
           ["lockVersion", "7"],
           ["description", '{"format":"markdown","raw":"Repro: open /login."}'],
           ["percentageDone", "40"],
-          ["attachments", ""],
         ],
       ),
     );
@@ -178,12 +183,33 @@ describe("wp get", () => {
       author: { id: 5, name: "Tuan Ha" },
       assignee: { id: 9, name: "Linh Nguyen" },
       version: { id: 21, name: "0.1.0" },
+      // An unset attribute is data: the record says so instead of hiding it.
       category: { id: null, name: null },
-      attachments: { id: null, name: null },
     });
     for (const banned of ["_links", "_embedded", "_type", "error", "_meta"]) {
       expect(parsed[banned]).toBeUndefined();
     }
+  });
+
+  test("--json drops the links that name no resource", async () => {
+    const root = await makeTempRoom("op-cli-wp-json-links-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example");
+    installMockApi({
+      instanceUrl: "https://op.example",
+      packages: { "/api/v3/work_packages/1520": workPackageFixture() },
+    });
+
+    const result = await runWpGet(configDir, cacheDir, ["1520", "--json"]);
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    // An operation carries no data, and the id it would flatten to is the
+    // work package's own, which reads as a resource it is not.
+    for (const operation of ["update", "updateImmediately", "delete", "pdf", "configureForm"]) {
+      expect(parsed[operation], operation).toBeUndefined();
+    }
+    // A collection endpoint names nothing either.
+    expect(parsed["attachments"]).toBeUndefined();
   });
 
   test("--fields picks the same named columns in the JSON record", async () => {

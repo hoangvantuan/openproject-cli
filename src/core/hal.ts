@@ -38,6 +38,29 @@ export function flattenHalLink(link: unknown): FlatLink {
 interface HalLinkBody {
   readonly href?: unknown;
   readonly title?: unknown;
+  readonly method?: unknown;
+}
+
+/**
+ * Whether a link belongs in the flat record. HAL mixes two kinds under
+ * `_links`: attributes that point at a resource, and operations the
+ * caller may perform. An operation declares its `method`, and its href
+ * often ends in the record's own id, so keeping it would spell an
+ * unrelated action as if it were a resource. A link that names nothing
+ * at all (`{"id":null,"name":null}` from a real href, such as a
+ * sub-collection endpoint) carries no fact either. What stays is every
+ * link that names a resource, plus the unset attributes whose href is
+ * null: "no version" is data.
+ */
+function namesAResource(link: unknown, flat: FlatLink): boolean {
+  const body = link as HalLinkBody | null | undefined;
+  if (typeof body === "object" && body !== null && body.method !== undefined) {
+    return false;
+  }
+  if (flat.id !== null || flat.name !== null) {
+    return true;
+  }
+  return typeof body?.href !== "string";
 }
 
 function isFlatLink(value: unknown): value is FlatLink {
@@ -54,9 +77,10 @@ function isFlatLink(value: unknown): value is FlatLink {
 /**
  * Flatten one HAL resource in place: `_type` is dropped, `_embedded` is
  * stripped (embedded resources are never merged into the record), every
- * `_links` entry except `self` shrinks to `{ id, name }`, and scalars
- * pass through untouched. The result is the bare record; nothing wraps
- * it.
+ * `_links` entry except `self` and the operations shrinks to
+ * `{ id, name }`, and scalars pass through untouched. The result is the
+ * bare record; nothing wraps it. See ADR-0003 for what the shape
+ * promises.
  */
 export function flattenHalRecord(
   record: unknown,
@@ -82,9 +106,14 @@ export function flattenHalRecord(
       if (key === "self") {
         continue;
       }
-      flat[key] = Array.isArray(link)
-        ? link.map(flattenHalLink)
-        : flattenHalLink(link);
+      if (Array.isArray(link)) {
+        flat[key] = link.map(flattenHalLink);
+        continue;
+      }
+      const flatLink = flattenHalLink(link);
+      if (namesAResource(link, flatLink)) {
+        flat[key] = flatLink;
+      }
     }
   }
   return flat;

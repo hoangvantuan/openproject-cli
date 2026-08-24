@@ -1,7 +1,8 @@
 import type { Command } from "commander";
 
+import { PAGED_JSON_HELP } from "../core/define.js";
 import { isoToHours, parseDuration } from "../core/duration.js";
-import { OpCliError } from "../core/errors.js";
+import { OpCliError, writeRefusal } from "../core/errors.js";
 import { filtersQuery, isoDate, updatedAtRange, type WpFilter } from "../core/filters.js";
 import { flattenHalRecord, isFlatLink, type FlatLink } from "../core/hal.js";
 import {
@@ -105,6 +106,12 @@ function renderRecord(
   runtime: Pick<TimeRuntime, "write">,
   options: { json?: boolean; fields?: string },
   record: Record<string, unknown>,
+  /**
+   * What already happened when the record is the result of a completed
+   * write. A bad --fields name is still misuse, but the message has to
+   * say the write landed or it invites a repeat that logs twice.
+   */
+  done?: string,
 ): void {
   const fields =
     options.fields === undefined
@@ -116,7 +123,8 @@ function renderRecord(
   if (first !== undefined) {
     throw new OpCliError(
       "USAGE_ERROR",
-      `field "${first}" is not a column. Valid fields, closest first: `
+      `${done === undefined ? "" : `${done}; `}`
+        + `field "${first}" is not a column. Valid fields, closest first: `
         + `${rankByCloseness(first, [...RECORD_FIELDS]).join(", ")}.`,
       "run the command without --fields to list every available column.",
     );
@@ -277,7 +285,7 @@ function activitiesSource(
 /**
  * Catalogue mapping for a create that survived without retrying: 404
  * stays NOT_FOUND, 5xx means the state is unknown, everything else is
- * API_ERROR carrying the server's own message when it has one.
+ * the shared refusal mapping.
  */
 function logRejection(status: number, body: unknown): OpCliError {
   if (status === 404) {
@@ -290,14 +298,7 @@ function logRejection(status: number, body: unknown): OpCliError {
       "check op-cli time list before repeating the command.",
     );
   }
-  const detail = typeof body === "object" && body !== null
-    && typeof (body as Record<string, unknown>).message === "string"
-    ? (body as Record<string, unknown>).message as string
-    : undefined;
-  return new OpCliError(
-    "API_ERROR",
-    detail === undefined ? undefined : `OpenProject rejected the entry: ${detail}`,
-  );
+  return writeRefusal("entry", status, body);
 }
 
 /**
@@ -331,7 +332,7 @@ async function postEntry(
 /**
  * Catalogue mapping for an update that survived without retrying: 404
  * stays NOT_FOUND, 5xx means the state is unknown, everything else is
- * API_ERROR carrying the server's own message when it has one.
+ * the shared refusal mapping.
  */
 function updateRejection(status: number, body: unknown): OpCliError {
   if (status === 404) {
@@ -344,14 +345,7 @@ function updateRejection(status: number, body: unknown): OpCliError {
       "check op-cli time get before repeating the command.",
     );
   }
-  const detail = typeof body === "object" && body !== null
-    && typeof (body as Record<string, unknown>).message === "string"
-    ? (body as Record<string, unknown>).message as string
-    : undefined;
-  return new OpCliError(
-    "API_ERROR",
-    detail === undefined ? undefined : `OpenProject rejected the change: ${detail}`,
-  );
+  return writeRefusal("change", status, body);
 }
 
 /** A patch whose failure leaves the stored state unknown: never retried. */
@@ -441,6 +435,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       "calendar date the hours were spent, YYYY-MM-DD; defaults to today",
     )
     .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <id>", "override the profile default project")
     .action(async (reference: string, options: {
@@ -448,6 +443,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       activity?: string;
       spentOn?: string;
       json?: boolean;
+      fields?: string;
       profile?: string;
       project?: string;
     }) => {
@@ -498,7 +494,8 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       ) {
         throw logRejection(response.status, response.body);
       }
-      renderRecord(runtime, options, timeEntryRecord(response.body));
+      const entry = timeEntryRecord(response.body);
+      renderRecord(runtime, options, entry, `time entry ${String(entry.id)} was logged`);
     });
 
   time.command("list")
@@ -506,7 +503,7 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
     .option("--wp <id>", "work package id; repeat or comma-separate to OR values", collectValue, [])
     .option("--user <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--from <date>", "today, yesterday, days back such as 7d, or YYYY-MM-DD")
-    .option("--json", "emit a flat JSON array")
+    .option("--json", PAGED_JSON_HELP)
     .option("--limit <n>", "maximum number of results to show")
     .option("--all", "fetch every page instead of one limited page")
     .option("--profile <name>", "use this profile for this command only")

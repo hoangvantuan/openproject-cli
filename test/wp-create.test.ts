@@ -249,6 +249,56 @@ describe("wp create values by name", () => {
     expect(postBodies[0]?.[customFieldKey(11)]).toBe("5");
   });
 
+  test("--fields narrows the record the create reports", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    installMockApi({
+      posts: [{ status: 201, body: createdElement(1500, "Ship the thing") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Ship the thing",
+      "--fields",
+      "id,subject",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ id: 1500, subject: "Ship the thing" });
+  });
+
+  test("an unknown --fields name says the work package was created anyway", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    installMockApi({
+      posts: [{ status: 201, body: createdElement(1500, "Ship the thing") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "Ship the thing",
+      "--fields",
+      "subjekt",
+    ]);
+    expect(result.exitCode).toBe(1);
+    // Repeating the command would create a second work package, so the
+    // message has to say the first one exists.
+    expect(result.stderr).toContain("work package 1500 was created");
+    expect(result.stderr).toContain('field "subjekt" is not a column');
+  });
+
+  test("--fields belongs to a single create, not to the bulk path", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    installMockApi({});
+    const result = await run(
+      ["wp", "create", "--stdin", "--fields", "id"],
+      { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir },
+      { readStdin: async () => '[{"subject":"First"}]' },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain("--fields");
+  });
+
   test("splits a field value at the first equals sign", async () => {
     const { configDir, cacheDir } = await standardRoom();
     await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));

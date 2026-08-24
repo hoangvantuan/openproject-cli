@@ -69,3 +69,28 @@ test("a command-line parse error renders as JSON under the variable", async () =
   const text = await run(["wp", "get"], {}, {});
   expect(text.stderr).toContain("[USAGE_ERROR]");
 });
+
+/**
+ * Every listing that streams NDJSON under --all, so a caller who reads
+ * only --help cannot be surprised by a body JSON.parse refuses.
+ */
+const STREAMING_LISTINGS: ReadonlyArray<ReadonlyArray<string>> = [
+  ["wp", "list"],
+  ["wp", "comments"],
+  ["wp", "relations"],
+  ["wp", "history"],
+  ["project", "list"],
+  ["time", "list"],
+];
+
+test("--help states the NDJSON shape wherever --all streams it", async () => {
+  for (const command of STREAMING_LISTINGS) {
+    const help = await run([...command, "--help"], {}, {});
+    expect(help.exitCode, command.join(" ")).toBe(0);
+    const jsonLine = help.stdout
+      .split("\n")
+      .find((line) => line.trim().startsWith("--json"));
+    expect(jsonLine, command.join(" ")).toBeDefined();
+    expect(`${command.join(" ")}: ${String(jsonLine)}`).toContain("NDJSON");
+  }
+});

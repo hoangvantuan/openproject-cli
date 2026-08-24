@@ -419,6 +419,58 @@ describe("project create", () => {
     expect(links["parent"]?.href).toBe("/api/v3/projects/13");
   });
 
+  test("a rejected create points at the values, not at waiting", async () => {
+    const root = await makeTempRoom("project-create-rejected-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: "/api/v3/projects",
+          method: "POST",
+          status: 422,
+          body: { _type: "Error", message: "Identifier has already been taken." },
+        },
+      ],
+    });
+    const result = await runProject(configDir, cacheDir, [
+      "create",
+      "dup",
+      "--identifier",
+      "op-cli-qa-0824",
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain(
+      "[API_ERROR] OpenProject rejected the create: Identifier has already been taken.",
+    );
+    // Waiting cannot help a refused write; only different values can.
+    expect(result.stderr).not.toContain("try again later");
+    expect(result.stderr).toContain("Hint: fix the rejected values and repeat the command.");
+  });
+
+  test("a rate-limited create is the one refusal that waiting repairs", async () => {
+    const root = await makeTempRoom("project-create-throttled-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: "/api/v3/projects",
+          method: "POST",
+          status: 429,
+          body: { _type: "Error", message: "Too many requests." },
+        },
+      ],
+    });
+    const result = await runProject(configDir, cacheDir, [
+      "create",
+      "dup",
+      "--identifier",
+      "op-cli-qa-0825",
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Too many requests.");
+    expect(result.stderr).toContain("Hint: try again later.");
+  });
+
   test("without --identifier exits 1 before any request", async () => {
     const root = await makeTempRoom("project-create-noid-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);

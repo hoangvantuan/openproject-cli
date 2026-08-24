@@ -211,6 +211,47 @@ describe("wp update", () => {
     expect(patchBodies[0]?.[customFieldKey(11)]).toBe("7");
   });
 
+  test("--fields narrows the record the update reports", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "closed-by-b") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--status",
+      "Closed",
+      "--fields",
+      "id,subject",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ id: 675, subject: "Ship the thing" });
+  });
+
+  test("an unknown --fields name is refused before the work package is touched", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "closed-by-b") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--status",
+      "Closed",
+      "--fields",
+      "subjekt",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('field "subjekt" is not a column');
+    expect(result.stdout).toBe("");
+    expect(patchBodies).toHaveLength(0);
+  });
+
   test("a pure race succeeds after exactly one retry", async () => {
     const { configDir, cacheDir } = await standardRoom();
     await writeMetadataFile(cacheDir, scopedMetadata());
