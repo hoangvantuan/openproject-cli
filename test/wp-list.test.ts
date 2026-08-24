@@ -530,7 +530,7 @@ describe("wp list pagination and shapes", () => {
       // whole agent, so green pins the walk at exactly one page.
       oneShots: {
         "/api/v3/": { maximumAPIV3PageSize: 500 },
-        [listPath([], 500)]: halCollection(7, elements),
+        [scopedPath([], 500)]: halCollection(7, elements),
       },
     });
     const result = await runWp(configDir, cacheDir, [
