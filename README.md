@@ -22,8 +22,10 @@ markers so both humans and agents can react to them programmatically.
 
 ## From install to first useful command
 
+The npm package is [@tuanhv/op-cli](https://www.npmjs.com/package/@tuanhv/op-cli):
+
 ```sh
-npm install -g op-cli
+npm install -g @tuanhv/op-cli
 op-cli auth login        # prompts for URL and API key; needs an interactive terminal
 op-cli wp list --open    # list open work packages of your instance
 ```
@@ -73,7 +75,8 @@ op-cli doctor            # diagnose connectivity, credentials, versions
 ## Companion skill
 
 `skills/op-cli/SKILL.md` packages this CLI's workflows as a coding-agent
-skill. To install it, copy that directory into your agent's skills folder:
+skill. It ships in this repository, not in the npm package; to install
+it, clone the repo and copy that directory into your agent's skills folder:
 
 ```sh
 cp -R skills/op-cli ~/.claude/skills/op-cli
@@ -93,7 +96,8 @@ mappings; do not build on it.
 npm run build   # compile src/ to dist/
 npm test        # unit tests over fixtures from a real instance
 npm run lint
-scripts/smoke.sh  # REQUIRED gate before publishing
+scripts/smoke.sh              # REQUIRED gate before publishing
+npm publish --access public   # scoped package; public is not the default
 ```
 
 `scripts/smoke.sh` exercises a real create, update, time log, and delete

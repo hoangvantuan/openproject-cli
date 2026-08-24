@@ -1,8 +1,25 @@
 {
-  "name": "op-cli",
+  "name": "@tuanhv/op-cli",
   "version": "0.1.0",
   "description": "A resolving command-line client for OpenProject",
   "license": "MIT",
+  "author": "hoangvantuan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoangvantuan/openproject-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hoangvantuan/openproject-cli/issues"
+  },
+  "homepage": "https://github.com/hoangvantuan/openproject-cli#readme",
+  "keywords": [
+    "openproject",
+    "cli",
+    "command-line",
+    "project-management",
+    "work-packages",
+    "time-tracking"
+  ],
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -19,7 +36,8 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/bin.js",
     "lint": "eslint src test",
     "pretest": "npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run lint && npm test"
   },
   "dependencies": {
     "commander": "^14.0.1"
