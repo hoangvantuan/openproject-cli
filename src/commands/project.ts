@@ -12,6 +12,7 @@ import {
   apiPatchRaw,
   apiPost,
   apiPostRaw,
+  authenticate,
   type RawWriteResponse,
 } from "../core/http.js";
 import {
@@ -20,7 +21,13 @@ import {
   parsePageSize,
   withPageSize,
 } from "../core/paginate.js";
-import { isIdForm, rankByCloseness } from "../context/resolve.js";
+import {
+  isIdForm,
+  rankByCloseness,
+  resolveName,
+  type LookupSource,
+  type NamedEntry,
+} from "../context/resolve.js";
 import {
   parseOptionalId,
   type ActiveProfile,
@@ -115,6 +122,10 @@ function hitOf(element: unknown): ProjectHit | undefined {
 
 const PROJECTS_COLLECTION = "/api/v3/projects";
 
+const PRINCIPALS_COLLECTION = "/api/v3/principals";
+const ROLES_COLLECTION = "/api/v3/roles";
+const MEMBERSHIPS_COLLECTION = "/api/v3/memberships";
+
 /**
  * Every visible project, page by page in server order. Resolution walks
  * instead of filtering server-side because the exact-match filter set
@@ -197,6 +208,101 @@ async function resolveProjectRef(
     raw,
     all.flatMap((hit) => [hit.identifier, hit.name]),
   );
+}
+
+/**
+ * One live lookup over an uncached collection. Stored metadata has a
+ * refresh to re-read the disk store; here refresh simply walks again.
+ */
+function liveSource<V>(
+  label: string,
+  walk: () => Promise<ReadonlyArray<NamedEntry<V>>>,
+): LookupSource<V> {
+  let cache: Promise<ReadonlyArray<NamedEntry<V>>> | undefined;
+  return {
+    label,
+    load: () => {
+      cache ??= walk();
+      return cache;
+    },
+    refresh: async () => {
+      cache = walk();
+      await cache;
+    },
+  };
+}
+
+/** Every principal of the instance, walked page by page in server order. */
+async function walkPrincipals(
+  getPage: GetPage,
+): Promise<ReadonlyArray<NamedEntry<number>>> {
+  const entries: Array<NamedEntry<number>> = [];
+  for await (const element of halElements<Record<string, unknown>>(
+    getPage,
+    withPageSize(PRINCIPALS_COLLECTION, DEFAULT_PAGE_SIZE),
+  )) {
+    if (typeof element.id === "number" && typeof element.name === "string") {
+      entries.push({
+        name: element.name,
+        owner: "principal",
+        value: element.id,
+      });
+    }
+  }
+  return entries;
+}
+
+/** Every role of the instance; the API names them `title`. */
+async function walkRoles(
+  getPage: GetPage,
+): Promise<ReadonlyArray<NamedEntry<number>>> {
+  const entries: Array<NamedEntry<number>> = [];
+  for await (const element of halElements<Record<string, unknown>>(
+    getPage,
+    withPageSize(ROLES_COLLECTION, DEFAULT_PAGE_SIZE),
+  )) {
+    if (typeof element.id === "number" && typeof element.title === "string") {
+      entries.push({ name: element.title, owner: "role", value: element.id });
+    }
+  }
+  return entries;
+}
+
+/**
+ * One membership principal, by name, id, or me. Ids pass through
+ * untouched; only a name costs the principals walk.
+ */
+async function resolvePrincipalId(
+  profile: ActiveProfile,
+  raw: string,
+): Promise<number> {
+  if (raw === "me") {
+    return (await authenticate(profile.instanceUrl, profile.apiKey)).id;
+  }
+  if (isIdForm(raw)) {
+    return Number(raw);
+  }
+  const getPage: GetPage = (path) =>
+    apiGet(profile.instanceUrl, profile.apiKey, path);
+  return resolveName(
+    raw,
+    liveSource("principal", () => walkPrincipals(getPage)),
+  );
+}
+
+/** Membership roles, each by title or id; one walk serves them all. */
+async function resolveRoleIds(
+  profile: ActiveProfile,
+  raws: ReadonlyArray<string>,
+): Promise<Array<number>> {
+  const getPage: GetPage = (path) =>
+    apiGet(profile.instanceUrl, profile.apiKey, path);
+  const source = liveSource("role", () => walkRoles(getPage));
+  const ids: Array<number> = [];
+  for (const raw of raws) {
+    ids.push(isIdForm(raw) ? Number(raw) : await resolveName(raw, source));
+  }
+  return ids;
 }
 
 /**
@@ -736,6 +842,132 @@ export function registerProjectCommands(
     (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/types`,
     TYPE_COLUMNS,
   );
+
+  // ---------------------------------------------------------------------------
+  // project member add / remove
+
+  const member = project
+    .command("member")
+    .description("Manage the members of one project");
+
+  member
+    .command("add")
+    .description("Grant one principal a membership with one or more roles")
+    .argument("<reference>", "project, by id, identifier, or name")
+    .argument("<principal>", "user or group, by name, id, or me")
+    .argument("<role...>", "role or roles, by title or id")
+    .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated fields to show")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (
+      reference: string,
+      principal: string,
+      roles: Array<string>,
+      options: ScopeOptions,
+    ) => {
+      runtime.setJsonMode(options.json === true);
+      const { getPage } = await connect(runtime, options);
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      const hit = await resolveProjectRef(getPage, reference);
+      const principalId = await resolvePrincipalId(profile, principal);
+      const roleIds = await resolveRoleIds(profile, roles);
+      const payload = {
+        _links: {
+          project: { href: `${PROJECTS_COLLECTION}/${String(hit.id)}` },
+          principal: { href: `${PRINCIPALS_COLLECTION}/${String(principalId)}` },
+          roles: roleIds.map((roleId) => ({
+            href: `${ROLES_COLLECTION}/${String(roleId)}`,
+          })),
+        },
+      };
+      const body = await projectWrite(
+        () => apiPostRaw(
+          profile.instanceUrl,
+          profile.apiKey,
+          MEMBERSHIPS_COLLECTION,
+          payload,
+        ),
+        "member add",
+      );
+      renderRecord(runtime, options, flattenHalRecord(body));
+    });
+
+  member
+    .command("remove")
+    .description("Remove one principal's membership from the project")
+    .argument("<reference>", "project, by id, identifier, or name")
+    .argument("<principal>", "user or group, by name, id, or me")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (reference: string, principal: string, options: {
+      profile?: string;
+      project?: string;
+    }) => {
+      const { getPage } = await connect(runtime, options);
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      const hit = await resolveProjectRef(getPage, reference);
+      const principalId = await resolvePrincipalId(profile, principal);
+      // One membership per (project, principal): filter both ends and
+      // expect exactly one record back.
+      const filters: Array<WpFilter> = [
+        { name: "project", operator: "=", values: [String(hit.id)] },
+        { name: "principal", operator: "=", values: [String(principalId)] },
+      ];
+      const page = await apiGet(
+        profile.instanceUrl,
+        profile.apiKey,
+        withPageSize(
+          `${MEMBERSHIPS_COLLECTION}?filters=${filtersQuery(filters)}`,
+          DEFAULT_PAGE_SIZE,
+        ),
+      ) as { _embedded?: { elements?: readonly unknown[] } };
+      const ids: Array<number> = [];
+      for (const element of page._embedded?.elements ?? []) {
+        if (
+          typeof element === "object"
+          && element !== null
+          && typeof (element as Record<string, unknown>).id === "number"
+        ) {
+          ids.push((element as Record<string, unknown>).id as number);
+        }
+      }
+      if (ids.length === 0) {
+        throw new OpCliError(
+          "NOT_FOUND",
+          `"${principal}" is not a member of project ${hit.name} `
+            + `(${String(hit.id)}).`,
+          "run op-cli meta members to see the current members.",
+        );
+      }
+      if (ids.length > 1) {
+        throw new OpCliError(
+          "API_ERROR",
+          `the instance reports ${String(ids.length)} memberships for `
+            + `"${principal}" in this project; refusing to guess.`,
+          "report this to the instance administrator.",
+        );
+      }
+      const membershipId = ids[0];
+      if (membershipId === undefined) {
+        throw new OpCliError("INTERNAL_ERROR");
+      }
+      await apiDelete(
+        profile.instanceUrl,
+        profile.apiKey,
+        `${MEMBERSHIPS_COLLECTION}/${String(membershipId)}`,
+      );
+      runtime.write(
+        `Removed membership ${String(membershipId)} from project `
+          + `${hit.name} (${String(hit.id)}).\n`,
+      );
+    });
 
   // ---------------------------------------------------------------------------
   // project delete

@@ -76,6 +76,10 @@ op-cli time report --from 7d --user me
 op-cli project list --search web
 op-cli project create Web --identifier web
 op-cli project copy <reference> Copy --identifier web-copy
+# add or remove project members; without membership, assignment is refused
+op-cli project member add <project> <user> <role>
+op-cli project member remove <project> <user>
+op-cli meta members
 # what a work package may use in a project
 op-cli project types <reference>
 # instance vocabulary; members, versions, categories, activities too
