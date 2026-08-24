@@ -78,7 +78,7 @@ async function runWpWithIo(
   configDir: string,
   cacheDir: string,
   args: ReadonlyArray<string>,
-  io: { isTTY?: boolean },
+  io: { stdinIsTTY?: boolean },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return run(
     ["wp", ...args],
@@ -102,7 +102,7 @@ describe("wp delete", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
     const api = installDeleteApi(204);
     const result = await runWpWithIo(configDir, cacheDir, ["delete", "675"], {
-      isTTY: true,
+      stdinIsTTY: true,
     });
     expect(result.exitCode).toBe(1);
     expect(api.deleteCalls()).toBe(0);

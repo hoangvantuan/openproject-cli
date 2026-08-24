@@ -26,7 +26,7 @@ export interface RunEnvironment {
 
 export interface RunIo {
   readonly prompt?: (message: string, secret: boolean) => Promise<string>;
-  readonly isTTY?: boolean;
+  readonly stdinIsTTY?: boolean;
   /** Whole stdin as one string; only the --stdin paths touch it. */
   readonly readStdin?: () => Promise<string>;
 }
@@ -83,8 +83,12 @@ export async function run(
     )
     .option("--project <id>", "default project stored on the profile")
     .action(async (options: { profile?: string; project?: string }) => {
-      if (!io.prompt) {
-        throw new OpCliError("USAGE_ERROR");
+      if (!io.prompt || io.stdinIsTTY !== true) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "auth login requires an interactive terminal.",
+          "set OPENPROJECT_URL and OPENPROJECT_API_KEY in the environment for non-interactive use.",
+        );
       }
 
       const enteredUrl = await io.prompt("Instance URL: ", false);
