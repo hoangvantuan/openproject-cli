@@ -1049,7 +1049,7 @@ describe("time delete", () => {
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
     const api = installMockApi({ deletePath: ENTRY_PATH });
     const result = await runTime(configDir, cacheDir, ["delete", "3001"], {
-      isTTY: true,
+      stdinIsTTY: true,
     });
     expect(result.exitCode).toBe(1);
     expect(api.deleteCalls()).toBe(0);

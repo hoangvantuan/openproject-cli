@@ -589,7 +589,7 @@ describe("review round 1", () => {
     const result = await run(
       ["auth", "login"],
       { OP_CLI_CONFIG_DIR: directory },
-      { prompt: async () => answers.shift() ?? "" },
+      { prompt: async () => answers.shift() ?? "", stdinIsTTY: true },
     );
 
     expect(result.exitCode).toBe(0);
@@ -663,7 +663,7 @@ describe("login into named profiles and stored default projects", () => {
     const result = await run(
       ["auth", "login", "--profile", "work", "--project", "13"],
       { OP_CLI_CONFIG_DIR: directory },
-      { prompt: async () => answers.shift() ?? "" },
+      { prompt: async () => answers.shift() ?? "", stdinIsTTY: true },
     );
 
     expect(result.exitCode).toBe(0);

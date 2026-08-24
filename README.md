@@ -24,7 +24,7 @@ markers so both humans and agents can react to them programmatically.
 
 ```sh
 npm install -g op-cli
-op-cli auth login        # prompts for your instance URL and API key
+op-cli auth login        # prompts for URL and API key; needs an interactive terminal
 op-cli wp list --open    # list open work packages of your instance
 ```
 

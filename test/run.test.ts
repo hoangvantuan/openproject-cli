@@ -125,7 +125,23 @@ describe("op-cli entry function", () => {
     expect(result).toEqual({
       stdout: "",
       stderr:
-        "[USAGE_ERROR] Invalid command usage. Hint: run op-cli --help.\n",
+        "[USAGE_ERROR] auth login requires an interactive terminal. Hint: set OPENPROJECT_URL and OPENPROJECT_API_KEY in the environment for non-interactive use.\n",
+      exitCode: 1,
+    });
+  });
+
+  test("auth login refuses a non-TTY stdin instead of prompting", async () => {
+    const result = await run(["auth", "login"], {}, {
+      prompt: async () => {
+        throw new Error("prompt must not be reached");
+      },
+      stdinIsTTY: false,
+    });
+
+    expect(result).toEqual({
+      stdout: "",
+      stderr:
+        "[USAGE_ERROR] auth login requires an interactive terminal. Hint: set OPENPROJECT_URL and OPENPROJECT_API_KEY in the environment for non-interactive use.\n",
       exitCode: 1,
     });
   });
@@ -135,7 +151,7 @@ describe("op-cli entry function", () => {
     const result = await run(
       ["auth", "login"],
       {},
-      { prompt: async () => answers.shift() ?? "" },
+      { prompt: async () => answers.shift() ?? "", stdinIsTTY: true },
     );
 
     expect(result).toEqual({
@@ -154,6 +170,7 @@ describe("op-cli entry function", () => {
         prompt: async () => {
           throw new Error("input failed");
         },
+        stdinIsTTY: true,
       },
     );
 
@@ -201,6 +218,7 @@ describe("op-cli entry function", () => {
           prompts.push({ message, secret });
           return answers.shift() ?? "";
         },
+        stdinIsTTY: true,
       },
     );
 
@@ -258,6 +276,7 @@ describe("op-cli entry function", () => {
       },
       {
         prompt: async () => answers.shift() ?? "",
+        stdinIsTTY: true,
       },
     );
 
@@ -304,6 +323,7 @@ describe("op-cli entry function", () => {
       },
       {
         prompt: async () => answers.shift() ?? "",
+        stdinIsTTY: true,
       },
     );
 
@@ -355,6 +375,7 @@ describe("op-cli entry function", () => {
       },
       {
         prompt: async () => answers.shift() ?? "",
+        stdinIsTTY: true,
       },
     );
 
@@ -393,8 +414,8 @@ describe("op-cli entry function", () => {
       OP_CLI_CACHE_DIR: join(root, "cache"),
     };
 
-    const withoutTty = await run(["auth", "status"], env, { isTTY: false });
-    const withTty = await run(["auth", "status"], env, { isTTY: true });
+    const withoutTty = await run(["auth", "status"], env, { stdinIsTTY: false });
+    const withTty = await run(["auth", "status"], env, { stdinIsTTY: true });
 
     expect(withoutTty).toEqual({
       stdout:
@@ -431,7 +452,7 @@ describe("op-cli entry function", () => {
         OP_CLI_CONFIG_DIR: join(root, "config"),
         OP_CLI_CACHE_DIR: join(root, "cache"),
       },
-      { isTTY: true },
+      { stdinIsTTY: true },
     );
 
     expect(result.exitCode).toBe(0);

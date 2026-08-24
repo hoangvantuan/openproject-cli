@@ -64,6 +64,7 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
           prompt: async () => {
             throw new Error("input failed");
           },
+          stdinIsTTY: true,
         },
       ),
       await run(

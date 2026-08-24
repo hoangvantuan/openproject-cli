@@ -697,7 +697,7 @@ describe("project delete", () => {
     const root = await makeTempRoom("project-delete-guard-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
     installNoTrafficApi();
-    for (const io of [{}, { isTTY: true }]) {
+    for (const io of [{}, { stdinIsTTY: true }]) {
       const result = await runProject(configDir, cacheDir, ["delete", "demo-site"], io);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("[USAGE_ERROR]");
