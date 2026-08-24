@@ -369,6 +369,7 @@ interface CreateValueFlags {
   readonly assignee?: string;
   readonly version?: string;
   readonly category?: string;
+  readonly parent?: string;
   readonly field?: Array<string>;
 }
 
@@ -504,6 +505,7 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "assignee",
   "version",
   "category",
+  "parent",
   "field",
 ];
 
@@ -541,6 +543,7 @@ function parseBulkItem(
     assignee?: string;
     version?: string;
     category?: string;
+    parent?: string;
     field?: Array<string>;
   } = {};
   const scalarKeys: ReadonlyArray<Exclude<keyof CreateValueFlags, "field">> = [
@@ -550,6 +553,7 @@ function parseBulkItem(
     "assignee",
     "version",
     "category",
+    "parent",
   ];
   for (const key of scalarKeys) {
     const rawValue = record[key];
@@ -724,6 +728,7 @@ interface UpdateOptions {
   readonly assignee?: string;
   readonly version?: string;
   readonly category?: string;
+  readonly parent?: string;
   readonly field?: Array<string>;
   readonly json?: boolean;
   readonly profile?: string;
@@ -1452,6 +1457,16 @@ async function resolveNamedValues(
     refs,
   );
 
+  // The parent is a live lookup over work packages, not cached metadata,
+  // so it never joins the ADR-0002 refs: an id given here is already the
+  // caller's own, and a subject search re-runs against current state.
+  if (options.parent !== undefined) {
+    const parentId = isIdForm(options.parent)
+      ? options.parent
+      : String(await searchParentByName(profile, options.parent));
+    links.parent = { href: `/api/v3/work_packages/${parentId}` };
+  }
+
   const payload: Record<string, unknown> = { _links: links };
   const groups = new Map<string, {
     field: StoredCustomField;
@@ -1804,6 +1819,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--assignee <name-or-id>", "assignee, by name, id, or me")
     .option("--version <name-or-id>", "version of the project, by name or id")
     .option("--category <name-or-id>", "category of the project, by name or id")
+    .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -1868,6 +1884,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--assignee <name-or-id>", "assignee, by name, id, or me")
     .option("--version <name-or-id>", "version of the project, by name or id")
     .option("--category <name-or-id>", "category of the project, by name or id")
+    .option("--parent <id-or-subject>", "re-parent under this work package, by id or exact subject")
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -1885,6 +1902,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.type !== undefined
         || options.status !== undefined
         || options.priority !== undefined
+        || options.parent !== undefined
         || options.assignee !== undefined
         || options.version !== undefined
         || options.category !== undefined

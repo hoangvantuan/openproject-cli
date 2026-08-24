@@ -368,3 +368,135 @@ describe("wp update", () => {
     expect(result.exitCode).toBe(1);
   });
 });
+
+describe("wp update --parent", () => {
+  const parentFilters = encodeURIComponent(
+    JSON.stringify([{ subject: { operator: "=", values: ["Ship the thing"] } }]),
+  );
+  const PARENT_SEARCH_PATH =
+    `/api/v3/work_packages?filters=${parentFilters}&pageSize=100`;
+
+  /**
+   * Same contract as installUpdateApi, plus named GET endpoints beside
+   * the work package itself (the live parent search).
+   */
+  function installParentApi(options: {
+    readonly gets: ReadonlyArray<Record<string, unknown>>;
+    readonly extraGets?: Record<string, unknown>;
+    readonly patchReplies?: ReadonlyArray<{ status: number; body?: unknown }>;
+  }): { patchBodies: Array<Record<string, unknown>>; patchCalls: () => number } {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    cleanups.push(async () => {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    });
+    const pool = mockAgent.get(INSTANCE);
+    for (const body of options.gets) {
+      pool.intercept({ path: WP_PATH, method: "GET" }).reply(200, body);
+    }
+    for (const [path, body] of Object.entries(options.extraGets ?? {})) {
+      pool.intercept({ path, method: "GET" }).reply(200, body).persist();
+    }
+    const patchBodies: Array<Record<string, unknown>> = [];
+    let patches = 0;
+    pool.intercept({ path: WP_PATH, method: "PATCH" }).reply((call) => {
+      patchBodies.push(JSON.parse(String(call.body)) as Record<string, unknown>);
+      const reply = options.patchReplies?.[patches] ?? { status: 200, body: {} };
+      patches += 1;
+      return { statusCode: reply.status, data: reply.body ?? {} };
+    }).persist();
+    return { patchBodies, patchCalls: () => patches };
+  }
+
+  function parentHit(id: number): Record<string, unknown> {
+    return {
+      _type: "WorkPackage",
+      id,
+      subject: "Ship the thing",
+      _links: { self: { href: `/api/v3/work_packages/${String(id)}` } },
+    };
+  }
+
+  function linksOf(body: Record<string, unknown> | undefined): Record<string, { href: string }> {
+    return body?._links as Record<string, { href: string }>;
+  }
+
+  test("re-parents by exact subject and keeps the read lockVersion", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installParentApi({
+      gets: [wpRecord(1, "open")],
+      extraGets: {
+        [PARENT_SEARCH_PATH]: {
+          _type: "Collection",
+          total: 1,
+          count: 1,
+          _embedded: { elements: [parentHit(675)] },
+        },
+      },
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--parent",
+      "675",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]?.lockVersion).toBe(1);
+    expect(linksOf(patchBodies[0])?.parent?.href).toBe("/api/v3/work_packages/675");
+  });
+
+  test("resolves a parent subject through one live search", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installParentApi({
+      gets: [wpRecord(1, "open")],
+      extraGets: {
+        [PARENT_SEARCH_PATH]: {
+          _type: "Collection",
+          total: 1,
+          count: 1,
+          _embedded: { elements: [parentHit(42)] },
+        },
+      },
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--parent",
+      "Ship the thing",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(linksOf(patchBodies[0])?.parent?.href).toBe("/api/v3/work_packages/42");
+  });
+
+  test("--parent alone satisfies the needs-a-value guard", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installParentApi({
+      gets: [wpRecord(1, "open")],
+      extraGets: {
+        [PARENT_SEARCH_PATH]: {
+          _type: "Collection",
+          total: 1,
+          count: 1,
+          _embedded: { elements: [parentHit(675)] },
+        },
+      },
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--parent",
+      "675",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toHaveLength(1);
+  });
+});

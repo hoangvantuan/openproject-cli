@@ -436,6 +436,23 @@ describe("wp create --stdin bulk path", () => {
     expect(links.status.href).toBe("/api/v3/statuses/9");
   });
 
+  test("carries the parent key of one item into its payload href", async () => {
+    const { configDir, cacheDir } = await room();
+    const api = installMockApi({
+      posts: [{ status: 201, body: createdElement(104, "Child") }],
+    });
+    const result = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["--stdin"],
+      JSON.stringify([{ subject: "Child", parent: "675" }]),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(api.postCount()).toBe(1);
+    const links = api.postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.parent.href).toBe("/api/v3/work_packages/675");
+  });
+
   test("rejects stdin input that is not a JSON array", async () => {
     const { configDir, cacheDir } = await room();
     installMockApi({});
