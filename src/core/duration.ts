@@ -5,40 +5,80 @@ const ACCEPTED_FORMS =
   "a decimal number of hours such as 1.5, a compound form such as 1h30m, "
     + "or an ISO 8601 duration such as PT1H30M";
 
+// Every fixed-length ISO 8601 component, in the order the grammar spells
+// them: weeks and days before the T, hours, minutes, and seconds after it.
+// Years and months are absent on purpose: they name calendar spans of no
+// fixed number of hours, so no value can be read out of them.
+const ISO_DURATION =
+  /^p(?:(\d+(?:\.\d+)?)w)?(?:(\d+(?:\.\d+)?)d)?(t(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?)?$/i;
+
 /**
- * Parse one ISO 8601 time duration (PT…) into milliseconds, or return
- * undefined when the string is not exactly that grammar. Days, weeks,
- * months, and years are refused on purpose: the hours field of a time
- * entry never carries a calendar component.
+ * Parse any fixed-length ISO 8601 duration into milliseconds, or return
+ * undefined when the string is not that grammar. This is the read path:
+ * OpenProject spells a duration of 24 hours or more with a day component
+ * ("P3DT1H") and a week component beyond that, so everything the instance
+ * can emit has to be readable here.
  */
-function isoToMs(raw: string): number | undefined {
-  const match = /^p(?:t(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?)$/i.exec(
-    raw.trim(),
-  );
+function isoDurationToMs(raw: string): number | undefined {
+  const match = ISO_DURATION.exec(raw.trim());
   if (match === null) {
     return undefined;
   }
-  // "PT" alone names no amount of time at all; refuse it like any other
-  // malformed form rather than reading it as zero.
-  if (match[1] === undefined && match[2] === undefined && match[3] === undefined) {
+  // Each matched component, paired with the seconds one unit of it is worth.
+  const dateComponents = [[match[1], 604_800], [match[2], 86_400]] as const;
+  const timeComponents = [[match[4], 3_600], [match[5], 60], [match[6], 1]] as const;
+  const components = [...dateComponents, ...timeComponents];
+  const missing = ([component]: readonly [string | undefined, number]): boolean =>
+    component === undefined;
+  // "P" and "PT" name no amount of time at all, and a "T" carrying nothing
+  // after it is half a form; refuse them like any other malformed input
+  // rather than reading a gap as zero. match[3] is the whole T section when
+  // one was written, so its presence beside no H, M, or S is that bare "T".
+  if (components.every(missing)) {
     return undefined;
   }
-  const hours = Number(match[1] ?? 0);
-  const minutes = Number(match[2] ?? 0);
-  const seconds = Number(match[3] ?? 0);
-  return Math.round((hours * 3600 + minutes * 60 + seconds) * 1000);
+  if (match[3] !== undefined && timeComponents.every(missing)) {
+    return undefined;
+  }
+  const seconds = components.reduce(
+    (carry, [component, perUnit]) => carry + Number(component ?? 0) * perUnit,
+    0,
+  );
+  return Math.round(seconds * 1000);
 }
 
 /**
- * Convert an ISO 8601 duration ("PT1H30M", "PT0S") to decimal hours.
- * The inverse of [hoursToIso] within millisecond precision.
+ * Parse one ISO 8601 time-only duration (PT…) into milliseconds, or return
+ * undefined when the string is not exactly that grammar. Weeks and days
+ * are refused on purpose: this is the write path, and the hours field of
+ * a single time entry never carries a calendar component.
+ *
+ * The narrowing rides on the shape of ISO_DURATION, where the week and day
+ * components can only ever precede the "T": a value that starts "PT" has
+ * none of them. Keep that ordering if the shared grammar is ever rewritten.
+ */
+function isoTimeToMs(raw: string): number | undefined {
+  const token = raw.trim();
+  return /^pt/i.test(token) ? isoDurationToMs(token) : undefined;
+}
+
+/**
+ * Convert an ISO 8601 duration the instance reported ("PT1H30M", "PT0S",
+ * "P3DT1H") to decimal hours. The inverse of [hoursToIso] within
+ * millisecond precision for every value [hoursToIso] can render.
+ *
+ * The value read here was never typed by the caller, so a duration this
+ * client cannot read is the instance's answer failing, not misuse.
  */
 export function isoToHours(iso: string): number {
-  const ms = isoToMs(iso);
+  const ms = isoDurationToMs(iso);
   if (ms === undefined) {
     throw new OpCliError(
-      "USAGE_ERROR",
-      `"${iso}" is not an ISO 8601 time duration such as PT1H30M or PT0S.`,
+      "API_ERROR",
+      `the instance reported the duration "${iso}", which is not an ISO 8601 `
+        + "duration such as PT1H30M, PT0S, or P3DT1H.",
+      "durations in weeks, days, hours, minutes, or seconds can be read; "
+        + "report the value if the instance keeps sending it.",
     );
   }
   return ms / 3_600_000;
@@ -125,7 +165,7 @@ export function parseDuration(raw: string): ParsedDuration {
     return parsedFromHours(ms / 3_600_000, raw);
   }
 
-  const direct = isoToMs(token);
+  const direct = isoTimeToMs(token);
   if (direct !== undefined) {
     return parsedFromHours(direct / 3_600_000, raw);
   }

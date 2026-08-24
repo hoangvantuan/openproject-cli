@@ -595,8 +595,24 @@ export async function refreshStoredMetadata(
   const next = await fetchStoredMetadata(profile);
   const previousScoped = previous?.projectScoped ?? {};
   const projectScoped: Record<string, ProjectVocabulary> = {};
+  const dropped: Array<MetadataChange> = [];
   for (const projectId of Object.keys(previousScoped)) {
-    projectScoped[projectId] = await fetchProjectVocabulary(profile, Number(projectId));
+    try {
+      projectScoped[projectId] = await fetchProjectVocabulary(profile, Number(projectId));
+    } catch (error) {
+      // A project deleted on the instance must not wedge the refresh for
+      // good: drop its stored vocabulary, report it, and keep refreshing
+      // everything else. Any other failure is still the caller's to see.
+      if (!(error instanceof OpCliError && error.code === "NOT_FOUND")) {
+        throw error;
+      }
+      dropped.push({
+        section: "project",
+        kind: "removed",
+        id: Number(projectId),
+        detail: `removed cached vocabulary of project ${projectId}`,
+      });
+    }
   }
   await persistMetadata(env, profile, {
     ...next,
@@ -608,6 +624,7 @@ export async function refreshStoredMetadata(
     ...diffEntries("statuses", previous?.statuses, next.statuses),
     ...diffEntries("priorities", previous?.priorities, next.priorities),
     ...diffProject(previous?.project, next.project),
+    ...dropped,
     ...diffInstance(previous?.instance, next.instance),
   ];
   for (const projectId of Object.keys(projectScoped)) {

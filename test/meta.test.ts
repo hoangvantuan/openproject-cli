@@ -70,6 +70,8 @@ interface InstallOptions {
    * that fills a list field's allowed values.
    */
   readonly forms?: Record<string, Record<string, unknown>>;
+  /** Projects the instance no longer has: every vocabulary read answers 404. */
+  readonly goneProjects?: ReadonlyArray<number>;
 }
 function membership(
   membershipId: number,
@@ -253,6 +255,19 @@ function installMockApi(options: InstallOptions): MockAgent {
       })
       .reply(200, halCollection(elements))
       .persist();
+  }
+  for (const projectId of options.goneProjects ?? []) {
+    // A deleted project answers 404 on every read of its vocabulary. The
+    // memberships read comes first, so that alone decides the outcome; the
+    // rest are here so a reordered fetch still fails as a deletion.
+    for (const path of [
+      `/api/v3/memberships?filters=${projectFilters(projectId)}`,
+      `/api/v3/projects/${String(projectId)}/versions`,
+      `/api/v3/projects/${String(projectId)}/categories`,
+      `/api/v3/projects/${String(projectId)}/types`,
+    ]) {
+      pool.intercept({ path, method: "GET" }).reply(404, { _type: "Error" }).persist();
+    }
   }
   for (const [key, schema] of Object.entries(options.schemas ?? {})) {
     pool
@@ -1394,5 +1409,46 @@ describe("meta project vocabulary", () => {
 
     expect(refreshed.exitCode).toBe(0);
     expect(JSON.parse(refreshed.stdout)).toHaveLength(2);
+  });
+
+  test("meta refresh survives a stored project the instance no longer has", async () => {
+    const root = await makeTempRoom("op-cli-meta-vocabgone-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    const alive = {
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])], 34: [] },
+      versions: { 13: [], 34: [] },
+      categories: { 13: [], 34: [] },
+      activities: { 13: { allowedValues: [] }, 34: { allowedValues: [] } },
+      projectTypes: { 13: [], 34: [] },
+    };
+    installMockApi(alive);
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+    // Two projects end up in the store; only 34 is deleted afterwards.
+    await run(["meta", "members", "--json"], env, {});
+    await run(["meta", "members", "--project", "34", "--json"], env, {});
+
+    installMockApi({
+      ...alive,
+      root: { _type: "API", apiVersion: "v3", coreVersion: "13.5" },
+      members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { 13: { allowedValues: [] } },
+      projectTypes: { 13: [] },
+      goneProjects: [34],
+    });
+    const refreshed = await run(["meta", "refresh"], env, {});
+
+    expect(refreshed.exitCode).toBe(0);
+    expect(refreshed.stderr).toBe("");
+    // The deleted project is reported as dropped, and the instance-wide
+    // sections still refresh instead of the whole run aborting with it.
+    expect(refreshed.stdout).toContain("removed cached vocabulary of project 34");
+    expect(refreshed.stdout).toContain("instance: core_version: 13.4 -> 13.5");
+    expect(refreshed.stdout).toContain("Metadata updated.");
+    const stored = await readStore(cacheDir, "default");
+    expect(Object.keys(stored.projectScoped as Record<string, unknown>)).toEqual(["13"]);
   });
 });

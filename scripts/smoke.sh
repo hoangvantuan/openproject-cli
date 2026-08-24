@@ -406,6 +406,40 @@ node -e '
   }
 ' "$ENTRY_ID" <<<"$TIME_ROWS"
 
+# A SINGLE entry of 24 hours or more comes back spelled with a day
+# component ("P1DT1H"), the form that used to make every wide enough
+# report refuse the instance's own answer. One entry has to cross the
+# boundary by itself: every entry is parsed on its own before anything is
+# summed, so a total built from smaller entries never reaches that form.
+step "log 25h on work package $WP_ID so one entry crosses a day"
+DAY_ENTRY_JSON="$($BIN time log "$WP_ID" --hours 25h --activity "$ACT_NAME" --json)"
+DAY_ENTRY_ID="$(printf '%s' "$DAY_ENTRY_JSON" | json_field id)"
+DAY_ENTRY_ISO="$(printf '%s' "$DAY_ENTRY_JSON" | json_field hours_iso)"
+if [ "$DRY" != "1" ]; then
+  # Without a day component in the answer, the step still passes while
+  # covering nothing; say so instead of reporting a hollow green.
+  case "$DAY_ENTRY_ISO" in
+    *D*) ;;
+    *)
+      echo "smoke: the instance spelled 25 hours as '$DAY_ENTRY_ISO', with no day component; this step no longer covers the read path it exists for" >&2
+      false
+      ;;
+  esac
+fi
+
+step "time report --wp $WP_ID over an entry spelled $DAY_ENTRY_ISO"
+REPORT_JSON="$($BIN time report --wp "$WP_ID" --json)"
+node -e '
+  const groups = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  const total = Array.isArray(groups)
+    ? groups.reduce((carry, group) => carry + Number(group.hours), 0)
+    : Number.NaN;
+  if (!(total >= 25)) {
+    console.error("smoke: time report totalled " + total + " hours, so it never read the entry that crosses a day");
+    process.exit(3);
+  }
+' <<<"$REPORT_JSON"
+
 step "wp list --updated-after 1d on project $PROJ_ID (<>d operator)"
 # 1d instead of today: the instance evaluates <>d in its own timezone,
 # so when it trails the operator's a just-made update can still carry
@@ -430,6 +464,9 @@ $BIN project unstar "$PROJ_ID" > /dev/null
 
 step "delete time entry $ENTRY_ID"
 $BIN time delete "$ENTRY_ID" --yes > /dev/null
+
+step "delete time entry $DAY_ENTRY_ID"
+$BIN time delete "$DAY_ENTRY_ID" --yes > /dev/null
 
 step "delete work package $WP_ID"
 $BIN wp delete "$WP_ID" --yes > /dev/null
