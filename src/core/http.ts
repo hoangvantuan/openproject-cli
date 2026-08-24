@@ -1,4 +1,5 @@
 import { OpCliError } from "./errors.js";
+import type { RunEnvironment } from "../run.js";
 
 export interface AuthenticatedUser {
   readonly id: number;
@@ -26,6 +27,36 @@ export async function authenticate(
 // never retry (ADR-0002): a replayed create or update can duplicate data.
 const READ_RETRY_DELAY_MS = 200;
 
+// The per-attempt budget is a policy of the run environment, not a
+// constant: OP_CLI_TIMEOUT_MS names a larger one for slow reads, and an
+// unusable value is refused like a bad --limit instead of silently
+// falling back.
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+function parseTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `OP_CLI_TIMEOUT_MS "${raw}" is not a positive integer.`,
+      "pass a whole number of milliseconds, 1 or more.",
+    );
+  }
+  return Number(raw);
+}
+
+let timeoutMs = DEFAULT_TIMEOUT_MS;
+
+/**
+ * Derive the per-request timeout from the run environment. Called once
+ * per run so every request of one session shares one budget.
+ */
+export function bindRequestTimeout(env: RunEnvironment): void {
+  timeoutMs = parseTimeoutMs(env.OP_CLI_TIMEOUT_MS);
+}
+
 async function attempt(
   instanceUrl: string,
   apiKey: string,
@@ -33,6 +64,11 @@ async function attempt(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<Response> {
+  // AbortSignal.timeout aborts with a TimeoutError reason. A budget
+  // problem (too impatient) and a reachability problem (wrong URL)
+  // share the NETWORK_ERROR code and exit 6 by contract; only the
+  // wording and machine-readable details tell them apart.
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     return await fetch(`${instanceUrl}${path}`, {
       headers: {
@@ -44,12 +80,20 @@ async function attempt(
           ? { "content-type": "application/json" }
           : {}),
       },
-      signal: AbortSignal.timeout(10_000),
+      signal,
       ...(method === "POST" || method === "PATCH"
         ? { method, body: JSON.stringify(body) }
         : { method }),
     });
   } catch {
+    if (signal.reason instanceof Error && signal.reason.name === "TimeoutError") {
+      throw new OpCliError(
+        "NETWORK_ERROR",
+        `The request exceeded the ${timeoutMs} ms timeout.`,
+        "raise OP_CLI_TIMEOUT_MS and try again.",
+        { timedOut: true, timeoutMs },
+      );
+    }
     throw new OpCliError("NETWORK_ERROR");
   }
 }

@@ -12,7 +12,7 @@ import {
   authenticate,
   type RawWriteResponse,
 } from "../core/http.js";
-import { halElements, parsePageSize, withPageSize } from "../core/paginate.js";
+import { allPageSize, halElements, parsePageSize, withPageSize } from "../core/paginate.js";
 import {
   isIdForm,
   rankByCloseness,
@@ -534,12 +534,14 @@ export function registerTimeCommands(time: Command, runtime: TimeRuntime): void 
       const users = await resolveUserValues(runtime.env, profile, splitList(options.user ?? []));
       const filters = buildTimeFilters(wps, users, options.from, new Date());
       const limit = parsePageSize(options.limit);
-      const startPath = withPageSize(
-        `/api/v3/time_entries?filters=${filtersQuery(filters)}`,
-        limit,
-      );
       const getPage = (path: string): Promise<unknown> =>
         apiGet(profile.instanceUrl, profile.apiKey, path);
+      // --all sizes pages by the instance's advertised maximum; --limit
+      // only ever sizes the single non-all page.
+      const startPath = withPageSize(
+        `/api/v3/time_entries?filters=${filtersQuery(filters)}`,
+        options.all === true ? await allPageSize(getPage) : limit,
+      );
 
       if (options.all === true) {
         if (options.json === true) {

@@ -314,6 +314,7 @@ describe("project list", () => {
     installMockApi({
       gets: {
         [PROJECTS_PAGE]: halCollection(3, [ALL_PROJECTS[0]], "/api/v3/projects?offset=2&pageSize=100"),
+        "/api/v3/": {},
         "/api/v3/projects?offset=2&pageSize=100": halCollection(
           3,
           [ALL_PROJECTS[1], projectElement(30, "infra", "Infrastructure")],
