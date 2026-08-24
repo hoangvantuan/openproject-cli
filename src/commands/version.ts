@@ -5,7 +5,7 @@ import { readStoredMetadata } from "../context/metadata.js";
 import { peekActiveProfile } from "../context/profile.js";
 import type { RunEnvironment } from "../run.js";
 
-async function cliVersion(): Promise<string> {
+export async function cliVersion(): Promise<string> {
   try {
     const raw = await readFile(
       fileURLToPath(new URL("../../package.json", import.meta.url)),

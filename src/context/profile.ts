@@ -46,15 +46,23 @@ export interface ProfileListResult {
   readonly profiles: readonly ProfileSummary[];
 }
 
+/**
+ * The directory profiles live in, when one can be located at all:
+ * OP_CLI_CONFIG_DIR wins, then ~/.config/op-cli. Optional features
+ * (the update notice cache) use this to silence themselves when no
+ * directory exists; writes go through writableConfigDirectory instead.
+ */
+export function configDirectory(env: RunEnvironment): string | undefined {
+  return env.OP_CLI_CONFIG_DIR
+    ?? (env.HOME !== undefined ? join(env.HOME, ".config", "op-cli") : undefined);
+}
+
 function writableConfigDirectory(env: RunEnvironment): string {
-  if (env.OP_CLI_CONFIG_DIR) {
-    return env.OP_CLI_CONFIG_DIR;
-  }
-  const home = env.HOME;
-  if (!home) {
+  const directory = configDirectory(env);
+  if (directory === undefined) {
     throw new OpCliError("USAGE_ERROR");
   }
-  return join(home, ".config", "op-cli");
+  return directory;
 }
 
 async function readStored(env: RunEnvironment): Promise<StoredState | undefined> {

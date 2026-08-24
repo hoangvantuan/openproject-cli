@@ -19,6 +19,7 @@ import { registerWpCommands } from "./commands/wp.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerTimeCommands } from "./commands/time.js";
 import { buildVersionOutput } from "./commands/version.js";
+import { registerUpdateCommand, startVersionNotice } from "./commands/update.js";
 
 import { Command, CommanderError } from "commander";
 
@@ -31,6 +32,15 @@ export interface RunIo {
   readonly stdinIsTTY?: boolean;
   /** Whole stdin as one string; only the --stdin paths touch it. */
   readonly readStdin?: () => Promise<string>;
+  /** Whether stderr is a terminal: the update notice only speaks to humans. */
+  readonly stderrIsTTY?: boolean;
+  /** Runs a command with the CLI's own streams; resolves its exit code. */
+  readonly runExternal?: (file: string, args: readonly string[]) => Promise<number>;
+  /** Runs a command and captures stdout; undefined on any failure. */
+  readonly captureExternal?: (
+    file: string,
+    args: readonly string[],
+  ) => Promise<string | undefined>;
 }
 
 export interface RunResult {
@@ -49,6 +59,9 @@ export async function run(
   // Spec story 51: one environment variable makes JSON the output for
   // the whole session, errors included, instead of a flag per command.
   let jsonOutput = env.OP_CLI_OUTPUT === "json";
+  // The update command forwards the installer's own exit code; every
+  // other success path stays 0.
+  let forcedExitCode: number | undefined;
 
   // Keyed by the thrown error because Commander hands the failing command
   // to its own exit callback and to nobody else.
@@ -286,6 +299,24 @@ export async function run(
     },
   });
 
+  const update = program
+    .command("update")
+    .description("Update the CLI to the latest published release");
+  registerUpdateCommand(update, {
+    env,
+    write: (text) => {
+      stdout += text;
+    },
+    writeErr: (text) => {
+      stderr += text;
+    },
+    setExitCode: (code) => {
+      forcedExitCode = code;
+    },
+    ...(io.runExternal === undefined ? {} : { runExternal: io.runExternal }),
+    ...(io.captureExternal === undefined ? {} : { captureExternal: io.captureExternal }),
+  });
+
   // Registered lazily and only at the root so a subcommand can reuse
   // the "--version <value>" spelling as its own option (wp list).
   if (argv[0] === "--version") {
@@ -325,8 +356,17 @@ export async function run(
     // Environment misuse is refused before any command runs: a request
     // budget that silently fell back would hide the user's mistake.
     bindRequestTimeout(env);
+    // Started before the parse so the registry lookup overlaps the
+    // command itself; a slow registry then costs nothing extra.
+    const versionNotice = startVersionNotice(argv, env, io);
     await program.parseAsync([...argv], { from: "user" });
-    return { stdout, stderr, exitCode: 0 };
+    const noticeLine = await versionNotice;
+    // The notice never mixes with a stderr that already spoke (a
+    // truncation warning, a JSON error object): it stays quiet then.
+    if (noticeLine !== undefined && stderr === "") {
+      stderr += noticeLine;
+    }
+    return { stdout, stderr, exitCode: forcedExitCode ?? 0 };
   } catch (error) {
     if (
       error instanceof CommanderError
