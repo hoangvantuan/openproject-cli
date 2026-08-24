@@ -6,6 +6,7 @@ import { Agent, MockAgent, setGlobalDispatcher } from "undici";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { run } from "../src/run.js";
+import { renderTable } from "../src/output/table.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -1097,6 +1098,73 @@ describe("meta project vocabulary", () => {
       );
     }
     expect(rows).toHaveLength(cases.length);
+  });
+
+  test("a field carried by several types is one row naming every type", async () => {
+    const root = await makeTempRoom("op-cli-meta-fields-shared-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    // The same custom field hangs off both project types, plus one field
+    // that only the Task schema carries: the listing must be unique by
+    // key while still saying which types expose each field.
+    const shared = { index: 7, name: "Bug Point", options: ["1", "2"] } as const;
+    const taskOnly = { index: 9, name: "Acceptance", options: undefined } as const;
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { 13: { allowedValues: [] } },
+      projectTypes: { 13: [taskType(), milestoneType()] },
+      schemas: {
+        "13-2": schemaWithCustomFields([shared, taskOnly]),
+        "13-5": schemaWithCustomFields([shared]),
+      },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const table = await run(["meta", "fields"], env, {});
+    const json = await run(["meta", "fields", "--json"], env, {});
+    const rows = JSON.parse(json.stdout) as Array<Record<string, unknown>>;
+
+    expect(table.exitCode).toBe(0);
+    expect(json.exitCode).toBe(0);
+    expect(rows.map((row) => row.key)).toEqual([
+      `customField${String(taskOnly.index)}`,
+      `customField${String(shared.index)}`,
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.find((row) => row.key === `customField${String(shared.index)}`),
+    ).toMatchObject({
+      name: shared.name,
+      allowed_values: [...shared.options],
+      types: ["Task", "Milestone"],
+    });
+    expect(
+      rows.find((row) => row.key === `customField${String(taskOnly.index)}`),
+    ).toMatchObject({ name: taskOnly.name, types: ["Task"] });
+    expect(table.stdout).toBe(
+      renderTable(
+        ["ID", "NAME", "KEY", "TYPES", "ALLOWED VALUES"],
+        [
+          [
+            String(taskOnly.index),
+            taskOnly.name,
+            `customField${String(taskOnly.index)}`,
+            "Task",
+            "",
+          ],
+          [
+            String(shared.index),
+            shared.name,
+            `customField${String(shared.index)}`,
+            "Task, Milestone",
+            "1, 2",
+          ],
+        ],
+      ),
+    );
   });
 
   test("env-driven runs keep their project vocabulary under the env key", async () => {
