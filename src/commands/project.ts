@@ -740,19 +740,39 @@ export function registerProjectCommands(
   // ---------------------------------------------------------------------------
   // project delete
 
-  // The refusal IS the feature (PLAN decision 11, ADR-0001): it fires
-  // before any profile resolution or traffic, and no flag or environment
-  // opens it. Reopening later belongs to an explicit env var, not here.
   project
     .command("delete")
-    .description("Refused: deleting a project is irreversible, use the web UI")
-    .argument("<reference>")
-    .action(async (reference: string) => {
-      throw new OpCliError(
-        "USAGE_ERROR",
-        `project delete refuses to remove "${reference}"; `
-          + "deleting a project is irreversible.",
-        "this CLI offers no way to delete a project; use the OpenProject web UI.",
+    .description("Delete one project after explicit confirmation")
+    .argument("<reference>", "project, by id, identifier, or name")
+    .option("--yes", "confirm the deletion")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <id>", "override the profile default project")
+    .action(async (reference: string, options: {
+      yes?: boolean;
+      profile?: string;
+      project?: string;
+    }) => {
+      // The guard fires before any resolution or traffic: without --yes
+      // nothing is read, nothing is sent, with or without a terminal.
+      if (options.yes !== true) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `project delete refuses to remove "${reference}" without confirmation; `
+            + "deleting a project is irreversible.",
+          "repeat the command with --yes to confirm the deletion.",
+        );
+      }
+      const { getPage } = await connect(runtime, options);
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseOptionalId(options.project),
+      });
+      const hit = await resolveProjectRef(getPage, reference);
+      await apiDelete(
+        profile.instanceUrl,
+        profile.apiKey,
+        `${PROJECTS_COLLECTION}/${String(hit.id)}`,
       );
+      runtime.write(`Deleted project ${hit.name} (${String(hit.id)}).\n`);
     });
 }

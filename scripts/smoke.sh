@@ -16,8 +16,8 @@
 #                         command is echoed, none executes; exit 0 when
 #                         the script itself parses and stays coherent
 #
-# The scratch project itself is left behind on purpose: the CLI refuses to
-# delete projects, so remove it through the OpenProject web UI afterwards.
+# The scratch project itself is left behind on purpose; remove it afterwards
+# with `op-cli project delete <id> --yes` or through the OpenProject web UI.
 
 set -euo pipefail
 

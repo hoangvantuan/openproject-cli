@@ -14,8 +14,10 @@ and the tool turns names into ids itself. Run any command below with
 - If the CLI lacks a command for what you need, stop and report that gap to
   the user. Do not fall back to `curl`, hand-built HTTP calls, or reads of
   `credentials.json`; there is no passthrough by design.
-- `project delete` and `user delete` are refused outright on purpose; never
-  work around a refused deletion through another route.
+- Deletions need an explicit `--yes`: `wp delete <id> --yes`,
+  `time delete <id> --yes`, `project delete <reference> --yes`. They are
+  irreversible; never work around a refused deletion through another route.
+  There is no `user delete`; report that gap instead of improvising.
 - Three conventions are easy to guess wrong:
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it.

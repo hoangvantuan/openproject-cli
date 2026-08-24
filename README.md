@@ -47,9 +47,9 @@ op-cli doctor            # diagnose connectivity, credentials, versions
 - **Errors are a closed set.** Every failure prints a stable code on stderr,
   such as `[CONFLICT]` or `[PROFILE_NOT_FOUND]`, with exit codes 0 through 7.
   Run `op-cli doctor` when something does not work.
-- **Deletion is guarded.** `project delete` is refused outright because
-  deleting a project is irreversible; use the OpenProject web UI for it.
-  `wp delete` and `time delete` require an explicit `--yes`.
+- **Deletion is guarded.** Deleting a project is irreversible: `wp delete`,
+  `time delete`, and `project delete` all require an explicit `--yes`.
+  `user delete` is not offered at all; there is no workaround by design.
 - **`project copy` copies properties only** (description, visibility, and
   parent). It does not copy work packages, members, or wiki pages.
 - **No escape hatch by design.** If a command is missing there is no raw

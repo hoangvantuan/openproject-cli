@@ -167,11 +167,12 @@ async function runProject(
   configDir: string,
   cacheDir: string,
   args: ReadonlyArray<string>,
+  io: Record<string, unknown> = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return run(
     ["project", ...args],
     { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir },
-    {},
+    io,
   );
 }
 
@@ -606,34 +607,47 @@ describe("project vocabulary listings", () => {
     expect(result.stdout).toContain("Task");
   });
 });
-
-describe("project delete refusal", () => {
-  test("refuses outright and sends nothing", async () => {
-    const root = await makeTempRoom("project-delete-");
+describe("project delete", () => {
+  test("without --yes exits 1 and sends nothing, with or without a TTY", async () => {
+    const root = await makeTempRoom("project-delete-guard-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
     installNoTrafficApi();
-    const result = await runProject(configDir, cacheDir, ["delete", "21"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("[USAGE_ERROR]");
-    expect(result.stderr).toContain("21");
-  });
-
-  test("no flag opens it, including --yes and --force", async () => {
-    const root = await makeTempRoom("project-delete-flags-");
-    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
-    installNoTrafficApi();
-    for (const extra of [["--yes"], ["--force"], []]) {
-      const result = await runProject(configDir, cacheDir, ["delete", "21", ...extra]);
+    for (const io of [{}, { isTTY: true }]) {
+      const result = await runProject(configDir, cacheDir, ["delete", "demo-site"], io);
       expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("[USAGE_ERROR]");
+      expect(result.stderr).toContain("--yes");
     }
   });
 
-  test("the refusal fires even when the reference names a real project", async () => {
-    const root = await makeTempRoom("project-delete-real-");
+  test("with --yes resolves the reference and sends exactly one DELETE", async () => {
+    const root = await makeTempRoom("project-delete-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
-    installNoTrafficApi();
-    const result = await runProject(configDir, cacheDir, ["delete", "demo-site"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("refuses");
+    const api = installMockApi({
+      gets: {
+        [PROJECTS_PAGE]: halCollection(2, ALL_PROJECTS),
+      },
+      writes: [{ path: "/api/v3/projects/21", method: "DELETE", status: 204 }],
+    });
+    const result = await runProject(configDir, cacheDir, ["delete", "demo-site", "--yes"]);
+    expect(result.exitCode).toBe(0);
+    expect(api.writes).toEqual([
+      { path: "/api/v3/projects/21", method: "DELETE", body: "" },
+    ]);
+    expect(result.stdout).toContain("Deleted project Demo Site (21).");
+  });
+
+  test("a missing project exits 4 without deleting anything", async () => {
+    const root = await makeTempRoom("project-delete-missing-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      gets: {
+        [PROJECTS_PAGE]: halCollection(2, ALL_PROJECTS),
+      },
+      writes: [],
+    });
+    const result = await runProject(configDir, cacheDir, ["delete", "no-such-project", "--yes"]);
+    expect(result.exitCode).toBe(4);
+    expect(result.stderr).toContain("[NOT_FOUND]");
   });
 });

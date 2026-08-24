@@ -24,7 +24,7 @@ Từ vựng dùng trong tài liệu này định nghĩa ở [CONTEXT.md](CONTEXT
 | 8 | Hình dạng lệnh | Danh từ trước, động từ sau, hai tầng: `op-cli wp list` | Chuẩn `gh`/`az`; skill dạy `--help` thay vì liệt kê lệnh |
 | 9 | Output | Mặc định bảng, `--json` tường minh, `OP_CLI_OUTPUT=json` cho agent | Hành vi không phụ thuộc TTY, để một lệnh cho một kết quả ở mọi nơi |
 | 10 | Lỗi | Theo chế độ output, nhưng chế độ text luôn nhét `[CODE]`. `code` là tập đóng có test | Không ai phải parse câu tiếng Anh |
-| 11 | Xoá | `project delete` và `user delete` bị từ chối hoàn toàn ở 0.x, không cờ nào mở được | Hàng rào phải nhắm vào tác nhân thật, mà tác nhân thật là agent không TTY |
+| 11 | Xoá | Đảo ngược có chủ ý (#18): `project delete` mở bằng cờ `--yes` như `wp delete` và `time delete`; `user delete` vẫn từ chối hoàn toàn ở 0.x | Quyết định gốc và ghi chú đảo ngược giữ ở ADR-0001 phần Consequences |
 | 12 | Ngữ cảnh | Nhiều profile = (instance + token + project mặc định), cộng một profile ẩn khi chỉ có biến môi trường | Sửa sau rất đắt vì nằm trong đường dẫn cache và mọi lệnh |
 | 13 | Secret | Ưu tiên biến môi trường; mặc định `credentials.json` chmod 600; keychain để sau | CI và agent cần env; keychain khó cross-platform |
 | 14 | Config | `config.json` cạnh `credentials.json`, cùng định dạng. Bỏ TOML | File do `auth login` ghi, không phải người gõ. Bớt một dependency |
@@ -254,11 +254,12 @@ hint: op-cli meta refresh
 | Thao tác | Hàng rào |
 |---|---|
 | `wp delete`, `time delete` | `--yes` |
-| `project delete`, `user delete` | CLI từ chối hoàn toàn ở 0.x, không cờ nào mở được. Muốn xoá thì vào web UI |
+| `project delete` | `--yes`, như hai lệnh xoá còn lại (#18, đảo quyết định cũ) |
+| `user delete` | CLI từ chối hoàn toàn ở 0.x, không cờ nào mở được. Muốn xoá thì vào web UI |
 | Ghi hàng loạt | `op-cli wp create --stdin < wps.json` nhận mảng JSON, in NDJSON từng dòng kèm trạng thái, không dừng ở lỗi đầu (`--fail-fast` để đổi). `--dry-run` chỉ có ở đường này |
 | 5xx hoặc timeout trên lệnh ghi | Không bao giờ retry. exit 6, nói rõ trạng thái không xác định |
 
-Hàng rào nhắm vào tác nhân thật: `--yes` khi không TTY và "gõ lại identifier" đều chỉ chặn được người, trong khi tác nhân có khả năng xoá sai nhiều nhất là agent. Nếu về sau thật sự cần xoá project bằng CLI thì mở bằng biến môi trường tường minh (`OP_CLI_ALLOW_DESTRUCTIVE=1`), không bằng một cờ.
+Hàng rào nhắm vào tác nhân thật: `--yes` khi không TTY và "gõ lại identifier" đều chỉ chặn được người, trong khi tác nhân có khả năng xoá sai nhiều nhất là agent. Quyết định gốc của mục này dự kiến mở `project delete` bằng biến môi trường tường minh (`OP_CLI_ALLOW_DESTRUCTIVE=1`), không bằng một cờ; issue #18 đảo thành cờ `--yes` nhất quán với `wp delete` và `time delete`, và phương án biến môi trường bị bỏ.
 
 ## 8. Skill
 
@@ -266,7 +267,7 @@ Hàng rào nhắm vào tác nhân thật: `--yes` khi không TTY và "gõ lại 
 
 Bốn mục, khoảng 90 dòng, thứ tự có ý:
 
-1. **Ranh giới.** CLI thiếu lệnh thì báo người dùng và dừng. Không `curl`, không đọc `credentials.json`. `project delete` và `user delete` bị từ chối là cố ý, đừng tìm cách lách. Ba quy ước phải thuộc: `--field "Tên="` là xoá, `--all --json` là NDJSON, cảnh báo truncation nằm ở stderr.
+1. **Ranh giới.** CLI thiếu lệnh thì báo người dùng và dừng. Không `curl`, không đọc `credentials.json`. Ba lệnh xoá đều cần `--yes` tường minh, còn `user delete` bị từ chối là cố ý, đừng tìm cách lách. Ba quy ước phải thuộc: `--field "Tên="` là xoá, `--all --json` là NDJSON, cảnh báo truncation nằm ở stderr.
 2. **Khởi động.** `export OP_CLI_OUTPUT=json`, rồi `op-cli auth status`.
 3. **Bản đồ ý định sang lệnh**, khoảng 25 dòng "muốn X thì chạy Y".
 4. **Hợp đồng lỗi.** Bảng `code` kèm hành động khắc phục. Đọc `[CODE]`, không đọc câu tiếng Anh.
