@@ -263,11 +263,19 @@ export async function resolveProfile(
   const secret =
     name !== undefined ? state?.credentials[name]?.api_key : undefined;
 
-  const instanceUrl = firstDefined(
-    env.OPENPROJECT_URL,
-    entry?.url,
+  // An explicit --profile flag sits at the top of the documented order: the
+  // named entry's own URL and key beat the environment for this command.
+  // OP_CLI_PROFILE stays in the environment tier: environment first, then the
+  // selected entry's stored values (#20).
+  const flagCarriesValues = overrides.profile !== undefined;
+  const instanceUrl = (
+    flagCarriesValues
+      ? firstDefined(entry?.url, env.OPENPROJECT_URL)
+      : firstDefined(env.OPENPROJECT_URL, entry?.url)
   )?.replace(/\/+$/, "");
-  const apiKey = firstDefined(env.OPENPROJECT_API_KEY, secret);
+  const apiKey = flagCarriesValues
+    ? firstDefined(secret, env.OPENPROJECT_API_KEY)
+    : firstDefined(env.OPENPROJECT_API_KEY, secret);
   if (!instanceUrl) {
     throw new OpCliError("PROFILE_NOT_FOUND");
   }
@@ -275,11 +283,16 @@ export async function resolveProfile(
     throw new OpCliError("AUTH_FAILED");
   }
 
-  const displayName = entry !== undefined && name !== undefined
-    ? name
-    : ENV_PROFILE_NAME;
+  // Claim the profile name only when its own values were actually used; a run
+  // served by the environment renders as the environment profile so it can
+  // never contradict what auth list shows for that name.
+  const claimsProfile =
+    entry !== undefined &&
+    name !== undefined &&
+    instanceUrl === entry.url.replace(/\/+$/, "") &&
+    apiKey === secret;
   return {
-    name: displayName,
+    name: claimsProfile ? name : ENV_PROFILE_NAME,
     instanceUrl,
     apiKey,
     project:
