@@ -149,8 +149,54 @@ ENTRY_ID="$(printf '%s' "$ENTRY_JSON" | json_field id)"
 # builds the <>d date-range operator. Mocked tests cover their shapes, but
 # only a real instance proves OpenProject accepts them.
 
-step "time list --wp $WP_ID --from today (entity_type/entity_id filters)"
-TIME_ROWS="$($BIN time list --wp "$WP_ID" --from today --json)"
+# --- Project scope (#19) ----------------------------------------------------
+# An instance-wide listing also contains the scratch id, so only a total
+# compared against the project's own collection can see a dropped scope.
+# The comparison reads that collection with filters=[] on purpose: without
+# an explicit filters parameter the endpoint applies its default open-status
+# filter and the two totals stop being comparable.
+#
+# This is the one read in the gate that bypasses the CLI, and ADR-0001 is
+# not in question: that decision governs what the CLI ships to callers, and
+# an oracle routed through `wp count` would only ever agree with itself.
+# The URL and the key are read from the environment, never passed as
+# arguments, so the key stays out of the process list.
+
+step "wp count --project $PROJ_ID matches the project's own work package total"
+COUNTED="$($BIN wp count --project "$PROJ_ID")"
+PROJECT_TOTAL="$(node -e '
+  const [project] = process.argv.slice(1);
+  const base = process.env.OPENPROJECT_URL ?? "";
+  const key = process.env.OPENPROJECT_API_KEY ?? "";
+  const url = base.replace(/\/+$/, "")
+    + "/api/v3/projects/" + project + "/work_packages?pageSize=1&filters=%5B%5D";
+  const auth = "Basic " + Buffer.from("apikey:" + key).toString("base64");
+  fetch(url, { headers: { Authorization: auth } })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error("HTTP " + String(response.status));
+      }
+      return response.json();
+    })
+    .then((body) => {
+      if (typeof body.total !== "number") {
+        throw new Error("the collection carried no total");
+      }
+      console.log(String(body.total));
+    })
+    .catch((error) => {
+      console.error("smoke: could not read the project total: " + error.message);
+      process.exit(3);
+    });
+' "$PROJ_ID")"
+if [ "$DRY" != "1" ] && [ "$COUNTED" != "$PROJECT_TOTAL" ]; then
+  echo "smoke: wp count --project $PROJ_ID reported '$COUNTED'," >&2
+  echo "smoke: while the project itself holds '$PROJECT_TOTAL' work packages." >&2
+  false
+fi
+
+step "time list --project $PROJ_ID --wp $WP_ID --from today (entity and project filters)"
+TIME_ROWS="$($BIN time list --project "$PROJ_ID" --wp "$WP_ID" --from today --json)"
 node -e '
   const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const id = process.argv[1];
@@ -161,9 +207,11 @@ node -e '
 ' "$ENTRY_ID" <<<"$TIME_ROWS"
 
 step "wp list --updated-after 1d on project $PROJ_ID (<>d operator)"
-# 1d instead of today: the instance evaluates <>d in its own timezone, so
-# a just-made update can carry yesterday's UTC stamp; the two-day window
-# stays immune while exercising the same operator.
+# 1d instead of today: the instance evaluates <>d in its own timezone,
+# so when it trails the operator's a just-made update can still carry
+# yesterday's stamp; the yesterday lower bound absorbs that skew. The
+# upper bound is open (#24), so this step now fails if same-day updates
+# drop out again.
 WP_ROWS="$($BIN wp list --project "$PROJ_ID" --updated-after 1d --json)"
 node -e '
   const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));

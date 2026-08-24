@@ -15,9 +15,15 @@ export interface WpFilter {
 /**
  * The resolved flag surface shared by `wp list` and `wp count`. Every
  * array holds already-resolved ids as strings; `updatedAfter` still
- * carries the raw user input and is turned into a date window here.
+ * carries the raw user input and becomes the open-ended window's start
+ * date here.
  */
 export interface WpListFlags {
+  /**
+   * The project in context, already resolved to its id. Present means
+   * every clause beside it is read inside that project (#19).
+   */
+  readonly project?: string | undefined;
   readonly statuses?: ReadonlyArray<string> | undefined;
   readonly open?: boolean | undefined;
   readonly closed?: boolean | undefined;
@@ -63,30 +69,26 @@ function daysAgo(now: Date, days: number): Date {
 }
 
 /**
- * Turn the raw `--updated-after` input into the inclusive local date
- * window the API's `<>d` operator expects: today means the single day,
- * yesterday runs from yesterday through today, Nd from N days ago
- * through today, and an explicit date from that date through today (a
- * work package cannot be updated in the future, so the open upper bound
- * is always today).
+ * Turn the raw `--updated-after` input into the local date the window
+ * opens at: today, yesterday, N days ago, or an explicit date. The
+ * upper bound is deliberately left open (#24): the API reads a closed
+ * one as the start of that day, so every change made during the
+ * closing day would drop out. Callers emit `<>d [date, ""]`.
  */
-export function updatedAtRange(
-  raw: string,
-  now: Date,
-): { readonly start: string; readonly end: string } {
+export function sinceDate(raw: string, now: Date): string {
   const token = raw.trim().toLowerCase();
   const today = isoDate(now);
   if (token === "today") {
-    return { start: today, end: today };
+    return today;
   }
   if (token === "yesterday") {
-    return { start: isoDate(daysAgo(now, 1)), end: today };
+    return isoDate(daysAgo(now, 1));
   }
   const relative = /^(\d+)d$/.exec(token);
   if (relative !== null) {
     const days = Number(relative[1]);
     if (days >= 1) {
-      return { start: isoDate(daysAgo(now, days)), end: today };
+      return isoDate(daysAgo(now, days));
     }
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
@@ -104,7 +106,7 @@ export function updatedAtRange(
         "--updated-after needs a date up to today.",
       );
     }
-    return { start: token, end: today };
+    return token;
   }
   throw new OpCliError(
     "USAGE_ERROR",
@@ -144,6 +146,12 @@ export function buildWpFilters(
   }
 
   const filters: Array<WpFilter> = [];
+  // The project leads: it is the scope every other clause narrows, and it
+  // is the same clause the project-scoped collection applies internally,
+  // subprojects included.
+  if (flags.project !== undefined) {
+    filters.push({ name: "project", operator: "=", values: [flags.project] });
+  }
   if (flags.open === true) {
     filters.push({ name: "status", operator: "o", values: [] });
   } else if (flags.closed === true) {
@@ -173,11 +181,13 @@ export function buildWpFilters(
     filters.push({ name: "parent", operator: "=", values: unique(flags.parents!) });
   }
   if (flags.updatedAfter !== undefined) {
-    const range = updatedAtRange(flags.updatedAfter, now);
+    const since = sinceDate(flags.updatedAfter, now);
     filters.push({
       name: "updated_at",
       operator: "<>d",
-      values: [range.start, range.end],
+      // The empty upper bound is the fix for #24: a closed one drops
+      // everything changed during its own day.
+      values: [since, ""],
     });
   }
   return filters;

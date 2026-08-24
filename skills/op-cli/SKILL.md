@@ -18,7 +18,11 @@ and the tool turns names into ids itself. Run any command below with
   `time delete <id> --yes`, `project delete <reference> --yes`. They are
   irreversible; never work around a refused deletion through another route.
   There is no `user delete`; report that gap instead of improvising.
-- Three conventions are easy to guess wrong:
+- Four conventions are easy to guess wrong:
+  - A project in context narrows what you read: `--project`, or the
+    profile default, scopes `wp list`, `wp count`, `time list`, and
+    `time report` to that project and its subprojects. Without one, those
+    four report instance-wide.
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it.
   - `--all --json` streams NDJSON: one JSON record per line, not an array.
