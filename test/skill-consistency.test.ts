@@ -124,7 +124,11 @@ async function checkCommand(line: string): Promise<Array<Problem>> {
 
 async function checkLine(line: string): Promise<Array<Problem>> {
   if (line.startsWith("export ")) {
-    return line === "export OP_CLI_OUTPUT=json"
+    const knownExports = [
+      "export OP_CLI_OUTPUT=json",
+      "export OP_CLI_NO_UPDATE_CHECK=1",
+    ];
+    return knownExports.includes(line)
       ? []
       : [{ line, detail: `unknown export: ${line}` }];
   }
