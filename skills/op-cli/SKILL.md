@@ -28,32 +28,36 @@ and the tool turns names into ids itself. Run any command below with
     four report instance-wide.
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it.
-  - `--all --json` streams NDJSON: one JSON record per line, not an array.
+  - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`, `wp history`/`comments`/
     `relations`, `time log`/`get`/`update`, `project get`/`create`/
     `update`/`copy`/`member`. List and count commands print fixed
     columns instead, and `wp create --stdin` refuses the flag; without
-    it `--json` carries the whole record.
+    `--fields` the JSON output carries the whole record.
   - A truncated list warns on stderr ("Showing X of Y records. Pass --all")
     while data stays on stdout and the exit code stays 0.
+  - Terminal tables are bounded to the terminal width, long cells cut
+    with an ellipsis; JSON output is never truncated.
 
 ## Session start
 
 ```sh
 export OP_CLI_OUTPUT=json
-op-cli auth status
+export OP_CLI_NO_UPDATE_CHECK=1
 ```
 
-Set JSON output once for the whole session instead of remembering a flag
-per command; errors render as JSON objects carrying a stable `code`. If
-auth status reports no profile or failed authentication, run
-`op-cli auth login` (interactive prompts) before anything else.
+Set JSON output once for the whole session; suppress the once-a-day
+update notice that would otherwise pollute stderr. Errors render as
+JSON objects carrying a stable `code`. Do not check auth upfront: run
+the command you need directly. If it fails with `PROFILE_NOT_FOUND` or
+`AUTH_FAILED`, run `op-cli auth login` (interactive prompts) and retry.
 
 ## Intent to command
 
 ```sh
 # find work packages; repeat a filter flag to OR values
+# --created-after and --updated-after take the same date forms
 op-cli wp list --open --type Task --assignee me --updated-after 7d
 # find by words in the subject, server-side
 op-cli wp list --search login
@@ -106,14 +110,9 @@ op-cli meta members --project <id>
 op-cli meta fields
 # something does not work: diagnose connectivity, credentials, versions
 op-cli doctor
+# self-update (prints the right command for Volta and Homebrew installs)
+op-cli update
 ```
-
-`wp list` and `wp count` also take `--created-after <value>` with the
-same date forms as `--updated-after`. Tables read from a terminal are
-bounded to its width, long cells cut with an ellipsis; `--json` output
-is never truncated. Set `OP_CLI_NO_UPDATE_CHECK=1` to silence the
-once-a-day new-version notice, and run `op-cli update` to self-update
-(it prints the right command for Volta and Homebrew installs).
 
 ## Error contract
 
