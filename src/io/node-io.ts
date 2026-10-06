@@ -92,6 +92,12 @@ export function createNodeIo(
     const decoder = new StringDecoder("utf8");
     let answer = "";
     let terminated = false;
+    // A preceding askLine closed its readline interface, which pauses the
+    // input; on a socket-backed stdin that stops the read handle, and the
+    // async iterator below never restarts it, so the event loop would drain
+    // and abort the awaited run(). resume() restarts the handle; the
+    // iterator's readable listener takes over before any chunk can flow.
+    input.resume();
     try {
       for await (const chunk of input) {
         const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
