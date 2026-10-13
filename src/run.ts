@@ -18,6 +18,7 @@ import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerWpCommands } from "./commands/wp.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerTimeCommands } from "./commands/time.js";
+import { registerNotificationCommands } from "./commands/notification.js";
 import { buildVersionOutput } from "./commands/version.js";
 import { registerUpdateCommand, startVersionNotice } from "./commands/update.js";
 
@@ -284,6 +285,18 @@ export async function run(
     setJsonMode: (on) => {
       jsonOutput = on;
     },
+  });
+
+  const notification = program
+    .command("notification")
+    .description("Inspect and explicitly mark in-app notifications");
+  registerNotificationCommands(notification, {
+    // Inbox scope is explicit-only, even when OP_CLI_PROJECT names a
+    // project that would otherwise trigger resolution before the command.
+    resolve: (overrides) => resolveProfile({ ...env, OP_CLI_PROJECT: undefined }, overrides),
+    write: (text) => { stdout += text; },
+    writeErr: (text) => { stderr += text; },
+    setJsonMode: (on) => { jsonOutput = on; },
   });
 
   const doctor = program

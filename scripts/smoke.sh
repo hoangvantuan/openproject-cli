@@ -10,6 +10,8 @@
 #                         OP_CLI_SMOKE_DRY=1)
 #   OPENPROJECT_API_KEY   API key with write access     (required unless
 #                         OP_CLI_SMOKE_DRY=1)
+#   OP_CLI_SMOKE_PROJECT  existing numeric project ID; creates only disposable
+#                         work packages/time entries inside it, not a project
 #   OP_CLI_SMOKE_BIN      binary to exercise; defaults to the freshly
 #                         built dist/bin.js of this repository
 #   OP_CLI_SMOKE_DRY      1 simulates the whole run: every external
@@ -37,13 +39,56 @@ DRY=0
 case "${OP_CLI_SMOKE_DRY:-}" in
   1|true|yes) DRY=1 ;;
 esac
+# Reject explicit but empty/invalid scope before any external request or write.
+if [ "${OP_CLI_SMOKE_PROJECT+x}" = x ]; then
+  if [[ ! "$OP_CLI_SMOKE_PROJECT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "smoke: OP_CLI_SMOKE_PROJECT must be a positive numeric project ID." >&2
+    exit 2
+  fi
+fi
+WP_ID=""
+LIST_WP_ID=""
+ENTRY_ID=""
+DAY_ENTRY_ID=""
 on_error() {
   echo "smoke: FAIL at step: ${CURRENT_STEP:-<unknown>}" >&2
-  if [ -n "${SCRATCH_IDENT:-}" ]; then
+  if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ]; then
+    echo "smoke: scoped run in existing project $OP_CLI_SMOKE_PROJECT; cleaning known created IDs." >&2
+    echo "smoke: a timed-out creation can leave an unknown ID; inspect the project before retrying." >&2
+  elif [ -n "${SCRATCH_IDENT:-}" ]; then
     echo "smoke: leftover scratch project '${SCRATCH_IDENT}' (id ${PROJ_ID:-?}); remove it via the web UI." >&2
   fi
 }
 trap on_error ERR
+
+cleanup_scoped() {
+  local original=$?
+  local cleanup_failed=0
+  trap - ERR EXIT
+  if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ] && [ "$DRY" != "1" ]; then
+    # These variables are populated only from this run's creation responses.
+    # Never delete by subject, search result, or IDs supplied by the caller.
+    for id in "$DAY_ENTRY_ID" "$ENTRY_ID"; do
+      if [[ "$id" =~ ^[1-9][0-9]*$ ]]; then
+        if ! $BIN time delete "$id" --yes > /dev/null; then
+          echo "smoke: cleanup failed for created time entry $id" >&2
+          cleanup_failed=1
+        fi
+      fi
+    done
+    for id in "$LIST_WP_ID" "$WP_ID"; do
+      if [[ "$id" =~ ^[1-9][0-9]*$ ]]; then
+        if ! $BIN wp delete "$id" --yes > /dev/null; then
+          echo "smoke: cleanup failed for created work package $id" >&2
+          cleanup_failed=1
+        fi
+      fi
+    done
+  fi
+  if [ "$original" != "0" ]; then exit "$original"; fi
+  exit "$cleanup_failed"
+}
+trap cleanup_scoped EXIT
 
 step() {
   CURRENT_STEP="$1"
@@ -109,8 +154,18 @@ fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 SCRATCH_IDENT="op-cli-smoke-$STAMP"
 
-# --- Project create --------------------------------------------------------
+# --- Project create or explicit existing-project scope ----------------------
 
+if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ]; then
+  step "verify existing project $OP_CLI_SMOKE_PROJECT (no project-level writes)"
+  PROJ_JSON="$($BIN project get "$OP_CLI_SMOKE_PROJECT" --json)"
+  PROJ_ID="$(printf '%s' "$PROJ_JSON" | json_field id)"
+  if [ "$DRY" = "1" ]; then PROJ_ID="$OP_CLI_SMOKE_PROJECT"; fi
+  if [ "$PROJ_ID" != "$OP_CLI_SMOKE_PROJECT" ]; then
+    echo "smoke: project identity mismatch; refusing writes." >&2
+    exit 2
+  fi
+else
 step "create scratch project '$SCRATCH_IDENT' with a description"
 PROJ_DESC="smoke description **A**"
 PROJ_JSON="$($BIN project create "op-cli smoke $STAMP" --identifier "$SCRATCH_IDENT" \
@@ -122,6 +177,8 @@ GOT_DESC="$(printf '%s' "$PROJ_JSON" | json_field description.raw)"
 if [ "$DRY" != "1" ] && [ "$GOT_DESC" != "$PROJ_DESC" ]; then
   echo "smoke: project create echoed description '$GOT_DESC' instead of '$PROJ_DESC'" >&2
   false
+fi
+
 fi
 
 # --- Work package create ----------------------------------------------------
@@ -337,6 +394,7 @@ else
 
   step "delete work package $LIST_WP_ID"
   $BIN wp delete "$LIST_WP_ID" --yes > /dev/null
+  LIST_WP_ID=""
 fi
 
 # --- Time log ---------------------------------------------------------------
@@ -506,7 +564,7 @@ if ! printf '%s' "$TODAY_ROWS" | node -e '
         console.error("smoke: wp list --updated-after today missed work package " + id);
         process.exit(3);
       }
-    ' "$WP_ID" <<<"$TODAY_ROWS"
+    ' "$WP_ID"
   fi
 fi
 
@@ -536,24 +594,32 @@ if [ "$DRY" != "1" ]; then
   '
 fi
 
-step "star and unstar project $PROJ_ID (favourite endpoints)"
-$BIN project star "$PROJ_ID" > /dev/null
-$BIN project unstar "$PROJ_ID" > /dev/null
+if [ -z "${OP_CLI_SMOKE_PROJECT:-}" ]; then
+  step "star and unstar project $PROJ_ID (favourite endpoints)"
+  $BIN project star "$PROJ_ID" > /dev/null
+  $BIN project unstar "$PROJ_ID" > /dev/null
+fi
 
 # --- Teardown ---------------------------------------------------------------
 
 step "delete time entry $ENTRY_ID"
 $BIN time delete "$ENTRY_ID" --yes > /dev/null
+ENTRY_ID=""
 
 step "delete time entry $DAY_ENTRY_ID"
 $BIN time delete "$DAY_ENTRY_ID" --yes > /dev/null
+DAY_ENTRY_ID=""
 
 step "delete work package $WP_ID"
 $BIN wp delete "$WP_ID" --yes > /dev/null
+WP_ID=""
 
 trap - ERR
 if [ "$DRY" = "1" ]; then
   echo "[smoke] PASS: dry simulation coherent, nothing was executed or written."
+elif [ -n "${OP_CLI_SMOKE_PROJECT:-}" ]; then
+  echo "[smoke] PASS: scoped lifecycle succeeded in existing project $PROJ_ID; created records removed."
+  echo "smoke: project creation, project description writes and favourites were not exercised."
 else
   echo "[smoke] PASS: full lifecycle succeeded."
   echo "smoke: leftover scratch project '$SCRATCH_IDENT' (id $PROJ_ID); remove it via the web UI."

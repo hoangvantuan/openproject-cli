@@ -85,6 +85,58 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
 - **No escape hatch by design.** If a command is missing there is no raw
   HTTP passthrough; report the gap instead of working around the tool.
 
+## Notification inbox for agents
+
+```sh
+op-cli notification list --json                         # unread, across the profile
+op-cli notification list --status all --project web --json
+op-cli notification list --reason mentioned,assigned --wp 42 --json
+op-cli notification list --all --json                   # all pages, NDJSON
+op-cli notification get 123 --json
+op-cli notification read 123 124 --json                  # explicit IDs only
+op-cli notification unread 123 --json
+```
+
+`notification list` defaults to 20 records, page 1, sorted by notification ID
+descending. `--status unread|read|all` selects read states; `--all` selects all
+pages from `--page`. `--limit` controls page size, including with `--all`.
+`--project` accepts a name, identifier, or ID and applies only when explicitly
+passed: stored project defaults and `OP_CLI_PROJECT` are ignored. `--wp` and
+`--reason` accept repeated flags or comma-separated values (OR within each
+filter, AND between filters). Notifications are not grouped by work package.
+
+Reads never mark notifications or open a browser. No inbox state is stored
+locally, and no work-package history is fetched automatically. `list` and
+`get` accept `--fields`; JSON keeps API fields and flat resource links, plus
+`resourceType`, `resourceHref`, and `activityHref` for follow-up commands.
+Notification-owned embedded details are retained, not embedded work packages.
+When no embedded resource type exists, `resourceType` is `WorkPackage` for
+work-package links, otherwise the linked API collection name, or null.
+
+For JSON lists, stdout is an array (one page) or NDJSON (`--all`). **Stderr
+also carries JSON:** one `{ "type": "pagination", "offset": 1,
+"pageSize": 20, "count": 20, "total": 35, "hasMore": true,
+"nextOffset": 2 }` record per page. `total` may be null; `nextOffset` is null
+at the end. Parse stderr line by line, distinguishing pagination from
+`{"error": ...}` records; do not treat nonempty stderr alone as failure.
+Later-page failures preserve earlier NDJSON output and exit nonzero.
+Concurrent inbox changes can cause omissions or duplicates across pages.
+
+Only mark read/unread when the user requests it or explicitly authorizes that
+step in a workflow. Summarizing a notification does not mean its work is done.
+Mutations accept one or more space-separated IDs and deduplicate them. Each
+result reports `changed`, `already-target` (verified at pre-read), `failed`, or
+`unknown`. A write timeout, network failure, 5xx, or unexpected success response
+is **unknown**, not proof that nothing changed: fetch the current state before
+considering another write. Writes are not retried. Other IDs continue; partial
+failures retain the complete result array and exit with the first error's code.
+Successful IDs are not rolled back. There is no mark-all or filter-based write.
+
+This surface requires the instance's in-app notifications API and individual
+`read_ian`/`unread_ian` actions. Unsupported endpoints fail explicitly; the CLI
+never falls back to a collection-wide mutation. Compatibility should be
+smoke-tested against your deployed version before operational use.
+
 ## Companion skill
 
 `skills/op-cli/SKILL.md` packages this CLI's workflows as a coding-agent
@@ -115,7 +167,13 @@ npm publish --access public   # scoped package; public is not the default
 
 `scripts/smoke.sh` exercises a real create, update, time log, and delete
 lifecycle against a scratch project on a live instance configured through
-`OPENPROJECT_URL` and `OPENPROJECT_API_KEY`. It fails loudly at the first
+`OPENPROJECT_URL` and `OPENPROJECT_API_KEY`. To keep writes inside an existing
+test project, set `OP_CLI_SMOKE_PROJECT=<numeric-id>`; the gate verifies that
+project, creates disposable work packages/time entries only inside it, and
+cleans up known created IDs even on failure. Existing-project mode skips
+project creation, project description writes, and favourites. A timed-out
+creation can leave an unknown ID: inspect the test project before retrying;
+cleanup never guesses records by name. It fails loudly at the first
 broken step. There are no automated integration tests by design; this
 script is the regression net for real write paths before every publish.
 
