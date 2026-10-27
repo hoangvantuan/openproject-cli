@@ -13,7 +13,7 @@ import {
   PAGED_JSON_HELP,
   type CollectionRuntime,
 } from "../core/define.js";
-import { flattenHalRecord, isFlatLink } from "../core/hal.js";
+import { flattenHalRecord, isFlatLink, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
   apiGet,
@@ -1646,6 +1646,8 @@ async function resolveNamedValues(
         // Nothing to resolve, but the empty value still belongs where the
         // option would have gone.
         await listFieldValues(runtime, profile, field, [], links, refs, memo);
+      } else if (field.is_formattable === true) {
+        payload[field.key] = toFormattable("");
       } else {
         payload[field.key] = null;
       }
@@ -1691,6 +1693,17 @@ async function resolveNamedValues(
         refs,
         memo,
       );
+      continue;
+    }
+    if (field.is_formattable === true) {
+      if (pairs.length > 1) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `--field "${field.name}" holds one value.`,
+          "long-text fields take a single value.",
+        );
+      }
+      payload[field.key] = toFormattable(pairs[0]?.value ?? "");
       continue;
     }
     const values = pairs.map((pair) => pair.value);

@@ -63,6 +63,7 @@ const WP_PATH = "/api/v3/work_packages/675";
 
 const PROJECT_VOCABULARY = projectVocabulary({
   "2": customFieldsFromSchema(schemaFragment([
+    { index: 3, name: "Reason", kind: "Formattable" },
     { index: 11, name: "Formula" },
     {
       index: 6,
@@ -240,6 +241,47 @@ describe("wp update", () => {
     const links = patchBodies[0]?._links as Record<string, { href: string }>;
     expect(links.status.href).toBe("/api/v3/statuses/5");
     expect(patchBodies[0]?.[customFieldKey(11)]).toBe("7");
+  });
+
+  test("a Formattable field is patched as { raw } without format, splitting on the first equals sign", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--field",
+      "Reason=Xem mục a=b",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]?.[customFieldKey(3)]).toEqual({
+      raw: "Xem mục a=b",
+    });
+  });
+
+  test("clearing a Formattable field with --field \"Name=\" patches { raw: \"\" } while an unmarked field patches null", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update",
+      "675",
+      "--field",
+      "Reason=",
+      "--field",
+      "Formula=",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toHaveLength(1);
+    expect(patchBodies[0]?.[customFieldKey(3)]).toEqual({ raw: "" });
+    expect(patchBodies[0]).toHaveProperty(customFieldKey(11), null);
   });
 
   test("a list field is patched as an href where its option lives", async () => {

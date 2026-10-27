@@ -16,11 +16,11 @@ export interface CustomFieldSpec {
   readonly index: number;
   readonly name: string;
   /**
-   * Schema type; anything beyond Boolean/User/CustomOption passes through
-   * as text. The "[]" prefix is how the instance spells a multi-valued
-   * field.
+   * Schema type; anything beyond Boolean/User/Formattable/CustomOption
+   * passes through as text. The "[]" prefix is how the instance spells a
+   * multi-valued field.
    */
-  readonly kind?: "Boolean" | "User" | "CustomOption" | "[]CustomOption";
+  readonly kind?: "Boolean" | "User" | "Formattable" | "CustomOption" | "[]CustomOption";
   /** Selectable values of a list field, as the create form embeds them. */
   readonly options?: ReadonlyArray<CustomFieldOption>;
   /** The schema marks the field required. */
@@ -97,6 +97,7 @@ export function customFieldsFromSchema(
           : {}),
         ...(kind === "Boolean" ? { is_boolean: true as const } : {}),
         ...(kind === "User" ? { is_user: true as const } : {}),
+        ...(kind === "Formattable" ? { is_formattable: true as const } : {}),
         ...(isList ? { is_list: true as const, allowed_options: options } : {}),
         ...(property.required === true ? { is_required: true as const } : {}),
         ...(kind.startsWith("[]") ? { is_multi: true as const } : {}),

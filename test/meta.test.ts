@@ -1336,6 +1336,109 @@ describe("meta project vocabulary", () => {
     ]);
   });
 
+  test("records Formattable alongside Boolean, User, and CustomOption while leaving other schema types unmarked", async () => {
+    const root = await makeTempRoom("op-cli-meta-schema-kinds-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    installMockApi({
+      ...baseInstall("https://op.example"),
+      project: projectRef(),
+      members: { 13: [] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { 13: { allowedValues: [] } },
+      projectTypes: { 13: [taskType()] },
+      schemas: {
+        "13-2": {
+          _type: "Schema",
+          customField3: {
+            type: "Formattable",
+            name: "Reason",
+            writable: true,
+          },
+          customField6: {
+            type: "CustomOption",
+            name: "Bug Type",
+            writable: true,
+            location: "_links",
+            _links: {
+              allowedValues: [
+                { href: "/api/v3/custom_options/4", title: "Logic/Code" },
+              ],
+            },
+          },
+          customField8: {
+            type: "String",
+            name: "Summary Note",
+            writable: true,
+          },
+          customField9: {
+            type: "Boolean",
+            name: "Blocked",
+            writable: true,
+          },
+          customField10: {
+            type: "User",
+            name: "Reviewer",
+            writable: true,
+          },
+          customField11: {
+            type: "Integer",
+            name: "Estimate",
+            writable: true,
+          },
+        },
+      },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+
+    const json = await run(["meta", "fields", "--json"], env, {});
+    expect(json.exitCode).toBe(0);
+    const rows = JSON.parse(json.stdout) as Array<Record<string, unknown>>;
+    expect(rows).toEqual([
+      {
+        key: "customField9",
+        id: 9,
+        name: "Blocked",
+        is_boolean: true,
+        types: ["Task"],
+      },
+      {
+        key: "customField6",
+        id: 6,
+        name: "Bug Type",
+        is_list: true,
+        allowed_options: [{ id: 4, name: "Logic/Code" }],
+        types: ["Task"],
+      },
+      {
+        key: "customField11",
+        id: 11,
+        name: "Estimate",
+        types: ["Task"],
+      },
+      {
+        key: "customField3",
+        id: 3,
+        name: "Reason",
+        is_formattable: true,
+        types: ["Task"],
+      },
+      {
+        key: "customField10",
+        id: 10,
+        name: "Reviewer",
+        is_user: true,
+        types: ["Task"],
+      },
+      {
+        key: "customField8",
+        id: 8,
+        name: "Summary Note",
+        types: ["Task"],
+      },
+    ]);
+  });
+
   test("a field carried by several types is one row naming every type", async () => {
     const root = await makeTempRoom("op-cli-meta-fields-shared-");
     const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
