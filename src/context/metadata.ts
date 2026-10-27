@@ -89,6 +89,11 @@ export interface StoredCustomField {
   readonly is_boolean?: true;
   readonly is_user?: true;
   /**
+   * A long-text field: API v3 requires a Formattable `{ raw }` object on
+   * write and empties the field if handed a bare string (#41).
+   */
+  readonly is_formattable?: true;
+  /**
    * A list field: its value is a CustomOption resource, so the payload
    * carries an href under _links and never the option's text.
    */
@@ -350,8 +355,8 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
       continue;
     }
     // The schema `type` decides input validation downstream; anything
-    // beyond Boolean/User/CustomOption stays unmarked and passes through
-    // as text. A multi-valued field spells its kind "[]Kind".
+    // beyond Boolean/User/Formattable/CustomOption stays unmarked and
+    // passes through as text. A multi-valued field spells its kind "[]Kind".
     const kind = asString((property as HalElement).type).toLowerCase();
     const single = kind.replace(/^\[\]/, "");
     const isUser = kind === "user";
@@ -372,6 +377,7 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
         : {}),
       ...(kind === "boolean" ? { is_boolean: true as const } : {}),
       ...(isUser ? { is_user: true as const } : {}),
+      ...(kind === "formattable" ? { is_formattable: true as const } : {}),
       ...(isList ? { is_list: true as const, allowed_options: options } : {}),
       ...(kind.startsWith("[]") ? { is_multi: true as const } : {}),
     });

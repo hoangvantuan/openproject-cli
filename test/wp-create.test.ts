@@ -61,6 +61,7 @@ async function writeSingleProfile(
 // Custom-field keys come from one generator; the schema fragment and the
 // stored vocabulary derive through the same rule the production store uses.
 const TYPE_TASK_FIELDS = schemaFragment([
+  { index: 3, name: "Reason", kind: "Formattable" },
   { index: 8, name: "Estimate" },
   { index: 9, name: "Blocked", kind: "Boolean" },
   { index: 10, name: "Reviewer", kind: "User" },
@@ -416,6 +417,27 @@ describe("wp create values by name", () => {
     expect(postBodies[0]).toHaveProperty(customFieldKey(11), null);
   });
 
+  test("clearing a Formattable field with --field \"Name=\" posts { raw: \"\" }", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1503, "F") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "F",
+      "--type",
+      "Task",
+      "--field",
+      "Reason=",
+      "--field",
+      "Formula=",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies[0]?.[customFieldKey(3)]).toEqual({ raw: "" });
+    expect(postBodies[0]).toHaveProperty(customFieldKey(11), null);
+  });
+
   test("a list field resolves its value to a custom_options href in _links", async () => {
     const { configDir, cacheDir } = await standardRoom();
     await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
@@ -749,6 +771,47 @@ describe("wp create values by name", () => {
     expect(postBodies[0]?.[customFieldKey(10)]).toEqual({
       href: "/api/v3/users/7",
     });
+  });
+
+  test("a Formattable field posts { raw } without format, splitting on the first equals sign", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1506, "F") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "F",
+      "--type",
+      "Task",
+      "--field",
+      "Reason=See section a=b=c",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(1);
+    expect(postBodies[0]?.[customFieldKey(3)]).toEqual({
+      raw: "See section a=b=c",
+    });
+  });
+
+  test("a Formattable field refuses two values with USAGE_ERROR and does not post", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({});
+    const result = await runWp(configDir, cacheDir, [
+      "create",
+      "F",
+      "--type",
+      "Task",
+      "--field",
+      "Reason=First paragraph",
+      "--field",
+      "Reason=Second paragraph",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain("Reason");
+    expect(postBodies).toHaveLength(0);
   });
 
   // Shared by both ambiguity tests: the human name "Estimate" exists on
