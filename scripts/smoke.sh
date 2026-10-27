@@ -102,6 +102,10 @@ if [ "$DRY" = "1" ]; then
   # degrade to echoes and the lifecycle walks through without side effects.
   bash -n "$REPO_ROOT/scripts/smoke.sh"
   node() {
+    # json_field pipes a record into `node -e`. The shadow must drain that
+    # pipe: under `pipefail` an unread stdin is SIGPIPE (141), and the race
+    # is what made the unscoped dry gate fail in CI.
+    cat >/dev/null || true
     if [ "${1:-}" = "-e" ]; then
       echo "[smoke:dry] node -e <inline script>"
     else
@@ -171,6 +175,7 @@ PROJ_DESC="smoke description **A**"
 PROJ_JSON="$($BIN project create "op-cli smoke $STAMP" --identifier "$SCRATCH_IDENT" \
   --description "$PROJ_DESC" --json)"
 PROJ_ID="$(printf '%s' "$PROJ_JSON" | json_field id)"
+if [ "$DRY" = "1" ]; then PROJ_ID="1"; fi
 # description is Formattable: a plain-string payload is accepted, ignored,
 # and reported as success, so only an echo-back can see the difference.
 GOT_DESC="$(printf '%s' "$PROJ_JSON" | json_field description.raw)"
