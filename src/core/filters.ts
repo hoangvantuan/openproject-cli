@@ -29,6 +29,7 @@ export interface WpListFlags {
   readonly closed?: boolean | undefined;
   readonly types?: ReadonlyArray<string> | undefined;
   readonly assignees?: ReadonlyArray<string> | undefined;
+  readonly accountables?: ReadonlyArray<string> | undefined;
   readonly authors?: ReadonlyArray<string> | undefined;
   readonly versions?: ReadonlyArray<string> | undefined;
   readonly categories?: ReadonlyArray<string> | undefined;
@@ -186,6 +187,9 @@ export function buildWpFilters(
   }
   if ((flags.assignees ?? []).length > 0) {
     filters.push({ name: "assigned_to", operator: "=", values: unique(flags.assignees!) });
+  }
+  if ((flags.accountables ?? []).length > 0) {
+    filters.push({ name: "responsible", operator: "=", values: unique(flags.accountables!) });
   }
   if ((flags.authors ?? []).length > 0) {
     filters.push({ name: "author", operator: "=", values: unique(flags.authors!) });

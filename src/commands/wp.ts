@@ -202,6 +202,7 @@ interface FilterFlagOptions {
   readonly status?: Array<string>;
   readonly type?: Array<string>;
   readonly assignee?: Array<string>;
+  readonly accountable?: Array<string>;
   readonly author?: Array<string>;
   readonly version?: Array<string>;
   readonly category?: Array<string>;
@@ -225,6 +226,12 @@ function addFilterFlags(command: Command): Command {
     .option("--status <name>", "status name or id; repeat to OR values", collectValue, [])
     .option("--type <name>", "type name or id; repeat to OR values", collectValue, [])
     .option("--assignee <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option(
+      "--accountable <name>",
+      "Accountable (API field responsible): user name, id, or me; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--author <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--version <name>", "version name or id; repeat to OR values", collectValue, [])
     .option("--category <name>", "category name or id; repeat to OR values", collectValue, [])
@@ -250,6 +257,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     statuses: options.status,
     types: options.type,
     assignees: options.assignee,
+    accountables: options.accountable,
     authors: options.author,
     versions: options.version,
     categories: options.category,
@@ -391,6 +399,7 @@ interface CreateValueFlags {
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
+  readonly accountable?: string;
   readonly version?: string;
   readonly category?: string;
   readonly parent?: string;
@@ -529,6 +538,7 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "status",
   "priority",
   "assignee",
+  "accountable",
   "version",
   "category",
   "parent",
@@ -568,6 +578,7 @@ function parseBulkItem(
     status?: string;
     priority?: string;
     assignee?: string;
+    accountable?: string;
     version?: string;
     category?: string;
     parent?: string;
@@ -579,6 +590,7 @@ function parseBulkItem(
     "status",
     "priority",
     "assignee",
+    "accountable",
     "version",
     "category",
     "parent",
@@ -762,6 +774,7 @@ interface UpdateOptions {
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
+  readonly accountable?: string;
   readonly version?: string;
   readonly category?: string;
   readonly parent?: string;
@@ -907,8 +920,11 @@ const REQUIRED_VALUE_FLAGS: ReadonlyArray<"type" | "status" | "priority"> = [
 ];
 
 /** Flags whose empty value clears the link on update. */
-const CLEARABLE_LINK_FLAGS: ReadonlyArray<"assignee" | "version" | "category" | "parent"> = [
+const CLEARABLE_LINK_FLAGS: ReadonlyArray<
+  "assignee" | "accountable" | "version" | "category" | "parent"
+> = [
   "assignee",
+  "accountable",
   "version",
   "category",
   "parent",
@@ -1461,6 +1477,7 @@ async function resolveListFlags(
     statuses?: Array<string>;
     types?: Array<string>;
     assignees?: Array<string>;
+    accountables?: Array<string>;
     authors?: Array<string>;
     versions?: Array<string>;
     categories?: Array<string>;
@@ -1505,6 +1522,10 @@ async function resolveListFlags(
   const assignee = options.assignee ?? [];
   if (assignee.length > 0) {
     flags.assignees = await resolveUserValues(runtime, profile, "assignee", assignee);
+  }
+  const accountable = options.accountable ?? [];
+  if (accountable.length > 0) {
+    flags.accountables = await resolveUserValues(runtime, profile, "accountable", accountable);
   }
   const author = options.author ?? [];
   if (author.length > 0) {
@@ -1641,6 +1662,18 @@ async function resolveNamedValues(
     "/api/v3/users/",
     "assignee",
     options.assignee,
+    refs,
+    memo,
+  );
+  // Accountable is the API's `responsible` link.
+  await resolveUserOption(
+    runtime,
+    profile,
+    links,
+    "responsible",
+    "/api/v3/users/",
+    "accountable",
+    options.accountable,
     refs,
     memo,
   );
@@ -2173,6 +2206,10 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--status <name-or-id>", "initial status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
     .option("--assignee <name-or-id>", "assignee, by name, id, or me")
+    .option(
+      "--accountable <name-or-id>",
+      "Accountable (API field responsible), by name, id, or me",
+    )
     .option("--version <name-or-id>", "version of the project, by name or id")
     .option("--category <name-or-id>", "category of the project, by name or id")
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
@@ -2247,6 +2284,10 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--status <name-or-id>", "status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
     .option("--assignee <name-or-id>", 'assignee, by name, id, or me; "" clears')
+    .option(
+      "--accountable <name-or-id>",
+      'Accountable (API field responsible), by name, id, or me; "" clears',
+    )
     .option("--version <name-or-id>", 'version of the project, by name or id; "" clears')
     .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
     .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
@@ -2271,6 +2312,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.priority !== undefined
         || options.parent !== undefined
         || options.assignee !== undefined
+        || options.accountable !== undefined
         || options.version !== undefined
         || options.category !== undefined
         || options.description !== undefined

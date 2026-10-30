@@ -723,9 +723,40 @@ describe("wp update --description", () => {
   });
 });
 
+describe("wp update --accountable", () => {
+  test("resolves a member name into _links.responsible", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update", "675", "--accountable", "Linh Nguyen",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toEqual([
+      { lockVersion: 1, _links: { responsible: { href: "/api/v3/users/7" } } },
+    ]);
+  });
+
+  test("a numeric id goes straight in", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    await runWp(configDir, cacheDir, ["update", "675", "--accountable", "9"]);
+    const links = patchBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.responsible.href).toBe("/api/v3/users/9");
+  });
+});
+
 describe("wp update clearing a link with an empty value", () => {
   const CLEARS: ReadonlyArray<readonly [string, string]> = [
     ["--assignee", "assignee"],
+    ["--accountable", "responsible"],
     ["--version", "version"],
     ["--category", "category"],
     ["--parent", "parent"],
