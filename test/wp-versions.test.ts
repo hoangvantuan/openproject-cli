@@ -27,6 +27,15 @@ interface Room {
   readonly cacheDir: string;
 }
 
+interface RoomOptions {
+  /** The profile's default project; `null` leaves the profile without one. */
+  readonly project?: number | null;
+  /** Per-type fields, replacing `fields` for Task (2) and Bug (6). */
+  readonly byType?: Readonly<Record<string, VersionFieldSpec>>;
+  /** Further cached projects, keyed by id, with the fields of Task (2). */
+  readonly others?: Readonly<Record<string, VersionFieldSpec>>;
+}
+
 /** A cache whose project vocabulary carries `fields` for Task (2) and Bug (6). */
 async function room(
   fields: VersionFieldSpec | undefined,
@@ -34,6 +43,7 @@ async function room(
     { id: 31, name: "0.9.0", status: "open" },
     { id: 32, name: "1.0.0", status: "open" },
   ],
+  options: RoomOptions = {},
 ): Promise<Room> {
   const root = await mkdtemp(join(tmpdir(), "wp-versions-"));
   cleanups.push(async () => {
@@ -48,7 +58,12 @@ async function room(
     JSON.stringify({
       default_profile: "default",
       active_profile: "default",
-      profiles: { default: { url: INSTANCE, project: 13 } },
+      profiles: {
+        default: {
+          url: INSTANCE,
+          ...(options.project === null ? {} : { project: options.project ?? 13 }),
+        },
+      },
     }),
   );
   await writeFile(
@@ -58,19 +73,28 @@ async function room(
   );
   const vocabulary = projectVocabulary(
     {},
-    fields === undefined ? {} : { "2": fields, "6": fields },
+    options.byType ?? (fields === undefined ? {} : { "2": fields, "6": fields }),
   );
   const stored = { ...vocabulary, versions } as Record<string, unknown>;
+  const projectScoped: Record<string, unknown> = { "13": stored };
+  for (const [id, spec] of Object.entries(options.others ?? {})) {
+    projectScoped[id] = {
+      ...projectVocabulary({}, { "2": spec }),
+      project_id: Number(id),
+      versions,
+    };
+  }
   await writeFile(
     join(cacheDir, "default", "metadata.json"),
-    JSON.stringify({ ...baseMetadata(), projectScoped: { "13": stored } }),
+    JSON.stringify({ ...baseMetadata(), projectScoped }),
   );
   return { configDir, cacheDir };
 }
 
-function install(): {
+function install(workPackageProject = 13): {
   bodies: Array<{ method: string; body: Record<string, unknown> }>;
   paths: Array<string>;
+  pool: ReturnType<MockAgent["get"]>;
 } {
   const mockAgent = new MockAgent();
   mockAgent.disableNetConnect();
@@ -89,7 +113,10 @@ function install(): {
     subject: "Ship",
     _links: {
       type: { href: "/api/v3/types/2", title: "Task" },
-      project: { href: "/api/v3/projects/13", title: "Operations" },
+      project: {
+        href: `/api/v3/projects/${String(workPackageProject)}`,
+        title: "Operations",
+      },
       targetVersions: [{ href: "/api/v3/versions/31", title: "0.9.0" }],
       version: { href: "/api/v3/versions/31", title: "0.9.0" },
     },
@@ -120,7 +147,7 @@ function install(): {
       };
     })
     .persist();
-  return { bodies, paths };
+  return { bodies, paths, pool };
 }
 
 async function wp(
@@ -416,5 +443,178 @@ describe("wp get shows targetVersions (#47)", () => {
     const record = JSON.parse(json.stdout) as Record<string, unknown>;
     expect(record).toHaveProperty("version");
     expect(record).toHaveProperty("targetVersions");
+  });
+});
+
+/**
+ * Serves only what refreshing ONE project's vocabulary reads. Nothing
+ * instance-wide (types, statuses, priorities) is mocked, so a refresh that
+ * reaches for it fails the test: a stale entry costs one project, not the
+ * whole store.
+ */
+function serveProjectRefresh(
+  pool: ReturnType<MockAgent["get"]>,
+  projectId: number,
+  types: Readonly<Record<string, VersionFieldSpec>>,
+): void {
+  const collection = (elements: Array<Record<string, unknown>>): Record<string, unknown> => ({
+    _type: "Collection",
+    total: elements.length,
+    count: elements.length,
+    pageSize: 100,
+    offset: 1,
+    _embedded: { elements },
+    _links: {},
+  });
+  const schemaOf = (fields: VersionFieldSpec): Record<string, unknown> => {
+    const property = (multiple: boolean): Record<string, unknown> => ({
+      type: multiple ? "[]Version" : "Version",
+      options: { multiple },
+    });
+    return {
+      ...(fields.targetVersions === undefined
+        ? {}
+        : { targetVersions: property(fields.targetVersions.multiple) }),
+      ...(fields.observedInVersions === undefined
+        ? {}
+        : { observedInVersions: property(fields.observedInVersions.multiple) }),
+    };
+  };
+  const base = `/api/v3/projects/${String(projectId)}`;
+  pool.intercept({ path: (c) => c.startsWith(`${base}/types`), method: "GET" })
+    .reply(200, collection(Object.keys(types).map((id) => ({ id: Number(id), name: `T${id}` }))))
+    .persist();
+  pool.intercept({ path: (c) => c.startsWith(`${base}/versions`), method: "GET" })
+    .reply(200, collection([
+      { id: 31, name: "0.9.0", status: "open" },
+      { id: 32, name: "1.0.0", status: "open" },
+    ])).persist();
+  for (const part of ["memberships", "categories", "time_entries/activities"]) {
+    pool.intercept({ path: (c) => c.includes(part), method: "GET" })
+      .reply(200, collection([])).persist();
+  }
+  pool.intercept({ path: "/api/v3/time_entries/form", method: "POST" })
+    .reply(200, { _embedded: { schema: {} } }).persist();
+  pool.intercept({ path: `${base}/work_packages/form`, method: "POST" }).reply((call) => {
+    const body = JSON.parse(String(call.body)) as {
+      _links: { type: { href: string } };
+    };
+    const id = /(\d+)$/.exec(body._links.type.href)?.[1] ?? "";
+    return { statusCode: 200, data: { _embedded: { schema: schemaOf(types[id] ?? {}) } } };
+  }).persist();
+}
+
+describe("wp update reads the schema of the work package's own project (review B1)", () => {
+  test("--version <id> needs no default project", async () => {
+    const r = await room(MULTI, undefined, { project: null });
+    const api = install();
+    const result = await wp(r, ["update", "675", "--version", "32"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({
+      targetVersions: [{ href: "/api/v3/versions/32" }],
+    });
+  });
+
+  test('--version "" needs no default project', async () => {
+    const r = await room(MULTI, undefined, { project: null });
+    const api = install();
+    const result = await wp(r, ["update", "675", "--version", ""]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({ targetVersions: [] });
+  });
+
+  test("--observed-in <id> needs no default project", async () => {
+    const r = await room(MULTI, undefined, { project: null });
+    const api = install();
+    const result = await wp(r, ["update", "675", "--observed-in", "31"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({
+      observedInVersions: [{ href: "/api/v3/versions/31" }],
+    });
+  });
+
+  test("a work package in project 99 is judged by 99's schema, not the profile's", async () => {
+    // Profile project 13 has targetVersions; project 99 has the legacy
+    // single version only.
+    const r = await room(MULTI, undefined, { others: { "99": LEGACY } });
+    const api = install(99);
+    const result = await wp(r, ["update", "675", "--version", "32"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({
+      version: { href: "/api/v3/versions/32" },
+    });
+  });
+});
+
+describe("wp create without --type needs the types to agree (review S1)", () => {
+  test("agreeing types decide the field", async () => {
+    const r = await room(MULTI);
+    const api = install();
+    const result = await wp(r, ["create", "Ship", "--version", "0.9.0"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const links = api.bodies[0]?.body._links as Record<string, unknown>;
+    expect(links.targetVersions).toEqual([{ href: "/api/v3/versions/31" }]);
+  });
+
+  test("types that disagree are a USAGE_ERROR asking for --type", async () => {
+    const r = await room(undefined, undefined, { byType: { "2": MULTI, "6": LEGACY } });
+    const api = install();
+    const result = await wp(r, ["create", "Ship", "--version", "0.9.0"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--type");
+    expect(api.bodies).toEqual([]);
+  });
+
+  test("the same disagreement is settled by passing --type", async () => {
+    const r = await room(undefined, undefined, { byType: { "2": MULTI, "6": LEGACY } });
+    const api = install();
+    const result = await wp(r, ["create", "Ship", "--type", "Bug", "--version", "0.9.0"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const links = api.bodies[0]?.body._links as Record<string, unknown>;
+    expect(links.version).toEqual({ href: "/api/v3/versions/31" });
+  });
+
+  test("a bulk item without a type is judged the same way", async () => {
+    const r = await room(undefined, undefined, { byType: { "2": MULTI, "6": LEGACY } });
+    const api = install();
+    const result = await wp(r, ["create", "--stdin"], JSON.stringify([
+      { subject: "One", version: "0.9.0" },
+    ]));
+    expect(result.exitCode).toBe(1);
+    expect(api.bodies).toEqual([]);
+  });
+});
+
+describe("a stale version-field shape is repaired once (review S2)", () => {
+  test("a type missing from the cached shape refreshes only that project", async () => {
+    // The cache knows Task (2) only; Bug (6) was added to the project after.
+    const r = await room(undefined, undefined, { byType: { "2": MULTI } });
+    const api = install();
+    serveProjectRefresh(api.pool, 13, { "2": MULTI, "6": LEGACY });
+    const result = await wp(r, ["create", "Ship", "--type", "Bug", "--version", "0.9.0"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const links = api.bodies[0]?.body._links as Record<string, unknown>;
+    expect(links.version).toEqual({ href: "/api/v3/versions/31" });
+    expect(links).not.toHaveProperty("targetVersions");
+  });
+});
+
+describe("a legacy cache refreshes only the project it needs (review N10)", () => {
+  test("version_fields missing → one project, not the whole store", async () => {
+    const r = await room(MULTI);
+    const path = join(r.cacheDir, "default", "metadata.json");
+    const { readFile } = await import("node:fs/promises");
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      projectScoped: Record<string, Record<string, unknown>>;
+    };
+    delete stored.projectScoped["13"]?.version_fields;
+    await writeFile(path, JSON.stringify(stored));
+    const api = install();
+    serveProjectRefresh(api.pool, 13, { "2": MULTI });
+    const result = await wp(r, ["update", "675", "--version", "32"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({
+      targetVersions: [{ href: "/api/v3/versions/32" }],
+    });
   });
 });

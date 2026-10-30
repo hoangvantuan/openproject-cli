@@ -827,6 +827,21 @@ export async function loadProjectVocabularyById(
   if (cached !== undefined) {
     return cached;
   }
+  return refreshProjectVocabulary(env, profile, projectId);
+}
+
+/**
+ * Re-fetch one project's vocabulary and store it, leaving every other
+ * cached project and the instance-wide lists alone. For a stale entry that
+ * concerns a single project (a type added after the cache was written), so
+ * the repair does not burst a request per stored project.
+ */
+export async function refreshProjectVocabulary(
+  env: RunEnvironment,
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<ProjectVocabulary> {
+  const stored = await readStoredMetadata(env, profile);
   const base = stored ?? (await fetchStoredMetadata(profile));
   const vocabulary = await fetchProjectVocabulary(profile, projectId);
   await persistMetadata(env, profile, {

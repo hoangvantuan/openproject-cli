@@ -49,7 +49,9 @@ import {
 import { resolveProjectRef } from "../context/projectref.js";
 import {
   loadProjectVocabulary,
+  loadProjectVocabularyById,
   loadStoredMetadata,
+  refreshProjectVocabulary,
   refreshStoredMetadata,
   requireVocabulary,
   type ProjectVocabulary,
@@ -1685,20 +1687,15 @@ async function resolveListFlags(
   if (version.length > 0) {
     flags.versions = await resolveValues(
       version,
-      projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
-        requireVocabulary(vocabulary, "versions").map((entry) => ({
-          name: entry.name,
-          owner: "Version",
-          value: entry.id,
-        })),
-      ),
+      versionSource(runtime, profile, "version"),
     );
   }
   const observedIn = options.observedIn ?? [];
   if (observedIn.length > 0) {
     if (profile.project !== undefined) {
-      const fields = await versionFieldsFor(runtime, profile, undefined);
-      if (fields.observedInVersions === undefined) {
+      // A filter spans the whole project: the field is there when any type has it.
+      const byType = await versionFieldsByType(runtime, profile, undefined, undefined, undefined);
+      if (!Object.values(byType).some((fields) => fields.observedInVersions !== undefined)) {
         throw new OpCliError(
           "USAGE_ERROR",
           "--observed-in is not available in this project.",
@@ -1715,13 +1712,7 @@ async function resolveListFlags(
   if (category.length > 0) {
     flags.categories = await resolveValues(
       category,
-      projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
-        requireVocabulary(vocabulary, "categories").map((entry) => ({
-          name: entry.name,
-          owner: "Category",
-          value: entry.id,
-        })),
-      ),
+      categorySource(runtime, profile),
     );
   }
   const priority = options.priority ?? [];
@@ -1777,7 +1768,7 @@ function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): st
   );
 }
 
-/** The id at the end of a type link built by resolveLinkOption. */
+/** The id at the end of a link's href, such as a type or project link. */
 function typeIdOf(link: LinkValue | undefined): number | undefined {
   if (link === undefined || Array.isArray(link)) {
     return undefined;
@@ -1788,41 +1779,90 @@ function typeIdOf(link: LinkValue | undefined): number | undefined {
 }
 
 /**
- * The version fields the schema of this project and type exposes. A type
- * of unknown identity (a create without --type) is judged by the project's
- * types together. A vocabulary stored before these fields were captured is
- * refreshed once, so the decision always comes from the schema.
+ * The version fields of every type of one project, as the cached schema
+ * shape has them. A vocabulary stored before these fields were captured, or
+ * one that predates the type being asked about, is refreshed once for that
+ * project alone, so the decision always comes from the schema (ADR-0002).
+ * The project is the work package's own when given, else the profile's.
+ */
+async function versionFieldsByType(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  typeId: number | undefined,
+  memo: ResolutionMemo | undefined,
+  projectId: number | undefined,
+): Promise<Readonly<Record<string, StoredVersionFields>>> {
+  const own = projectId !== undefined && projectId !== profile.project;
+  const load = (): Promise<ProjectVocabulary> =>
+    own
+      ? loadProjectVocabularyById(runtime.env, profile, projectId)
+      : memo === undefined
+        ? loadProjectVocabulary(runtime.env, profile)
+        : memo.vocabulary();
+  let vocabulary = await load();
+  const known = (candidate: ProjectVocabulary): boolean =>
+    candidate.version_fields !== undefined
+    && (typeId === undefined || candidate.version_fields[String(typeId)] !== undefined);
+  if (!known(vocabulary)) {
+    await refreshProjectVocabulary(runtime.env, profile, vocabulary.project_id);
+    memo?.invalidate();
+    vocabulary = await load();
+  }
+  return vocabulary.version_fields ?? {};
+}
+
+/**
+ * The version fields the schema of this project and type exposes. A type of
+ * unknown identity (a create without --type, whose default type the server
+ * picks) is decided only when every type of the project agrees; otherwise
+ * guessing would send a field the real type refuses.
  */
 async function versionFieldsFor(
   runtime: WpRuntime,
   profile: ActiveProfile,
   typeId: number | undefined,
   memo?: ResolutionMemo,
+  projectId?: number,
 ): Promise<StoredVersionFields> {
-  const load = (): Promise<ProjectVocabulary> =>
-    memo === undefined
-      ? loadProjectVocabulary(runtime.env, profile)
-      : memo.vocabulary();
-  let vocabulary = await load();
-  if (vocabulary.version_fields === undefined) {
-    await refreshStoredMetadata(runtime.env, profile);
-    memo?.invalidate();
-    vocabulary = await load();
-  }
-  const byType = vocabulary.version_fields ?? {};
+  const byType = await versionFieldsByType(runtime, profile, typeId, memo, projectId);
   const own = typeId === undefined ? undefined : byType[String(typeId)];
   if (own !== undefined) {
     return own;
   }
-  const merge = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
-    const found = Object.values(byType)
-      .map((fields) => fields[name])
-      .filter((entry): entry is StoredVersionField => entry !== undefined);
-    return found.length === 0
-      ? {}
-      : { [name]: { multiple: found.some((entry) => entry.multiple) } };
+  const fields = Object.values(byType);
+  const agreed = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
+    const found = fields.map((entry) => entry[name]);
+    const present = found.filter((entry): entry is StoredVersionField => entry !== undefined);
+    if (present.length === 0) {
+      return {};
+    }
+    const first = present[0];
+    if (
+      present.length < found.length
+      || present.some((entry) => entry.multiple !== first?.multiple)
+    ) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "the project's types disagree on its version fields, so --version and --observed-in cannot be judged without a type.",
+        "pass --type <name-or-id> (or a type in the stdin item) so the schema of that type decides.",
+      );
+    }
+    return { [name]: { multiple: present[0]?.multiple === true } };
   };
-  return { ...merge("targetVersions"), ...merge("observedInVersions") };
+  return { ...agreed("targetVersions"), ...agreed("observedInVersions") };
+}
+
+function categorySource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  return projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
+    requireVocabulary(vocabulary, "categories").map((entry) => ({
+      name: entry.name,
+      owner: "Category",
+      value: entry.id,
+    })), memo);
 }
 
 function versionSource(
@@ -1893,11 +1933,12 @@ async function resolveVersionLinks(
   typeId: number | undefined,
   refs: Array<ResolvedAttribute>,
   memo?: ResolutionMemo,
+  projectId?: number,
 ): Promise<void> {
   if (options.version === undefined && options.observedIn === undefined) {
     return;
   }
-  const fields = await versionFieldsFor(runtime, profile, typeId, memo);
+  const fields = await versionFieldsFor(runtime, profile, typeId, memo, projectId);
   if (options.version !== undefined) {
     const target = fields.targetVersions;
     if (target === undefined) {
@@ -1976,8 +2017,14 @@ async function resolveNamedValues(
   profile: ActiveProfile,
   options: CreateValueFlags,
   memo?: ResolutionMemo,
-  /** The type the work package already has, when --type does not name one. */
-  currentTypeId?: number,
+  /**
+   * What an update's work package already has: its type, when --type does
+   * not name one, and its project, whose schema decides the version fields.
+   */
+  existing: {
+    readonly typeId?: number | undefined;
+    readonly projectId?: number | undefined;
+  } = {},
 ): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
   const refs: Array<ResolvedAttribute> = [];
   const links: Record<string, LinkValue> = {};
@@ -2051,9 +2098,10 @@ async function resolveNamedValues(
     profile,
     links,
     options,
-    typeIdOf(links.type) ?? currentTypeId,
+    typeIdOf(links.type) ?? existing.typeId,
     refs,
     memo,
+    existing.projectId,
   );
   await resolveLinkOption(
     links,
@@ -2061,12 +2109,7 @@ async function resolveNamedValues(
     "/api/v3/categories/",
     "--category",
     options.category,
-    projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
-      requireVocabulary(vocabulary, "categories").map((entry) => ({
-        name: entry.name,
-        owner: "Category",
-        value: entry.id,
-      })), memo),
+    categorySource(runtime, profile, memo),
     refs,
   );
 
@@ -2735,12 +2778,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // The read already names every column, so a bad --fields name is
       // refused while the work package is still untouched.
       selectedFields(options.fields, flattenHalRecord(before));
+      const beforeLinks = (before as { _links?: Record<string, LinkValue> })._links;
       const { payload, refs } = await resolveNamedValues(
         runtime,
         profile,
         options,
         undefined,
-        typeIdOf((before as { _links?: Record<string, LinkValue> })._links?.type),
+        {
+          typeId: typeIdOf(beforeLinks?.type),
+          projectId: typeIdOf(beforeLinks?.project),
+        },
       );
       if (options.subject !== undefined) {
         payload.subject = options.subject;
