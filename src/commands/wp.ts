@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 
 import { OpCliError, writeRefusal } from "../core/errors.js";
+import { applyScalars, SCALAR_OPTIONS, scalarFlag } from "../core/scalars.js";
 import {
   buildWpFilters,
   filtersQuery,
@@ -17,6 +18,7 @@ import { flattenHalRecord, isFlatLink, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
   apiGet,
+  apiPatch,
   apiPost,
   apiPatchRaw,
   apiPostRaw,
@@ -82,6 +84,10 @@ const PREFERRED_FIELDS = [
   "category",
   "startDate",
   "dueDate",
+  "estimatedTime",
+  "remainingTime",
+  "percentageDone",
+  "storyPoints",
   "createdAt",
   "updatedAt",
   "lockVersion",
@@ -211,6 +217,9 @@ interface FilterFlagOptions {
   readonly parent?: Array<string>;
   readonly updatedAfter?: string;
   readonly createdAfter?: string;
+  readonly dueBefore?: string;
+  readonly dueAfter?: string;
+  readonly overdue?: boolean;
   readonly search?: string;
   readonly open?: boolean;
   readonly closed?: boolean;
@@ -246,6 +255,9 @@ function addFilterFlags(command: Command): Command {
       "--created-after <value>",
       "only work packages created since; same date forms as --updated-after",
     )
+    .option("--due-before <date>", "due on or before this date; same date forms as --updated-after, future dates allowed")
+    .option("--due-after <date>", "due on or after this date; same date forms as --due-before")
+    .option("--overdue", "open work packages whose due date is before today")
     .option("--search <text>", "substring matched against work package subjects")
     .option("--open", "shorthand for every open status")
     .option("--closed", "shorthand for every closed status")
@@ -266,6 +278,9 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     parents: options.parent,
     updatedAfter: options.updatedAfter,
     createdAfter: options.createdAfter,
+    dueBefore: options.dueBefore,
+    dueAfter: options.dueAfter,
+    overdue: options.overdue,
     search: options.search,
     open: options.open,
     closed: options.closed,
@@ -405,6 +420,12 @@ interface CreateValueFlags {
   readonly category?: string;
   readonly parent?: string;
   readonly description?: string;
+  readonly start?: string;
+  readonly due?: string;
+  readonly estimate?: string;
+  readonly remaining?: string;
+  readonly done?: string;
+  readonly storyPoints?: string;
   readonly field?: Array<string>;
 }
 
@@ -544,6 +565,13 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "category",
   "parent",
   "description",
+  "start",
+  "due",
+  "estimate",
+  "remaining",
+  "done",
+  "storyPoints",
+  "story-points",
   "field",
 ];
 
@@ -562,6 +590,14 @@ function parseBulkItem(
     throw usage('every input must be an object with a non-empty "subject".');
   }
   const record = raw as Record<string, unknown>;
+  // The kebab spelling mirrors the flag; both name the same attribute.
+  if (record["story-points"] !== undefined) {
+    if (record.storyPoints !== undefined) {
+      throw usage('"story-points" and "storyPoints" are the same key; give one.');
+    }
+    record.storyPoints = record["story-points"];
+    delete record["story-points"];
+  }
   const unknownKeys = Object.keys(record)
     .filter((key) => !BULK_ITEM_KEYS.includes(key));
   if (unknownKeys.length > 0) {
@@ -584,6 +620,12 @@ function parseBulkItem(
     category?: string;
     parent?: string;
     description?: string;
+    start?: string;
+    due?: string;
+    estimate?: string;
+    remaining?: string;
+    done?: string;
+    storyPoints?: string;
     field?: Array<string>;
   } = {};
   const scalarKeys: ReadonlyArray<Exclude<keyof CreateValueFlags, "field">> = [
@@ -606,6 +648,29 @@ function parseBulkItem(
       throw usage(`"${key}" must be a non-empty name-or-id string.`);
     }
     values[key] = rawValue;
+  }
+  for (const key of SCALAR_OPTIONS) {
+    const rawValue = record[key];
+    if (rawValue === undefined) {
+      continue;
+    }
+    // Numbers are natural in JSON for done and story points, and hours
+    // for the durations; they travel as the text a flag would carry.
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      values[key] = String(rawValue);
+    } else if (typeof rawValue === "string" && rawValue !== "") {
+      values[key] = rawValue;
+    } else {
+      throw usage(`"${key}" must be a non-empty string or number.`);
+    }
+  }
+  try {
+    applyScalars({}, values);
+  } catch (error) {
+    if (error instanceof OpCliError) {
+      throw usage(error.message, error.hint);
+    }
+    throw error;
   }
   const field = record.field;
   if (field !== undefined) {
@@ -780,6 +845,12 @@ interface UpdateOptions {
   readonly category?: string;
   readonly parent?: string;
   readonly description?: string;
+  readonly start?: string;
+  readonly due?: string;
+  readonly estimate?: string;
+  readonly remaining?: string;
+  readonly done?: string;
+  readonly storyPoints?: string;
   readonly field?: Array<string>;
   readonly json?: boolean;
   readonly fields?: string;
@@ -957,7 +1028,17 @@ function refuseEmptyValues(
       );
     }
   }
+  applyScalars({}, options);
   if (mode === "create") {
+    for (const option of SCALAR_OPTIONS) {
+      if (options[option] === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `${scalarFlag(option)} cannot be empty on create.`,
+          "there is nothing to clear on a new work package; leave the flag out.",
+        );
+      }
+    }
     for (const flag of CLEARABLE_LINK_FLAGS) {
       if (options[flag] === "") {
         throw new OpCliError(
@@ -1486,6 +1567,8 @@ async function resolveListFlags(
     parents?: Array<string>;
     updatedAfter?: string;
     createdAfter?: string;
+    dueBefore?: string;
+    dueAfter?: string;
     search?: string;
   } = {};
   // The project in context scopes the listing itself, not just the
@@ -1581,10 +1664,21 @@ async function resolveListFlags(
   if (options.createdAfter !== undefined && options.createdAfter !== "") {
     flags.createdAfter = options.createdAfter;
   }
+  if (options.dueBefore !== undefined && options.dueBefore !== "") {
+    flags.dueBefore = options.dueBefore;
+  }
+  if (options.dueAfter !== undefined && options.dueAfter !== "") {
+    flags.dueAfter = options.dueAfter;
+  }
   if (options.search !== undefined && options.search !== "") {
     flags.search = options.search;
   }
-  return { ...flags, open: options.open, closed: options.closed };
+  return {
+    ...flags,
+    open: options.open,
+    closed: options.closed,
+    overdue: options.overdue,
+  };
 }
 
 function workPackagesPath(filters: ReadonlyArray<WpFilter>): string {
@@ -1726,6 +1820,7 @@ async function resolveNamedValues(
   if (options.description !== undefined) {
     payload.description = { raw: options.description };
   }
+  applyScalars(payload, options);
   const groups = new Map<string, {
     field: StoredCustomField;
     pairs: Array<FieldPair>;
@@ -2217,6 +2312,12 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--category <name-or-id>", "category of the project, by name or id")
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
     .option("--description <text>", "markdown description of the work package")
+    .option("--start <date>", "start date, YYYY-MM-DD")
+    .option("--due <date>", "due date, YYYY-MM-DD")
+    .option("--estimate <duration>", "estimated time such as 4h, 1h30m, or PT4H")
+    .option("--remaining <duration>", "remaining work such as 2h, 1h30m, or PT2H")
+    .option("--done <percent>", "percent complete, 0-100")
+    .option("--story-points <n>", "story points, a whole number")
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -2295,6 +2396,12 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
     .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
     .option("--description <text>", "new markdown description of the work package")
+    .option("--start <date>", 'start date, YYYY-MM-DD; "" clears')
+    .option("--due <date>", 'due date, YYYY-MM-DD; "" clears')
+    .option("--estimate <duration>", 'estimated time such as 4h, 1h30m, or PT4H; "" clears')
+    .option("--remaining <duration>", 'remaining work such as 2h, 1h30m, or PT2H; "" clears')
+    .option("--done <percent>", 'percent complete, 0-100; "" clears')
+    .option("--story-points <n>", 'story points, a whole number; "" clears')
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -2319,12 +2426,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.version !== undefined
         || options.category !== undefined
         || options.description !== undefined
+        || SCALAR_OPTIONS.some((option) => options[option] !== undefined)
         || (options.field?.length ?? 0) > 0;
       if (!touchesSomething) {
         throw new OpCliError(
           "USAGE_ERROR",
           "wp update needs at least one value to change.",
-          "pass --subject, an attribute flag like --status, or --field Name=Value.",
+          "pass --subject, an attribute flag like --status or --due, or --field Name=Value.",
         );
       }
       refuseEmptyValues(options, "update");
@@ -2622,6 +2730,76 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
       )(created);
+      renderRecord(runtime, options, named);
+    });
+
+  // A separate command rather than `wp comment --edit`: the target is an
+  // activity id, not a work package id, so the `<id>` of `wp comment`
+  // would mean two different things. The API has no activity delete, so
+  // there is deliberately no `comment-delete`.
+  wp.command("comment-edit")
+    .description("Edit an existing comment by activity id (see `wp comments`)")
+    .argument("<activity-id>", "id of the comment, as listed by `wp comments`")
+    .argument("<text>", "new markdown body of the comment")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project")
+    .action(async (activityId: string, text: string, options: {
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      if (!isIdForm(activityId)) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `activity "${activityId}" is not an id.`,
+          "comments are addressed by the numeric id `wp comments` lists.",
+        );
+      }
+      if (text.trim() === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "the new comment text is empty.",
+          "an edit cannot blank a comment; the API has no comment delete either.",
+        );
+      }
+      // Writing: --fields misuse is refused before the comment changes.
+      selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
+      const profile = await openProfile(runtime, options);
+      const path = `/api/v3/activities/${activityId}`;
+      const current = activityRow(
+        await apiGet(profile.instanceUrl, profile.apiKey, path),
+      );
+      if (current.kind !== "Comment" || current.comment === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `activity ${activityId} is a change journal, not a comment.`,
+          "only entries listed by `wp comments` can be edited.",
+        );
+      }
+      let updated: Record<string, unknown>;
+      try {
+        updated = activityRow(await apiPatch(
+          profile.instanceUrl,
+          profile.apiKey,
+          path,
+          { comment: { raw: text } },
+        ));
+      } catch (error) {
+        if (error instanceof OpCliError && error.code === "AUTH_FAILED") {
+          throw new OpCliError(
+            "AUTH_FAILED",
+            `this key may not edit comment ${activityId}.`,
+            "only your own comments, or any comment with the \"Edit notes\" permission, can be edited.",
+          );
+        }
+        throw error;
+      }
+      const named = await authorResolver(
+        (lookup) => apiGet(profile.instanceUrl, profile.apiKey, lookup),
+      )(updated);
       renderRecord(runtime, options, named);
     });
 

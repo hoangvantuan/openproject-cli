@@ -125,15 +125,24 @@ export interface ParsedDuration {
   readonly iso: string;
 }
 
+/** Who is asking: the flag named in errors, and whether zero is a legal amount. */
+export interface DurationOptions {
+  readonly flag?: string;
+  readonly allowZero?: boolean;
+}
+
 /**
  * Read one raw `--hours` value: a decimal number of hours ("1.5"), a
  * compound form ("1h30m"), or an ISO 8601 duration ("PT1H30M"). Every
  * accepted spelling of the same amount produces the identical result.
  */
-export function parseDuration(raw: string): ParsedDuration {
+export function parseDuration(
+  raw: string,
+  options: DurationOptions = {},
+): ParsedDuration {
   const token = raw.trim();
   if (/^\d+(?:\.\d+)?$/.test(token)) {
-    return parsedFromHours(Number(token), raw);
+    return parsedFromHours(Number(token), raw, options);
   }
 
   const compound = token.toLowerCase().replace(/\s+/g, "");
@@ -162,27 +171,31 @@ export function parseDuration(raw: string): ParsedDuration {
     rest = rest.slice(match[0].length);
   }
   if (!Number.isNaN(ms)) {
-    return parsedFromHours(ms / 3_600_000, raw);
+    return parsedFromHours(ms / 3_600_000, raw, options);
   }
 
   const direct = isoTimeToMs(token);
   if (direct !== undefined) {
-    return parsedFromHours(direct / 3_600_000, raw);
+    return parsedFromHours(direct / 3_600_000, raw, options);
   }
   throw new OpCliError(
     "USAGE_ERROR",
     `cannot read "${raw}" as a duration.`,
-    `--hours accepts ${ACCEPTED_FORMS}.`,
+    `${options.flag ?? "--hours"} accepts ${ACCEPTED_FORMS}.`,
   );
 }
 
 /** Shared tail of parseDuration: positive amounts only. */
-function parsedFromHours(hours: number, raw: string): ParsedDuration {
-  if (!(hours > 0)) {
+function parsedFromHours(
+  hours: number,
+  raw: string,
+  options: DurationOptions,
+): ParsedDuration {
+  if (options.allowZero === true ? !(hours >= 0) : !(hours > 0)) {
     throw new OpCliError(
       "USAGE_ERROR",
       `"${raw}" does not name a positive amount of time.`,
-      `--hours accepts ${ACCEPTED_FORMS}, and logging needs more than zero.`,
+      `${options.flag ?? "--hours"} accepts ${ACCEPTED_FORMS}, and logging needs more than zero.`,
     );
   }
   return { hours, iso: hoursToIso(hours) };

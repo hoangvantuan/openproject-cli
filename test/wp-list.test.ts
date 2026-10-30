@@ -433,6 +433,49 @@ describe("wp list filters", () => {
     expect(result.stderr).toBe("");
   });
 
+  test("--due-before and --due-after pin one dueDate window", async () => {
+    const root = await makeTempRoom("wp-list-due-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [scopedPath([
+          { dueDate: { operator: "<>d", values: ["2026-09-01", "2026-09-30"] } },
+        ], 100)]: halCollection(1, [wpElement(41, "Due in September")]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "list", "--due-after", "2026-09-01", "--due-before", "2026-09-30",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Due in September");
+  });
+
+  test("--overdue lists open work due up to yesterday", async () => {
+    const root = await makeTempRoom("wp-list-overdue-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    const now = new Date();
+    const yesterday = localIsoDate(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1),
+    );
+    installMockApi({
+      packages: {
+        [scopedPath([
+          { status: { operator: "o", values: [] } },
+          { dueDate: { operator: "<>d", values: ["", yesterday] } },
+        ], 100)]: halCollection(0, []),
+        [scopedPath([
+          { status: { operator: "o", values: [] } },
+          { dueDate: { operator: "<>d", values: ["", yesterday] } },
+        ], 1)]: halCollection(3, []),
+      },
+    });
+    const list = await runWp(configDir, cacheDir, ["list", "--overdue"]);
+    expect(list.exitCode).toBe(0);
+    const count = await runWp(configDir, cacheDir, ["count", "--overdue"]);
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout).toBe("3\n");
+  });
+
   test("--search sends the substring to the API's contains operator", async () => {
     const root = await makeTempRoom("wp-list-search-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
