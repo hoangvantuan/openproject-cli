@@ -207,8 +207,35 @@ describe("wp --version writes through the schema (#47)", () => {
     expect(result.stderr).toBe("");
   });
 
-  test("targetVersions writes never warn (#56)", async () => {
+  test("writing a version attribute other than the deprecated one stays silent (#56)", async () => {
     const r = await room({ ...MULTI, deprecated: ["version"] });
+    install();
+    const result = await wp(r, ["update", "675", "--version", "1.0.0"]);
+    expect(result.stderr).toBe("");
+  });
+
+  // The warning follows the schema's mark, not the name `version`
+  // (roundup review S8).
+  test("any written attribute the schema marks deprecated warns, in one line", async () => {
+    const r = await room({ ...MULTI, deprecated: ["targetVersions", "observedInVersions"] });
+    const api = install();
+    const result = await wp(r, [
+      "update", "675", "--version", "1.0.0", "--observed-in", "0.9.0", "--json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const lines = result.stderr.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("targetVersions");
+    expect(lines[0]).toContain("observedInVersions");
+    expect(lines[0]).toContain("deprecated");
+    expect(() => JSON.parse(result.stdout)).not.toThrow();
+    expect(api.bodies[0]?.body._links).toMatchObject({
+      targetVersions: [{ href: "/api/v3/versions/32" }],
+    });
+  });
+
+  test("a deprecated attribute the write does not touch stays silent", async () => {
+    const r = await room({ ...MULTI, deprecated: ["observedInVersions"] });
     install();
     const result = await wp(r, ["update", "675", "--version", "1.0.0"]);
     expect(result.stderr).toBe("");

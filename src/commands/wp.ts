@@ -2141,6 +2141,9 @@ async function resolveVersionLinks(
     ...(options.version === undefined ? [] : ["targetVersions" as const]),
     ...(options.observedIn === undefined ? [] : ["observedInVersions" as const]),
   ]);
+  // The attributes this write actually sets, judged against the schema's
+  // own `deprecated` marks once the values resolved.
+  const written: Array<string> = [];
   if (options.version !== undefined) {
     const target = fields.targetVersions;
     if (target === undefined) {
@@ -2151,11 +2154,7 @@ async function resolveVersionLinks(
           "its schema has no targetVersions, only the single version field.",
         );
       }
-      if (fields.deprecated?.includes("version") === true) {
-        runtime.writeErr(
-          "warning: the version attribute is deprecated in this instance's schema; the write still goes through.\n",
-        );
-      }
+      written.push("version");
       await resolveLinkOption(
         links,
         "version",
@@ -2166,6 +2165,7 @@ async function resolveVersionLinks(
         refs,
       );
     } else {
+      written.push("targetVersions");
       if (!target.multiple && options.version.length > 1) {
         throw new OpCliError(
           "USAGE_ERROR",
@@ -2201,6 +2201,7 @@ async function resolveVersionLinks(
         "the schema's observedInVersions takes a single version; pass --observed-in once.",
       );
     }
+    written.push("observedInVersions");
     await resolveVersionList(
       runtime,
       profile,
@@ -2210,6 +2211,14 @@ async function resolveVersionLinks(
       options.observedIn,
       refs,
       memo,
+    );
+  }
+  const deprecated = written.filter((name) => fields.deprecated?.includes(name) === true);
+  if (deprecated.length > 0) {
+    runtime.writeErr(
+      deprecated.length === 1
+        ? `warning: the ${deprecated[0] ?? ""} attribute is deprecated in this instance's schema; the write still goes through.\n`
+        : `warning: the ${deprecated.join(", ")} attributes are deprecated in this instance's schema; the write still goes through.\n`,
     );
   }
 }
