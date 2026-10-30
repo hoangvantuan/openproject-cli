@@ -85,6 +85,20 @@ function readPoints(raw: string, flag: string): number {
 }
 
 /**
+ * Refuse any given scalar that is not well formed, without building a
+ * payload. An empty value is a clear request, valid here; whether it is
+ * allowed is decided earlier (refuseEmptyValues).
+ */
+export function validateScalars(flags: ScalarFlags): void {
+  for (const scalar of SCALARS) {
+    const raw = flags[scalar.option];
+    if (raw !== undefined && raw !== "") {
+      scalar.read(raw, scalar.flag);
+    }
+  }
+}
+
+/**
  * Validate every given scalar and write it into the payload's top-level
  * attributes: dates as YYYY-MM-DD, durations as ISO 8601, integers as
  * numbers. An empty value writes null, which is how the API clears a

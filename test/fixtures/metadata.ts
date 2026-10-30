@@ -148,7 +148,9 @@ export type CustomFieldsByType = Readonly<
  */
 export function projectVocabulary(
   customFields: CustomFieldsByType,
-  versionFields: Readonly<Record<string, unknown>> = {},
+  // Every type of the instance has a (possibly empty) entry, as a real
+  // cache does; a type without one reads as a stale shape and is refreshed.
+  versionFields: Readonly<Record<string, unknown>> = { "2": {}, "6": {} },
 ): Record<string, unknown> {
   return {
     project_id: 13,

@@ -185,17 +185,25 @@ export function parseDuration(
   );
 }
 
-/** Shared tail of parseDuration: positive amounts only. */
+/**
+ * Shared tail of parseDuration: positive amounts, or non-negative ones when
+ * the caller (an estimate, remaining work) may legitimately name zero.
+ */
 function parsedFromHours(
   hours: number,
   raw: string,
   options: DurationOptions,
 ): ParsedDuration {
+  const flag = options.flag ?? "--hours";
   if (options.allowZero === true ? !(hours >= 0) : !(hours > 0)) {
     throw new OpCliError(
       "USAGE_ERROR",
-      `"${raw}" does not name a positive amount of time.`,
-      `${options.flag ?? "--hours"} accepts ${ACCEPTED_FORMS}, and logging needs more than zero.`,
+      options.allowZero === true
+        ? `"${raw}" does not name an amount of time of zero or more.`
+        : `"${raw}" does not name a positive amount of time.`,
+      options.allowZero === true
+        ? `${flag} accepts ${ACCEPTED_FORMS}.`
+        : `${flag} accepts ${ACCEPTED_FORMS}, and logging needs more than zero.`,
     );
   }
   return { hours, iso: hoursToIso(hours) };

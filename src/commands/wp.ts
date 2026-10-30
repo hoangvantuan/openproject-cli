@@ -1,7 +1,13 @@
 import type { Command } from "commander";
 
 import { OpCliError, writeRefusal } from "../core/errors.js";
-import { applyScalars, SCALAR_OPTIONS, scalarFlag } from "../core/scalars.js";
+import {
+  applyScalars,
+  SCALAR_OPTIONS,
+  scalarFlag,
+  validateScalars,
+  type ScalarFlags,
+} from "../core/scalars.js";
 import {
   buildWpFilters,
   filtersQuery,
@@ -428,8 +434,12 @@ function membersSource(
 // wp create
 
 
-/** The value flags shared verbatim by one create and every stdin item. */
-interface CreateValueFlags {
+/**
+ * The value flags shared verbatim by one create and every stdin item. The
+ * scalar attributes come from ScalarFlags, the one list the payload writer
+ * also reads.
+ */
+interface CreateValueFlags extends ScalarFlags {
   readonly type?: string;
   readonly status?: string;
   readonly priority?: string;
@@ -441,14 +451,34 @@ interface CreateValueFlags {
   readonly category?: string;
   readonly parent?: string;
   readonly description?: string;
-  readonly start?: string;
-  readonly due?: string;
-  readonly estimate?: string;
-  readonly remaining?: string;
-  readonly done?: string;
-  readonly storyPoints?: string;
   readonly field?: Array<string>;
 }
+
+/**
+ * Every value flag, once. A key added to CreateValueFlags fails to compile
+ * until it is listed here, and this list feeds the stdin key check and the
+ * update "touches something" guard, so a new flag cannot be forgotten in
+ * either.
+ */
+const VALUE_OPTIONS: Readonly<Record<keyof CreateValueFlags, true>> = {
+  type: true,
+  status: true,
+  priority: true,
+  assignee: true,
+  accountable: true,
+  version: true,
+  observedIn: true,
+  category: true,
+  parent: true,
+  description: true,
+  field: true,
+  start: true,
+  due: true,
+  estimate: true,
+  remaining: true,
+  done: true,
+  storyPoints: true,
+};
 
 interface CreateOptions extends CreateValueFlags {
   readonly stdin?: boolean;
@@ -574,27 +604,20 @@ async function submitCreate(
   return response.body;
 }
 
+/**
+ * Kebab spellings a stdin item may use for a camelCase key, mirroring the
+ * flag. Both spell the same attribute; giving both is refused.
+ */
+const BULK_KEY_ALIASES: Readonly<Record<string, keyof CreateValueFlags>> = {
+  "story-points": "storyPoints",
+  "observed-in": "observedIn",
+};
+
 /** Keys one stdin item may carry; everything else is a loud usage error. */
 const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "subject",
-  "type",
-  "status",
-  "priority",
-  "assignee",
-  "accountable",
-  "version",
-  "observedIn",
-  "category",
-  "parent",
-  "description",
-  "start",
-  "due",
-  "estimate",
-  "remaining",
-  "done",
-  "storyPoints",
-  "story-points",
-  "field",
+  ...Object.keys(VALUE_OPTIONS),
+  ...Object.keys(BULK_KEY_ALIASES),
 ];
 
 /**
@@ -611,14 +634,17 @@ function parseBulkItem(
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw usage('every input must be an object with a non-empty "subject".');
   }
-  const record = raw as Record<string, unknown>;
-  // The kebab spelling mirrors the flag; both name the same attribute.
-  if (record["story-points"] !== undefined) {
-    if (record.storyPoints !== undefined) {
-      throw usage('"story-points" and "storyPoints" are the same key; give one.');
+  // Normalise into a copy: the caller's parsed object stays as it came in.
+  const record: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  for (const [alias, key] of Object.entries(BULK_KEY_ALIASES)) {
+    if (record[alias] === undefined) {
+      continue;
     }
-    record.storyPoints = record["story-points"];
-    delete record["story-points"];
+    if (record[key] !== undefined) {
+      throw usage(`"${alias}" and "${key}" are the same key; give one.`);
+    }
+    record[key] = record[alias];
+    delete record[alias];
   }
   const unknownKeys = Object.keys(record)
     .filter((key) => !BULK_ITEM_KEYS.includes(key));
@@ -632,25 +658,7 @@ function parseBulkItem(
   if (typeof subject !== "string" || subject.trim() === "") {
     throw usage('every input needs a non-empty "subject" string.');
   }
-  const values: {
-    type?: string;
-    status?: string;
-    priority?: string;
-    assignee?: string;
-    accountable?: string;
-    version?: Array<string>;
-    observedIn?: Array<string>;
-    category?: string;
-    parent?: string;
-    description?: string;
-    start?: string;
-    due?: string;
-    estimate?: string;
-    remaining?: string;
-    done?: string;
-    storyPoints?: string;
-    field?: Array<string>;
-  } = {};
+  const values: { -readonly [K in keyof CreateValueFlags]?: CreateValueFlags[K] } = {};
   const scalarKeys: ReadonlyArray<
     Exclude<keyof CreateValueFlags, "field" | "version" | "observedIn">
   > = [
@@ -706,9 +714,10 @@ function parseBulkItem(
     }
   }
   try {
-    applyScalars({}, values);
+    validateScalars(values);
   } catch (error) {
-    if (error instanceof OpCliError) {
+    // Re-raised with the item index; only a usage error is ours to relabel.
+    if (error instanceof OpCliError && error.code === "USAGE_ERROR") {
       throw usage(error.message, error.hint);
     }
     throw error;
@@ -875,25 +884,8 @@ async function runBulkCreate(
 // ---------------------------------------------------------------------------
 // wp update
 
-interface UpdateOptions {
+interface UpdateOptions extends CreateValueFlags {
   readonly subject?: string;
-  readonly type?: string;
-  readonly status?: string;
-  readonly priority?: string;
-  readonly assignee?: string;
-  readonly accountable?: string;
-  readonly version?: ReadonlyArray<string>;
-  readonly observedIn?: ReadonlyArray<string>;
-  readonly category?: string;
-  readonly parent?: string;
-  readonly description?: string;
-  readonly start?: string;
-  readonly due?: string;
-  readonly estimate?: string;
-  readonly remaining?: string;
-  readonly done?: string;
-  readonly storyPoints?: string;
-  readonly field?: Array<string>;
   readonly json?: boolean;
   readonly fields?: string;
   readonly profile?: string;
@@ -1095,7 +1087,7 @@ function refuseEmptyValues(
       );
     }
   }
-  applyScalars({}, options);
+  validateScalars(options);
   if (mode === "create") {
     for (const option of SCALAR_OPTIONS) {
       if (options[option] === "") {
@@ -1140,14 +1132,29 @@ async function resolveLinkOption(
     clearLink(links, attribute);
     return;
   }
-  let id: number;
-  if (isIdForm(raw)) {
-    id = Number(raw);
-  } else {
-    id = Number(await resolveName(raw, source));
-    refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
-  }
+  const id = await resolveOneLinkId(raw, attribute, hrefBase, source, refs);
   links[attribute] = { href: `${hrefBase}${String(id)}` };
+}
+
+/**
+ * One link value to its id: an id-form value is the caller's own and goes
+ * straight through; a name is resolved and remembered in `refs`, so a
+ * rejection that blames this attribute can be retried with a fresh id
+ * (ADR-0002). Every link-valued flag records its refs here and only here.
+ */
+async function resolveOneLinkId(
+  raw: string,
+  attribute: string,
+  hrefBase: string,
+  source: LookupSource<number>,
+  refs: Array<ResolvedAttribute>,
+): Promise<number> {
+  if (isIdForm(raw)) {
+    return Number(raw);
+  }
+  const id = Number(await resolveName(raw, source));
+  refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
+  return id;
 }
 
 /** Same contract as resolveLinkOption for members: names, ids, and me. */
@@ -1174,12 +1181,14 @@ async function resolveUserOption(
     id = memo === undefined
       ? (await authenticate(profile.instanceUrl, profile.apiKey)).id
       : await memo.me();
-  } else if (isIdForm(raw)) {
-    id = Number(raw);
   } else {
-    const source = membersSource(runtime, profile, flag, memo);
-    id = Number(await resolveName(raw, source));
-    refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
+    id = await resolveOneLinkId(
+      raw,
+      attribute,
+      hrefBase,
+      membersSource(runtime, profile, flag, memo),
+      refs,
+    );
   }
   links[attribute] = { href: `${hrefBase}${String(id)}` };
 }
@@ -1900,17 +1909,7 @@ async function resolveVersionList(
   const source = versionSource(runtime, profile, flag.replace(/^--/, ""), memo);
   const hrefs: Array<{ href: string }> = [];
   for (const value of values) {
-    const id = isIdForm(value) ? Number(value) : Number(await resolveName(value, source));
-    if (!isIdForm(value)) {
-      refs.push({
-        attribute,
-        raw: value,
-        idBefore: id,
-        hrefBase: "/api/v3/versions/",
-        source,
-        link: true,
-      });
-    }
+    const id = await resolveOneLinkId(value, attribute, "/api/v3/versions/", source, refs);
     const href = `/api/v3/versions/${String(id)}`;
     if (!hrefs.some((entry) => entry.href === href)) {
       hrefs.push({ href });
@@ -2746,19 +2745,12 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .action(async (reference: string, options: UpdateOptions) => {
       runtime.setJsonMode(options.json === true);
       requireWpId(reference);
+      // A flag counts when it carries a value; --field defaults to [].
       const touchesSomething = options.subject !== undefined
-        || options.type !== undefined
-        || options.status !== undefined
-        || options.priority !== undefined
-        || options.parent !== undefined
-        || options.assignee !== undefined
-        || options.accountable !== undefined
-        || options.version !== undefined
-        || options.observedIn !== undefined
-        || options.category !== undefined
-        || options.description !== undefined
-        || SCALAR_OPTIONS.some((option) => options[option] !== undefined)
-        || (options.field?.length ?? 0) > 0;
+        || (Object.keys(VALUE_OPTIONS) as Array<keyof CreateValueFlags>).some((option) =>
+          option === "field"
+            ? (options.field?.length ?? 0) > 0
+            : options[option] !== undefined);
       if (!touchesSomething) {
         throw new OpCliError(
           "USAGE_ERROR",

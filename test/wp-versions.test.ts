@@ -419,6 +419,31 @@ describe("wp create --stdin versions (#47)", () => {
     expect(links[1]?.observedInVersions).toEqual([{ href: "/api/v3/versions/32" }]);
   });
 
+  test("multi-word keys take a camel or a kebab spelling alike (review N1)", async () => {
+    const r = await room(MULTI);
+    const api = install();
+    const result = await wp(r, ["create", "--stdin"], JSON.stringify([
+      { subject: "One", "observed-in": "1.0.0", "story-points": 3 },
+      { subject: "Two", observedIn: "0.9.0", storyPoints: 5 },
+    ]));
+    expect(result.exitCode, result.stderr).toBe(0);
+    const links = api.bodies.map((entry) => entry.body._links as Record<string, unknown>);
+    expect(links[0]?.observedInVersions).toEqual([{ href: "/api/v3/versions/32" }]);
+    expect(links[1]?.observedInVersions).toEqual([{ href: "/api/v3/versions/31" }]);
+    expect(api.bodies.map((entry) => entry.body.storyPoints)).toEqual([3, 5]);
+  });
+
+  test("giving both spellings of one key is refused for that item (review N1)", async () => {
+    const r = await room(MULTI);
+    const api = install();
+    const result = await wp(r, ["create", "--stdin"], JSON.stringify([
+      { subject: "One", "observed-in": "1.0.0", observedIn: "0.9.0" },
+    ]));
+    expect(result.exitCode).toBe(1);
+    expect(api.bodies).toEqual([]);
+    expect(result.stdout).toContain("input 0");
+  });
+
   test("an empty or non-string entry is refused for that item", async () => {
     const r = await room(MULTI);
     const api = install();
