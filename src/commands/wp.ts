@@ -1963,6 +1963,9 @@ async function versionFieldsFor(
     return own;
   }
   const fields = Object.values(byType);
+  // Only what every type marks deprecated is safe to warn about untyped.
+  const deprecated = (fields[0]?.deprecated ?? []).filter((name) =>
+    fields.every((entry) => entry.deprecated?.includes(name) === true));
   const agreed = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
     const found = fields.map((entry) => entry[name]);
     const present = found.filter((entry): entry is StoredVersionField => entry !== undefined);
@@ -1982,7 +1985,10 @@ async function versionFieldsFor(
     }
     return { [name]: { multiple: present[0]?.multiple === true } };
   };
-  return Object.assign({}, ...needs.map(agreed)) as StoredVersionFields;
+  return {
+    ...(Object.assign({}, ...needs.map(agreed)) as StoredVersionFields),
+    ...(deprecated.length === 0 ? {} : { deprecated }),
+  };
 }
 
 function categorySource(
@@ -2073,6 +2079,11 @@ async function resolveVersionLinks(
           "USAGE_ERROR",
           "--version holds one value on this work package.",
           "its schema has no targetVersions, only the single version field.",
+        );
+      }
+      if (fields.deprecated?.includes("version") === true) {
+        runtime.writeErr(
+          "warning: the version attribute is deprecated in this instance's schema; the write still goes through.\n",
         );
       }
       await resolveLinkOption(
