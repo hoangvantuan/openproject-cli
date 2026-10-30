@@ -782,7 +782,11 @@ export async function refreshStoredMetadata(
   const dropped: Array<MetadataChange> = [];
   for (const projectId of Object.keys(previousScoped)) {
     try {
-      projectScoped[projectId] = await fetchProjectVocabulary(profile, Number(projectId));
+      projectScoped[projectId] = await fetchProjectVocabulary(
+        profile,
+        Number(projectId),
+        next.project?.id === Number(projectId) ? next.project.links : undefined,
+      );
     } catch (error) {
       // A project deleted on the instance must not wedge the refresh for
       // good: drop its stored vocabulary, report it, and keep refreshing
@@ -863,12 +867,18 @@ async function fetchProjectLinks(
   }
 }
 
+/**
+ * `knownLinks` are links the caller read from this very project resource a
+ * moment ago (a refresh has just fetched the default project), which spares
+ * a second GET of it.
+ */
 export async function fetchProjectVocabulary(
   profile: ActiveProfile,
   projectId: number,
+  knownLinks?: ProjectLinks,
 ): Promise<ProjectVocabulary> {
   const unavailable: Partial<Record<OptionalVocabularySource, UnavailableSource>> = {};
-  const links = await fetchProjectLinks(profile, projectId);
+  const links = knownLinks ?? await fetchProjectLinks(profile, projectId);
   // Members come first and stay required: a deleted project answers 404
   // there, which the refresh reads as "drop this project".
   const members = await fetchMembers(profile, projectId, links);

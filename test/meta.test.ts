@@ -1599,6 +1599,34 @@ describe("meta project vocabulary", () => {
     expect(JSON.parse(refreshed.stdout)).toHaveLength(2);
   });
 
+  test("meta refresh reads the default project resource once (#57 review 7)", async () => {
+    const root = await makeTempRoom("op-cli-meta-refresh-once-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
+    const install = (): MockAgent => installMockApi({
+      ...baseInstall("https://op.example"),
+      project: {
+        ...projectRef(),
+        _links: { versions: { href: "/api/v3/projects/13/versions" } },
+      },
+      members: { 13: [membership(1, ada, [{ id: 4, title: "Manager" }])] },
+      versions: { 13: [] },
+      categories: { 13: [] },
+      activities: { 13: { allowedValues: [] } },
+      projectTypes: { 13: [] },
+    });
+    const env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir };
+    install();
+    await run(["meta", "members", "--json"], env, {});
+
+    const mockAgent = install();
+    mockAgent.enableCallHistory();
+    const refreshed = await run(["meta", "refresh"], env, {});
+    expect(refreshed.exitCode).toBe(0);
+    expect(
+      mockAgent.getCallHistory()?.filterCalls({ path: "/api/v3/projects/13" }),
+    ).toHaveLength(1);
+  });
+
   test("meta refresh survives a stored project the instance no longer has", async () => {
     const root = await makeTempRoom("op-cli-meta-vocabgone-");
     const { configDir, cacheDir } = await writeSingleProfile(root, "https://op.example", 13);
