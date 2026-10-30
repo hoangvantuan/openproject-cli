@@ -892,7 +892,7 @@ export async function loadProjectVocabulary(
     throw new OpCliError(
       "USAGE_ERROR",
       "the lookup needs a project to read its vocabulary from.",
-      "pass --project <id> or set a default project on the profile.",
+      "pass --project <id> (or --workspace) or set a default project on the profile.",
     );
   }
   const vocabulary = await loadProjectVocabularyById(env, profile, profile.project);

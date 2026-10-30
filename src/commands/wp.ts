@@ -413,7 +413,7 @@ function projectSource<V>(
         throw new OpCliError(
           "USAGE_ERROR",
           `--${flag} needs a project to look names up in.`,
-          "pass --project <name-or-id> or set a default project on the profile.",
+          "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
         );
       }
       return select(await (memo === undefined
@@ -943,7 +943,7 @@ async function runBulkCreate(
     throw new OpCliError(
       "USAGE_ERROR",
       "wp create needs a project to create the work package in.",
-      "pass --project <name-or-id> or set a default project on the profile.",
+      "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
     );
   }
 
@@ -1081,7 +1081,7 @@ async function resolveFieldDefinition(
     throw new OpCliError(
       "USAGE_ERROR",
       "--field needs a project to look field names up in.",
-      "pass --project <name-or-id> or set a default project on the profile.",
+      "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
     );
   }
   const metadata = memo === undefined
@@ -2966,7 +2966,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         throw new OpCliError(
           "USAGE_ERROR",
           "wp create needs a project to create the work package in.",
-          "pass --project <name-or-id> or set a default project on the profile.",
+          "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
         );
       }
       const { payload, refs } = await prepareCreatePayload(

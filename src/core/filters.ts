@@ -210,7 +210,7 @@ export function buildWpFilters(
     throw new OpCliError(
       "USAGE_ERROR",
       "--no-include-subprojects needs a project in context.",
-      "pass --project <name-or-id> or set a default project on the profile.",
+      "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
     );
   }
 
