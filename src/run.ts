@@ -46,6 +46,8 @@ export interface RunIo {
 
 export interface RunResult {
   readonly stdout: string;
+  /** Binary stdout (a downloaded file), written after `stdout`. */
+  readonly stdoutBytes?: Uint8Array;
   readonly stderr: string;
   readonly exitCode: number;
 }
@@ -57,6 +59,7 @@ export async function run(
 ): Promise<RunResult> {
   let stdout = "";
   let stderr = "";
+  const stdoutChunks: Array<Uint8Array> = [];
   // Spec story 51: one environment variable makes JSON the output for
   // the whole session, errors included, instead of a flag per command.
   let jsonOutput = env.OP_CLI_OUTPUT === "json";
@@ -248,6 +251,9 @@ export async function run(
     writeErr: (text) => {
       stderr += text;
     },
+    writeBytes: (bytes) => {
+      stdoutChunks.push(bytes);
+    },
     setJsonMode: (on) => {
       jsonOutput = on;
     },
@@ -385,7 +391,12 @@ export async function run(
     if (noticeLine !== undefined && stderr === "") {
       stderr += noticeLine;
     }
-    return { stdout, stderr, exitCode: forcedExitCode ?? 0 };
+    return {
+      stdout,
+      ...(stdoutChunks.length === 0 ? {} : { stdoutBytes: Buffer.concat(stdoutChunks) }),
+      stderr,
+      exitCode: forcedExitCode ?? 0,
+    };
   } catch (error) {
     if (
       error instanceof CommanderError

@@ -106,6 +106,12 @@ describe("buildWpFilters", () => {
     ]);
   });
 
+  test("watchers map to the watcher filter with = (#52)", () => {
+    expect(buildWpFilters({ watchers: ["9", "5", "9"] }, NOW)).toEqual([
+      { name: "watcher", operator: "=", values: ["9", "5"] },
+    ]);
+  });
+
   test("sprints and buckets map to their link filters with = (#46)", () => {
     expect(buildWpFilters({ sprints: ["58", "57", "58"] }, NOW)).toEqual([
       { name: "sprint", operator: "=", values: ["58", "57"] },

@@ -68,12 +68,15 @@ import {
 } from "../context/metadata.js";
 import type { RunEnvironment } from "../run.js";
 import { formatCell, renderTable } from "../output/table.js";
+import { registerAttachmentCommands } from "./attachments.js";
 
 export interface WpRuntime {
   readonly env: RunEnvironment;
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
   readonly write: (text: string) => void;
   readonly writeErr: (text: string) => void;
+  /** Raw bytes for stdout: a downloaded file is not text. */
+  readonly writeBytes: (bytes: Uint8Array) => void;
   readonly setJsonMode: (on: boolean) => void;
   /** Present only when the host can hand over stdin (bin.ts can). */
   readonly readStdin?: () => Promise<string>;
@@ -228,6 +231,7 @@ interface FilterFlagOptions {
   readonly assignee?: Array<string>;
   readonly accountable?: Array<string>;
   readonly author?: Array<string>;
+  readonly watcher?: Array<string>;
   readonly version?: Array<string>;
   readonly observedIn?: Array<string>;
   readonly category?: Array<string>;
@@ -264,6 +268,12 @@ function addFilterFlags(command: Command): Command {
       [],
     )
     .option("--author <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option(
+      "--watcher <name>",
+      "user name, id, or me, watching the work package; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--version <name>", "version name or id; repeat to OR values", collectValue, [])
     .option(
       "--observed-in <name>",
@@ -309,6 +319,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     assignees: options.assignee,
     accountables: options.accountable,
     authors: options.author,
+    watchers: options.watcher,
     versions: options.version,
     observedIn: options.observedIn,
     categories: options.category,
@@ -1745,6 +1756,7 @@ async function resolveListFlags(
     assignees?: Array<string>;
     accountables?: Array<string>;
     authors?: Array<string>;
+    watchers?: Array<string>;
     versions?: Array<string>;
     observedIn?: Array<string>;
     categories?: Array<string>;
@@ -1801,6 +1813,10 @@ async function resolveListFlags(
   const author = options.author ?? [];
   if (author.length > 0) {
     flags.authors = await resolveUserValues(runtime, profile, "author", author);
+  }
+  const watcher = options.watcher ?? [];
+  if (watcher.length > 0) {
+    flags.watchers = await resolveUserValues(runtime, profile, "watcher", watcher);
   }
   const version = options.version ?? [];
   if (version.length > 0) {
@@ -1960,6 +1976,9 @@ async function versionFieldsFor(
     return own;
   }
   const fields = Object.values(byType);
+  // Only what every type marks deprecated is safe to warn about untyped.
+  const deprecated = (fields[0]?.deprecated ?? []).filter((name) =>
+    fields.every((entry) => entry.deprecated?.includes(name) === true));
   const agreed = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
     const found = fields.map((entry) => entry[name]);
     const present = found.filter((entry): entry is StoredVersionField => entry !== undefined);
@@ -1979,7 +1998,10 @@ async function versionFieldsFor(
     }
     return { [name]: { multiple: present[0]?.multiple === true } };
   };
-  return Object.assign({}, ...needs.map(agreed)) as StoredVersionFields;
+  return {
+    ...(Object.assign({}, ...needs.map(agreed)) as StoredVersionFields),
+    ...(deprecated.length === 0 ? {} : { deprecated }),
+  };
 }
 
 function categorySource(
@@ -2070,6 +2092,11 @@ async function resolveVersionLinks(
           "USAGE_ERROR",
           "--version holds one value on this work package.",
           "its schema has no targetVersions, only the single version field.",
+        );
+      }
+      if (fields.deprecated?.includes("version") === true) {
+        runtime.writeErr(
+          "warning: the version attribute is deprecated in this instance's schema; the write still goes through.\n",
         );
       }
       await resolveLinkOption(
@@ -2379,6 +2406,7 @@ export const COMMENT_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "AUTHOR", field: "user" },
   { title: "COMMENT", field: "comment" },
+  { title: "INTERNAL", field: "internal" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -2398,6 +2426,11 @@ export const RELATION_COLUMNS = [
   { title: "TO", field: "to" },
   { title: "LAG", field: "lag" },
   { title: "DESCRIPTION", field: "description" },
+] as const;
+
+export const WATCHER_COLUMNS = [
+  { title: "ID", field: "id" },
+  { title: "NAME", field: "name" },
 ] as const;
 
 export const SCHEMA_COLUMNS = [
@@ -2458,6 +2491,10 @@ function linkIdOf(link: unknown): number | null {
  * behind a system activity, one instance-spelled sentence per attribute
  * ("Status changed from New to In progress"). A comment activity changed
  * nothing, so its details render empty rather than absent.
+ *
+ * `internal` is the visibility flag of a comment: true when only users with
+ * the internal-comment permission may read it. An activity the instance
+ * does not flag reads as false.
  */
 export function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
@@ -2471,6 +2508,7 @@ export function activityRow(element: unknown): Record<string, unknown> {
     kind,
     user: record.user,
     comment: typeof comment?.raw === "string" ? comment.raw : "",
+    internal: record.internal === true,
     details: activityDetails(record.details),
     createdAt: record.createdAt,
   };
@@ -2567,6 +2605,12 @@ function authorResolver(
 export function commentRow(element: unknown): Record<string, unknown> | undefined {
   const row = activityRow(element);
   return row.kind === "Comment" ? row : undefined;
+}
+
+/** A watcher is a plain user resource: id and name are all there is to show. */
+export function watcherRow(element: unknown): Record<string, unknown> {
+  const record = flattenHalRecord(element);
+  return { id: record.id, name: record.name };
 }
 
 /** Only the typed fields and both ends; the action links carry no data. */
@@ -3174,6 +3218,8 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     collectionRuntime,
   ));
 
+  registerAttachmentCommands(wp, runtime, authorResolver);
+
   wp.addCommand(defineCollectionCommand(
     {
       name: "relations",
@@ -3181,6 +3227,17 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: involvedRelationsPath,
       row: relationRow,
       columns: RELATION_COLUMNS,
+    },
+    collectionRuntime,
+  ));
+
+  wp.addCommand(defineCollectionCommand(
+    {
+      name: "watchers",
+      description: "List the watchers of one work package",
+      path: (id) => `/api/v3/work_packages/${id}/watchers`,
+      row: watcherRow,
+      columns: WATCHER_COLUMNS,
     },
     collectionRuntime,
   ));
@@ -3196,11 +3253,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .description("Add a comment to one work package")
     .argument("<id>")
     .argument("<text>", "markdown body of the comment")
+    .option("--internal", "post an internal comment, visible only to users who may see internal comments")
     .option(recordOptions.json, "emit a flat JSON record")
     .option(recordOptions.fields, "comma-separated columns to show")
     .option(recordOptions.profile, "use this profile for this command only")
     .option(recordOptions.project, "override the profile default project")
     .action(async (reference: string, text: string, options: {
+      internal?: boolean;
       json?: boolean;
       fields?: string;
       profile?: string;
@@ -3211,11 +3270,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // a caller who fixes the flag and retries cannot post it twice.
       selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
       const profile = await openProfile(runtime, options);
+      // The key is sent only with the flag: an instance without the
+      // internal_comments feature then sees exactly the public request.
+      const body = options.internal === true
+        ? { comment: { raw: text }, internal: true }
+        : { comment: { raw: text } };
       const created = activityRow(await apiPost(
         profile.instanceUrl,
         profile.apiKey,
         `/api/v3/work_packages/${reference}/activities`,
-        { comment: { raw: text } },
+        body,
       ));
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
@@ -3299,6 +3363,77 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       )(updated);
       renderRecord(runtime, options, named);
     });
+
+  // Watching is idempotent on this surface: the watcher list is read first,
+  // so "already watching" and "not watching" are reported states (exit 0)
+  // instead of whatever the API answers to a repeated add or remove.
+  for (const watching of [true, false]) {
+    wp.command(watching ? "watch" : "unwatch")
+      .description(
+        watching
+          ? "Add a watcher to one work package (default: me); no-op when already watching"
+          : "Remove a watcher from one work package (default: me); no-op when not watching",
+      )
+      .argument("<id>")
+      .option("--user <name-or-id>", "user name, id, or me", "me")
+      .option(recordOptions.json, "emit a flat JSON record")
+      .option(recordOptions.profile, "use this profile for this command only")
+      .option(recordOptions.project, "override the profile default project")
+      .action(async (reference: string, options: {
+        user?: string;
+        json?: boolean;
+        profile?: string;
+        project?: string;
+      }) => {
+        requireWpId(reference);
+        const profile = await openProfile(runtime, options);
+        const [userId] = await resolveUserValues(
+          runtime,
+          profile,
+          "user",
+          [options.user ?? "me"],
+        );
+        const path = `/api/v3/work_packages/${reference}/watchers`;
+        const getPage = (lookup: string): Promise<unknown> =>
+          apiGet(profile.instanceUrl, profile.apiKey, lookup);
+        let name: string | null = null;
+        let present = false;
+        for await (const element of halElements(getPage, withPageSize(path, DEFAULT_PAGE_SIZE))) {
+          const watcher = watcherRow(element);
+          if (String(watcher.id) === userId) {
+            present = true;
+            name = typeof watcher.name === "string" ? watcher.name : null;
+          }
+        }
+        const changed = present !== watching;
+        if (changed && watching) {
+          const created = watcherRow(await apiPost(
+            profile.instanceUrl,
+            profile.apiKey,
+            path,
+            { user: { href: `/api/v3/users/${userId}` } },
+          ));
+          name = typeof created.name === "string" ? created.name : null;
+        } else if (changed) {
+          await apiDelete(profile.instanceUrl, profile.apiKey, `${path}/${userId}`);
+        }
+        if (options.json === true) {
+          runtime.write(`${JSON.stringify({
+            id: Number(reference),
+            user: Number(userId),
+            name,
+            watching,
+            changed,
+          })}\n`);
+          return;
+        }
+        const who = name === null ? `user ${userId}` : `${name} (${userId})`;
+        const verdict = watching
+          ? (changed ? "now watches" : "is already watching")
+          : (changed ? "no longer watches" : "was not watching");
+        runtime.write(`${who} ${verdict} work package ${reference}.\n`);
+      });
+  }
 
   wp.command("relate")
     .description("Relate one work package to another")

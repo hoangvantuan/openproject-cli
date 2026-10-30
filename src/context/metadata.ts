@@ -166,6 +166,12 @@ export interface StoredVersionField {
 export interface StoredVersionFields {
   readonly targetVersions?: StoredVersionField;
   readonly observedInVersions?: StoredVersionField;
+  /**
+   * Attributes the schema marks `deprecated: true` (today `version`). Absent
+   * in a vocabulary stored before they were captured; writing such an
+   * attribute then goes unwarned until a refresh.
+   */
+  readonly deprecated?: ReadonlyArray<string>;
 }
 
 export interface ProjectVocabulary {
@@ -593,7 +599,18 @@ function versionFieldsOf(schema: HalElement): StoredVersionFields {
       || asString(property.type).startsWith("[]");
     return { [key]: { multiple } };
   };
-  return { ...entry("targetVersions"), ...entry("observedInVersions") };
+  const deprecated = Object.entries(schema)
+    .filter(([key, property]) =>
+      !key.startsWith("_")
+      && typeof property === "object"
+      && property !== null
+      && (property as HalElement).deprecated === true)
+    .map(([key]) => key);
+  return {
+    ...entry("targetVersions"),
+    ...entry("observedInVersions"),
+    ...(deprecated.length === 0 ? {} : { deprecated }),
+  };
 }
 
 async function fetchTypeSchemas(
