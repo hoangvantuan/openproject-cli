@@ -50,6 +50,8 @@ import {
   loadStoredMetadata,
   refreshStoredMetadata,
   type ProjectVocabulary,
+  type StoredVersionField,
+  type StoredVersionFields,
   type StoredCustomField,
   type StoredMetadata,
 } from "../context/metadata.js";
@@ -78,6 +80,8 @@ const PREFERRED_FIELDS = [
   "author",
   "project",
   "version",
+  "targetVersions",
+  "observedInVersions",
   "category",
   "startDate",
   "dueDate",
@@ -198,12 +202,18 @@ function collectValue(value: string, previous: Array<string>): Array<string> {
   return [...previous, value];
 }
 
+/** Like collectValue, but a flag left out stays undefined, not empty. */
+function collectOptional(value: string, previous?: Array<string>): Array<string> {
+  return [...(previous ?? []), value];
+}
+
 interface FilterFlagOptions {
   readonly status?: Array<string>;
   readonly type?: Array<string>;
   readonly assignee?: Array<string>;
   readonly author?: Array<string>;
   readonly version?: Array<string>;
+  readonly observedIn?: Array<string>;
   readonly category?: Array<string>;
   readonly priority?: Array<string>;
   readonly parent?: Array<string>;
@@ -227,6 +237,12 @@ function addFilterFlags(command: Command): Command {
     .option("--assignee <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--author <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--version <name>", "version name or id; repeat to OR values", collectValue, [])
+    .option(
+      "--observed-in <name>",
+      "observed-in version name or id; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--category <name>", "category name or id; repeat to OR values", collectValue, [])
     .option("--priority <name>", "priority name or id; repeat to OR values", collectValue, [])
     .option("--parent <reference>", "parent work package id or exact subject", collectValue, [])
@@ -252,6 +268,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     assignees: options.assignee,
     authors: options.author,
     versions: options.version,
+    observedIn: options.observedIn,
     categories: options.category,
     priorities: options.priority,
     parents: options.parent,
@@ -391,7 +408,9 @@ interface CreateValueFlags {
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
-  readonly version?: string;
+  /** Versions by name or id; `[""]` clears on update. */
+  readonly version?: ReadonlyArray<string>;
+  readonly observedIn?: ReadonlyArray<string>;
   readonly category?: string;
   readonly parent?: string;
   readonly description?: string;
@@ -530,6 +549,7 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "priority",
   "assignee",
   "version",
+  "observedIn",
   "category",
   "parent",
   "description",
@@ -568,18 +588,20 @@ function parseBulkItem(
     status?: string;
     priority?: string;
     assignee?: string;
-    version?: string;
+    version?: Array<string>;
+    observedIn?: Array<string>;
     category?: string;
     parent?: string;
     description?: string;
     field?: Array<string>;
   } = {};
-  const scalarKeys: ReadonlyArray<Exclude<keyof CreateValueFlags, "field">> = [
+  const scalarKeys: ReadonlyArray<
+    Exclude<keyof CreateValueFlags, "field" | "version" | "observedIn">
+  > = [
     "type",
     "status",
     "priority",
     "assignee",
-    "version",
     "category",
     "parent",
     "description",
@@ -593,6 +615,23 @@ function parseBulkItem(
       throw usage(`"${key}" must be a non-empty name-or-id string.`);
     }
     values[key] = rawValue;
+  }
+  // A version key takes one name-or-id string or an array of them.
+  for (const key of ["version", "observedIn"] as const) {
+    const rawValue = record[key];
+    if (rawValue === undefined) {
+      continue;
+    }
+    const list = Array.isArray(rawValue) ? rawValue : [rawValue];
+    if (
+      list.length === 0
+      || list.some((entry) => typeof entry !== "string" || entry === "")
+    ) {
+      throw usage(
+        `"${key}" must be a non-empty name-or-id string or an array of them.`,
+      );
+    }
+    values[key] = list as Array<string>;
   }
   const field = record.field;
   if (field !== undefined) {
@@ -762,7 +801,8 @@ interface UpdateOptions {
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
-  readonly version?: string;
+  readonly version?: ReadonlyArray<string>;
+  readonly observedIn?: ReadonlyArray<string>;
   readonly category?: string;
   readonly parent?: string;
   readonly description?: string;
@@ -907,12 +947,17 @@ const REQUIRED_VALUE_FLAGS: ReadonlyArray<"type" | "status" | "priority"> = [
 ];
 
 /** Flags whose empty value clears the link on update. */
-const CLEARABLE_LINK_FLAGS: ReadonlyArray<"assignee" | "version" | "category" | "parent"> = [
+const CLEARABLE_LINK_FLAGS: ReadonlyArray<"assignee" | "category" | "parent"> = [
   "assignee",
-  "version",
   "category",
   "parent",
 ];
+
+/** The repeatable version flags; their empty value is `[""]`. */
+const VERSION_FLAGS = [
+  { option: "version", flag: "--version" },
+  { option: "observedIn", flag: "--observed-in" },
+] as const;
 
 /**
  * Refuse empty values that cannot mean anything, before any request: a
@@ -937,6 +982,26 @@ function refuseEmptyValues(
         "USAGE_ERROR",
         `--${flag} cannot be empty.`,
         `a work package always has a ${flag}; give a name or id.`,
+      );
+    }
+  }
+  for (const { option, flag } of VERSION_FLAGS) {
+    const values = options[option];
+    if (values === undefined || !values.includes("")) {
+      continue;
+    }
+    if (mode === "create") {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `${flag} cannot be empty on create.`,
+        "there is nothing to clear on a new work package; leave the flag out.",
+      );
+    }
+    if (values.length > 1) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `${flag} mixes a clearing "" with other values.`,
+        `either pass ${flag} "" alone to clear, or give every occurrence a value.`,
       );
     }
   }
@@ -1463,6 +1528,7 @@ async function resolveListFlags(
     assignees?: Array<string>;
     authors?: Array<string>;
     versions?: Array<string>;
+    observedIn?: Array<string>;
     categories?: Array<string>;
     priorities?: Array<string>;
     parents?: Array<string>;
@@ -1523,6 +1589,23 @@ async function resolveListFlags(
       ),
     );
   }
+  const observedIn = options.observedIn ?? [];
+  if (observedIn.length > 0) {
+    if (profile.project !== undefined) {
+      const fields = await versionFieldsFor(runtime, profile, undefined);
+      if (fields.observedInVersions === undefined) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--observed-in is not available in this project.",
+          "its work package schema has no observedInVersions field.",
+        );
+      }
+    }
+    flags.observedIn = await resolveValues(
+      observedIn,
+      versionSource(runtime, profile, "observed-in"),
+    );
+  }
   const category = options.category ?? [];
   if (category.length > 0) {
     flags.categories = await resolveValues(
@@ -1578,6 +1661,195 @@ function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): st
   );
 }
 
+/** The id at the end of a type link built by resolveLinkOption. */
+function typeIdOf(link: LinkValue | undefined): number | undefined {
+  if (link === undefined || Array.isArray(link)) {
+    return undefined;
+  }
+  const href = (link as { readonly href: string | null }).href;
+  const match = href === null ? null : /(\d+)$/.exec(href);
+  return match === null ? undefined : Number(match[1]);
+}
+
+/**
+ * The version fields the schema of this project and type exposes. A type
+ * of unknown identity (a create without --type) is judged by the project's
+ * types together. A vocabulary stored before these fields were captured is
+ * refreshed once, so the decision always comes from the schema.
+ */
+async function versionFieldsFor(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  typeId: number | undefined,
+  memo?: ResolutionMemo,
+): Promise<StoredVersionFields> {
+  const load = (): Promise<ProjectVocabulary> =>
+    memo === undefined
+      ? loadProjectVocabulary(runtime.env, profile)
+      : memo.vocabulary();
+  let vocabulary = await load();
+  if (vocabulary.version_fields === undefined) {
+    await refreshStoredMetadata(runtime.env, profile);
+    memo?.invalidate();
+    vocabulary = await load();
+  }
+  const byType = vocabulary.version_fields ?? {};
+  const own = typeId === undefined ? undefined : byType[String(typeId)];
+  if (own !== undefined) {
+    return own;
+  }
+  const merge = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
+    const found = Object.values(byType)
+      .map((fields) => fields[name])
+      .filter((entry): entry is StoredVersionField => entry !== undefined);
+    return found.length === 0
+      ? {}
+      : { [name]: { multiple: found.some((entry) => entry.multiple) } };
+  };
+  return { ...merge("targetVersions"), ...merge("observedInVersions") };
+}
+
+function versionSource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  flag: string,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  return projectSource<number>(runtime, profile, flag, "version", (vocabulary) =>
+    vocabulary.versions.map((entry) => ({
+      name: entry.name,
+      owner: "Version",
+      value: entry.id,
+    })), memo);
+}
+
+/**
+ * Write one repeatable version flag into an array link: `[{href}]`, or
+ * `[]` to clear.
+ */
+async function resolveVersionList(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  links: Record<string, LinkValue>,
+  attribute: string,
+  flag: string,
+  values: ReadonlyArray<string>,
+  refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
+): Promise<void> {
+  if (values.length === 1 && values[0] === "") {
+    links[attribute] = [];
+    return;
+  }
+  const source = versionSource(runtime, profile, flag.replace(/^--/, ""), memo);
+  const hrefs: Array<{ href: string }> = [];
+  for (const value of values) {
+    const id = isIdForm(value) ? Number(value) : Number(await resolveName(value, source));
+    if (!isIdForm(value)) {
+      refs.push({
+        attribute,
+        raw: value,
+        idBefore: id,
+        hrefBase: "/api/v3/versions/",
+        source,
+        link: true,
+      });
+    }
+    const href = `/api/v3/versions/${String(id)}`;
+    if (!hrefs.some((entry) => entry.href === href)) {
+      hrefs.push({ href });
+    }
+  }
+  links[attribute] = hrefs;
+}
+
+/**
+ * --version and --observed-in. The schema decides where --version lands:
+ * `targetVersions` when the type exposes it, the deprecated `version`
+ * otherwise; the server refuses both in one request, so exactly one is
+ * ever sent.
+ */
+async function resolveVersionLinks(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  links: Record<string, LinkValue>,
+  options: CreateValueFlags,
+  typeId: number | undefined,
+  refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
+): Promise<void> {
+  if (options.version === undefined && options.observedIn === undefined) {
+    return;
+  }
+  const fields = await versionFieldsFor(runtime, profile, typeId, memo);
+  if (options.version !== undefined) {
+    const target = fields.targetVersions;
+    if (target === undefined) {
+      if (options.version.length > 1) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--version holds one value on this work package.",
+          "its schema has no targetVersions, only the single version field.",
+        );
+      }
+      await resolveLinkOption(
+        links,
+        "version",
+        "/api/v3/versions/",
+        "--version",
+        options.version[0],
+        versionSource(runtime, profile, "version", memo),
+        refs,
+      );
+    } else {
+      if (!target.multiple && options.version.length > 1) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--version holds one value for this work package.",
+          "the schema's targetVersions takes a single version; pass --version once.",
+        );
+      }
+      await resolveVersionList(
+        runtime,
+        profile,
+        links,
+        "targetVersions",
+        "--version",
+        options.version,
+        refs,
+        memo,
+      );
+    }
+  }
+  if (options.observedIn !== undefined) {
+    const observed = fields.observedInVersions;
+    if (observed === undefined) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "--observed-in is not available for this work package.",
+        "its schema has no observedInVersions field; leave the flag out.",
+      );
+    }
+    if (!observed.multiple && options.observedIn.length > 1) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "--observed-in holds one value for this work package.",
+        "the schema's observedInVersions takes a single version; pass --observed-in once.",
+      );
+    }
+    await resolveVersionList(
+      runtime,
+      profile,
+      links,
+      "observedInVersions",
+      "--observed-in",
+      options.observedIn,
+      refs,
+      memo,
+    );
+  }
+}
+
 /**
  * Everything create and update share: every value flag resolved by name
  * into payload entries, with the name-resolved ones remembered so a
@@ -1588,6 +1860,8 @@ async function resolveNamedValues(
   profile: ActiveProfile,
   options: CreateValueFlags,
   memo?: ResolutionMemo,
+  /** The type the work package already has, when --type does not name one. */
+  currentTypeId?: number,
 ): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
   const refs: Array<ResolvedAttribute> = [];
   const links: Record<string, LinkValue> = {};
@@ -1644,19 +1918,14 @@ async function resolveNamedValues(
     refs,
     memo,
   );
-  await resolveLinkOption(
+  await resolveVersionLinks(
+    runtime,
+    profile,
     links,
-    "version",
-    "/api/v3/versions/",
-    "--version",
-    options.version,
-    projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
-      vocabulary.versions.map((entry) => ({
-        name: entry.name,
-        owner: "Version",
-        value: entry.id,
-      })), memo),
+    options,
+    typeIdOf(links.type) ?? currentTypeId,
     refs,
+    memo,
   );
   await resolveLinkOption(
     links,
@@ -2173,7 +2442,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--status <name-or-id>", "initial status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
     .option("--assignee <name-or-id>", "assignee, by name, id, or me")
-    .option("--version <name-or-id>", "version of the project, by name or id")
+    .option(
+      "--version <name-or-id>",
+      "version of the project, by name or id; repeat when the schema allows several",
+      collectOptional,
+    )
+    .option(
+      "--observed-in <name-or-id>",
+      "observed-in version, by name or id; repeat when the schema allows several",
+      collectOptional,
+    )
     .option("--category <name-or-id>", "category of the project, by name or id")
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
     .option("--description <text>", "markdown description of the work package")
@@ -2247,7 +2525,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--status <name-or-id>", "status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
     .option("--assignee <name-or-id>", 'assignee, by name, id, or me; "" clears')
-    .option("--version <name-or-id>", 'version of the project, by name or id; "" clears')
+    .option(
+      "--version <name-or-id>",
+      'version of the project, by name or id; repeat when the schema allows several; "" clears',
+      collectOptional,
+    )
+    .option(
+      "--observed-in <name-or-id>",
+      'observed-in version, by name or id; repeat when the schema allows several; "" clears',
+      collectOptional,
+    )
     .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
     .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
     .option("--description <text>", "new markdown description of the work package")
@@ -2272,6 +2559,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.parent !== undefined
         || options.assignee !== undefined
         || options.version !== undefined
+        || options.observedIn !== undefined
         || options.category !== undefined
         || options.description !== undefined
         || (options.field?.length ?? 0) > 0;
@@ -2294,7 +2582,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // The read already names every column, so a bad --fields name is
       // refused while the work package is still untouched.
       selectedFields(options.fields, flattenHalRecord(before));
-      const { payload, refs } = await resolveNamedValues(runtime, profile, options);
+      const { payload, refs } = await resolveNamedValues(
+        runtime,
+        profile,
+        options,
+        undefined,
+        typeIdOf((before as { _links?: Record<string, LinkValue> })._links?.type),
+      );
       if (options.subject !== undefined) {
         payload.subject = options.subject;
       }

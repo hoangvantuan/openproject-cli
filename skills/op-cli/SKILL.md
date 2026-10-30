@@ -30,9 +30,16 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it. The same empty-value convention
     clears links on `wp update`: `--assignee ""`, `--version ""`,
-    `--category ""`, `--parent ""`. `--type`, `--status`, `--priority`,
+    `--category ""`, `--parent ""`, `--observed-in ""`. `--type`, `--status`, `--priority`,
     and `--subject` refuse an empty value, and so does every empty value
     on `wp create`, all with `USAGE_ERROR` before any request.
+  - `--version` writes the work package schema's `targetVersions` when it
+    has one, else the single `version`; repeat it only where the schema
+    allows several (otherwise `USAGE_ERROR`). `--observed-in <version>`
+    (repeatable) writes `observedInVersions` on `wp create`/`update` and
+    filters `wp list`/`wp count`; it is a `USAGE_ERROR` where the schema
+    lacks the field. In `wp create --stdin`, `version` and `observedIn`
+    take a string or an array of strings.
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`, `wp history`/`comments`/
@@ -78,6 +85,9 @@ op-cli wp create Subject --type Bug --priority High
 op-cli wp update <id> --field Estimate=5
 # change status, assignee, version, category, priority
 op-cli wp update <id> --status Closed --assignee me
+# target versions and the versions a bug was observed in
+op-cli wp update <id> --version 1.0.0 --observed-in 0.9.0
+op-cli wp list --observed-in 0.9.0
 # clear a link with an empty value
 op-cli wp update <id> --assignee ""
 # build hierarchies: nest under a parent work package

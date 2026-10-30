@@ -148,6 +148,7 @@ export type CustomFieldsByType = Readonly<
  */
 export function projectVocabulary(
   customFields: CustomFieldsByType,
+  versionFields: Readonly<Record<string, unknown>> = {},
 ): Record<string, unknown> {
   return {
     project_id: 13,
@@ -159,5 +160,6 @@ export function projectVocabulary(
     categories: [{ id: 44, name: "Billing" }],
     activities: [],
     custom_fields: customFields,
+    version_fields: versionFields,
   };
 }
