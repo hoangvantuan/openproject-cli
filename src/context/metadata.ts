@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { halRefId } from "../core/hal.js";
 import { apiGet, apiPost } from "../core/http.js";
-import { halElements } from "../core/paginate.js";
+import { halElements, halNextPath } from "../core/paginate.js";
 import { OpCliError } from "../core/errors.js";
 
 import { ENV_PROFILE_NAME, type ActiveProfile } from "./profile.js";
@@ -29,10 +29,26 @@ export interface StoredPriority {
   readonly is_default: boolean;
 }
 
+/**
+ * The collection paths a project resource links to (#57). Instances that
+ * renamed projects to workspaces serve them under /api/v3/workspaces/, so
+ * the stored path is followed instead of a hardcoded one. A key is absent
+ * when the resource did not carry that link; callers then build the path.
+ */
+export interface StoredProjectLinks {
+  readonly versions?: string;
+  readonly categories?: string;
+  readonly types?: string;
+  readonly work_packages?: string;
+  readonly create_work_package?: string;
+  readonly memberships?: string;
+}
+
 export interface StoredProjectRef {
   readonly id: number;
   readonly identifier: string;
   readonly name: string;
+  readonly links?: StoredProjectLinks;
 }
 
 export interface StoredInstanceInfo {
@@ -177,6 +193,11 @@ export interface StoredVersionFields {
 export interface ProjectVocabulary {
   readonly project_id: number;
   readonly fetched_at: string;
+  /**
+   * Absent when the project resource carried none of the links, which is
+   * also how a vocabulary stored before they were captured reads.
+   */
+  readonly links?: StoredProjectLinks;
   readonly members: ReadonlyArray<StoredMember>;
   readonly versions: ReadonlyArray<StoredVersion>;
   readonly categories: ReadonlyArray<StoredCategory>;
@@ -495,13 +516,14 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
 async function fetchMembers(
   profile: ActiveProfile,
   projectId: number,
+  links: StoredProjectLinks | undefined,
 ): Promise<ReadonlyArray<StoredMember>> {
   const filters = encodeURIComponent(
     JSON.stringify([{ project: { operator: "=", values: [String(projectId)] } }]),
   );
   const members = await fetchVocabulary(
     profile,
-    `/api/v3/memberships?filters=${filters}`,
+    links?.memberships ?? `/api/v3/memberships?filters=${filters}`,
     toStoredMember,
   );
   return sortByName(members);
@@ -510,18 +532,57 @@ async function fetchMembers(
 /**
  * One name-sorted project collection: the shape every optional source
  * except activities shares, so a new source is a path and a converter.
+ * `linked` is the path the project resource gave for it, when it did.
  */
 async function fetchProjectCollection<T extends { readonly name: string }>(
   profile: ActiveProfile,
   projectId: number,
   collection: string,
   convert: (element: HalElement) => T,
+  linked?: string,
 ): Promise<ReadonlyArray<T>> {
   return sortByName(await fetchVocabulary(
     profile,
-    `/api/v3/projects/${String(projectId)}/${collection}`,
+    linked ?? `/api/v3/projects/${String(projectId)}/${collection}`,
     convert,
   ));
+}
+
+/**
+ * A collection the project resource has no link for (sprints, backlog
+ * buckets). The projects path is tried first; on a 404 the instance may
+ * have moved the route under /workspaces/, so that path is tried once
+ * before the source counts as unavailable (#57). Any other refusal stands.
+ */
+async function fetchUnlinkedCollection<T extends { readonly name: string }>(
+  profile: ActiveProfile,
+  projectId: number,
+  collection: string,
+  convert: (element: HalElement) => T,
+): Promise<ReadonlyArray<T>> {
+  try {
+    return await fetchProjectCollection(profile, projectId, collection, convert);
+  } catch (error) {
+    if (!(error instanceof OpCliError && error.code === "NOT_FOUND")) {
+      throw error;
+    }
+    try {
+      return await fetchProjectCollection(
+        profile,
+        projectId,
+        collection,
+        convert,
+        `/api/v3/workspaces/${String(projectId)}/${collection}`,
+      );
+    } catch (retry) {
+      // Both routes missing: report the first answer, the one the
+      // caller's own project path gave.
+      if (retry instanceof OpCliError && retry.code === "NOT_FOUND") {
+        throw error;
+      }
+      throw retry;
+    }
+  }
 }
 
 // The bare schema endpoint builds its values from TimeEntry.new, so its
@@ -565,12 +626,14 @@ async function fetchTypeSchema(
   profile: ActiveProfile,
   projectId: number,
   typeId: number,
+  links: StoredProjectLinks | undefined,
 ): Promise<HalElement> {
   try {
     const form = (await apiPost(
       profile.instanceUrl,
       profile.apiKey,
-      `/api/v3/projects/${String(projectId)}/work_packages/form`,
+      links?.create_work_package
+        ?? `/api/v3/projects/${String(projectId)}/work_packages/form`,
       { _links: { type: { href: `/api/v3/types/${String(typeId)}` } } },
     )) as HalElement;
     const embedded = (form._embedded ?? {}) as HalElement;
@@ -616,16 +679,17 @@ function versionFieldsOf(schema: HalElement): StoredVersionFields {
 async function fetchTypeSchemas(
   profile: ActiveProfile,
   projectId: number,
+  links: StoredProjectLinks | undefined,
 ): Promise<Pick<ProjectVocabulary, "custom_fields" | "version_fields">> {
   const typeIds = await fetchVocabulary(
     profile,
-    `/api/v3/projects/${String(projectId)}/types`,
+    links?.types ?? `/api/v3/projects/${String(projectId)}/types`,
     (element) => Number(element.id),
   );
   const byType: Record<string, ReadonlyArray<StoredCustomField>> = {};
   const versionFields: Record<string, StoredVersionFields> = {};
   for (const typeId of typeIds) {
-    const schema = await fetchTypeSchema(profile, projectId, typeId);
+    const schema = await fetchTypeSchema(profile, projectId, typeId, links);
     byType[String(typeId)] = sortByName(customFieldEntries(schema));
     versionFields[String(typeId)] = versionFieldsOf(schema);
   }
@@ -666,19 +730,52 @@ async function fetchInstanceInfo(profile: ActiveProfile): Promise<StoredInstance
   };
 }
 
-async function fetchProjectRef(
+async function fetchProjectResource(
   profile: ActiveProfile,
   projectId: number,
-): Promise<StoredProjectRef> {
-  const project = (await apiGet(
+): Promise<HalElement> {
+  return (await apiGet(
     profile.instanceUrl,
     profile.apiKey,
     `/api/v3/projects/${String(projectId)}`,
   )) as HalElement;
+}
+
+/** Link name on the project resource to the key the store keeps it under. */
+const PROJECT_LINK_KEYS: ReadonlyArray<readonly [string, keyof StoredProjectLinks]> = [
+  ["versions", "versions"],
+  ["categories", "categories"],
+  ["types", "types"],
+  ["workPackages", "work_packages"],
+  ["createWorkPackage", "create_work_package"],
+  ["memberships", "memberships"],
+];
+
+/** The collection paths a project resource links to; undefined when it links none. */
+function projectLinksOf(project: HalElement): StoredProjectLinks | undefined {
+  const rawLinks = (project._links ?? {}) as HalElement;
+  const found: { -readonly [K in keyof StoredProjectLinks]?: string } = {};
+  for (const [name, key] of PROJECT_LINK_KEYS) {
+    const href = (rawLinks[name] as HalElement | undefined)?.href;
+    const path = typeof href === "string" ? halNextPath(href) : undefined;
+    if (path !== undefined) {
+      found[key] = path;
+    }
+  }
+  return Object.keys(found).length === 0 ? undefined : found;
+}
+
+async function fetchProjectRef(
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<StoredProjectRef> {
+  const project = await fetchProjectResource(profile, projectId);
+  const links = projectLinksOf(project);
   return {
     id: Number(project.id),
     identifier: asString(project.identifier),
     name: asString(project.name),
+    ...(links === undefined ? {} : { links }),
   };
 }
 
@@ -796,35 +893,53 @@ async function fetchOptional<T>(
   }
 }
 
+/**
+ * The links of one project resource, read once with its vocabulary. They
+ * only steer the paths that follow, so a failed read means "no links" and
+ * the fixed paths run; a real refusal surfaces from those requests.
+ */
+async function fetchProjectLinks(
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<StoredProjectLinks | undefined> {
+  try {
+    return projectLinksOf(await fetchProjectResource(profile, projectId));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchProjectVocabulary(
   profile: ActiveProfile,
   projectId: number,
 ): Promise<ProjectVocabulary> {
   const unavailable: Partial<Record<OptionalVocabularySource, UnavailableSource>> = {};
+  const links = await fetchProjectLinks(profile, projectId);
   // Members come first and stay required: a deleted project answers 404
   // there, which the refresh reads as "drop this project".
-  const members = await fetchMembers(profile, projectId);
+  const members = await fetchMembers(profile, projectId, links);
   const versions = await fetchOptional("versions", unavailable,
-    () => fetchProjectCollection(profile, projectId, "versions", toStoredVersion));
+    () => fetchProjectCollection(profile, projectId, "versions", toStoredVersion, links?.versions));
   const categories = await fetchOptional("categories", unavailable,
-    () => fetchProjectCollection(profile, projectId, "categories", toStoredCategory));
+    () => fetchProjectCollection(profile, projectId, "categories", toStoredCategory, links?.categories));
   const activities = await fetchOptional("activities", unavailable,
     () => fetchActivities(profile, projectId));
   // A project without the backlogs module answers 404 on both.
   const sprints = await fetchOptional("sprints", unavailable,
-    () => fetchProjectCollection(profile, projectId, "sprints", toStoredSprint));
+    () => fetchUnlinkedCollection(profile, projectId, "sprints", toStoredSprint));
   const buckets = await fetchOptional("buckets", unavailable,
-    () => fetchProjectCollection(profile, projectId, "backlog_buckets", toStoredBucket));
+    () => fetchUnlinkedCollection(profile, projectId, "backlog_buckets", toStoredBucket));
   return {
     project_id: projectId,
     fetched_at: new Date().toISOString(),
+    ...(links === undefined ? {} : { links }),
     members,
     versions,
     categories,
     activities,
     sprints,
     buckets,
-    ...(await fetchTypeSchemas(profile, projectId)),
+    ...(await fetchTypeSchemas(profile, projectId, links)),
     ...(Object.keys(unavailable).length > 0 ? { unavailable } : {}),
   };
 }
@@ -1048,7 +1163,10 @@ function diffProject(
   if (before === undefined || after === undefined) {
     return [];
   }
-  const diffs = fieldDiffs(before, after);
+  // The links are routing, not identity: a refresh that only moved them is
+  // not a change of the project.
+  const identity = ({ id, identifier, name }: StoredProjectRef) => ({ id, identifier, name });
+  const diffs = fieldDiffs(identity(before), identity(after));
   return diffs.length === 0
     ? []
     : [{ section: "project", kind: "changed", id: after.id, detail: diffs.join("; ") }];

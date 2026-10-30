@@ -127,6 +127,10 @@ function routes(): Record<string, Reply> {
       status: 200,
       body: collection(BUCKETS),
     },
+    // A 404 on the projects path retries here once (#57); this instance
+    // has no such route.
+    [`GET /api/v3/workspaces/${String(PROJECT)}/sprints`]: { status: 404, body: NOT_FOUND },
+    [`GET /api/v3/workspaces/${String(PROJECT)}/backlog_buckets`]: { status: 404, body: NOT_FOUND },
     [`GET /api/v3/projects/${String(PROJECT)}/types`]: {
       status: 200,
       body: collection([{ _type: "Type", id: 2, name: "Task" }]),
@@ -159,7 +163,7 @@ function install(overrides: Record<string, Reply> = {}): void {
         key,
         body: typeof call.body === "string" ? JSON.parse(call.body) as unknown : undefined,
       });
-      const listing = key.startsWith("GET /api/v3/work_packages?")
+      const listing = /^GET \/api\/v3\/((projects|workspaces)\/\d+\/)?work_packages\?/.test(key)
         ? { status: 200, body: collection([]) }
         : undefined;
       const entry = table[key];
@@ -666,4 +670,166 @@ test("a stale sprint id is retried once after a refresh moves it", async () => {
     { href: "/api/v3/sprints/58" },
     { href: "/api/v3/sprints/60" },
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Links over paths (#57): the project resource says where its collections
+// live (OpenProject 17 moved them under /workspaces/).
+
+const WORKSPACE = `/api/v3/workspaces/${String(PROJECT)}`;
+
+/** The project resource as a workspace-aware instance serves it. */
+function linkedProject(): Reply {
+  return {
+    status: 200,
+    body: {
+      _type: "Project",
+      id: PROJECT,
+      identifier: "mobile",
+      name: "Mobile",
+      _links: {
+        self: { href: `/api/v3/projects/${String(PROJECT)}` },
+        versions: { href: `${WORKSPACE}/versions` },
+        categories: { href: `${WORKSPACE}/categories` },
+        types: { href: `${WORKSPACE}/types` },
+        workPackages: { href: `${WORKSPACE}/work_packages` },
+        createWorkPackage: { href: `${WORKSPACE}/work_packages/form` },
+        memberships: { href: `/api/v3/memberships?filters=${MEMBER_FILTERS}&via=link` },
+      },
+    },
+  };
+}
+
+function workspaceCollections(): Record<string, Reply> {
+  return {
+    [`GET ${WORKSPACE}/versions`]: { status: 200, body: collection([]) },
+    [`GET ${WORKSPACE}/categories`]: { status: 200, body: collection([]) },
+    [`GET ${WORKSPACE}/types`]: {
+      status: 200,
+      body: collection([{ _type: "Type", id: 2, name: "Task" }]),
+    },
+    [`POST ${WORKSPACE}/work_packages/form`]: {
+      status: 200,
+      body: { _type: "Form", _embedded: { schema: { _type: "Schema" } } },
+    },
+    [`GET /api/v3/memberships?filters=${MEMBER_FILTERS}&via=link`]: {
+      status: 200,
+      body: collection([]),
+    },
+  };
+}
+
+function requested(key: string): number {
+  return requests.filter((entry) => entry.key === key).length;
+}
+
+test("the vocabulary follows the project's links instead of building paths", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}`]: linkedProject(),
+    ...workspaceCollections(),
+  });
+
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  for (const key of Object.keys(workspaceCollections())) {
+    expect(requested(key), key).toBe(1);
+  }
+  const built = requests.map((entry) => entry.key).filter((key) =>
+    /\/api\/v3\/projects\/\d+\/(versions|categories|types|work_packages)/.test(key));
+  expect(built).toEqual([]);
+});
+
+test("the links are stored with the vocabulary and reused without another request", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}`]: linkedProject(),
+    ...workspaceCollections(),
+  });
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  expect((await storedVocabulary()).links).toEqual({
+    versions: `${WORKSPACE}/versions`,
+    categories: `${WORKSPACE}/categories`,
+    types: `${WORKSPACE}/types`,
+    work_packages: `${WORKSPACE}/work_packages`,
+    create_work_package: `${WORKSPACE}/work_packages/form`,
+    memberships: `/api/v3/memberships?filters=${MEMBER_FILTERS}&via=link`,
+  });
+  const before = requests.length;
+  expect((await run(["meta", "categories"], env, {})).exitCode).toBe(0);
+  expect(requests.length).toBe(before);
+});
+
+test("a project resource without links falls back to the projects paths", async () => {
+  install();
+
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  for (const collectionName of ["versions", "categories", "types"]) {
+    expect(requested(`GET /api/v3/projects/${String(PROJECT)}/${collectionName}`)).toBe(1);
+  }
+  expect(requested(`POST /api/v3/projects/${String(PROJECT)}/work_packages/form`)).toBe(1);
+  expect((await storedVocabulary()).links).toBeUndefined();
+});
+
+test("wp list --no-include-subprojects reads the stored workPackages link", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}`]: linkedProject(),
+    ...workspaceCollections(),
+  });
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+
+  const listed = await run(["wp", "list", "--no-include-subprojects"], env, {});
+  expect(listed.exitCode).toBe(0);
+  const listing = requests.map((entry) => entry.key).find((key) =>
+    key.startsWith(`GET ${WORKSPACE}/work_packages?`));
+  expect(listing).toBeDefined();
+});
+
+test("wp list --no-include-subprojects without stored links keeps the projects path", async () => {
+  install();
+  const listed = await run(["wp", "list", "--no-include-subprojects"], env, {});
+  expect(listed.exitCode).toBe(0);
+  expect(requests.map((entry) => entry.key).some((key) =>
+    key.startsWith(`GET /api/v3/projects/${String(PROJECT)}/work_packages?`))).toBe(true);
+});
+
+// Sprints and buckets carry no link on the project resource, so their path
+// stays; a 404 there may mean the instance moved the route (#57).
+
+test("sprints and buckets retry once under /workspaces/ on a 404", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 404, body: NOT_FOUND },
+    [`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`]: { status: 404, body: NOT_FOUND },
+    [`GET ${WORKSPACE}/sprints`]: { status: 200, body: collection(SPRINTS) },
+    [`GET ${WORKSPACE}/backlog_buckets`]: { status: 200, body: collection(BUCKETS) },
+  });
+
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  const vocabulary = await storedVocabulary();
+  expect((vocabulary.sprints as Array<unknown>).length).toBe(2);
+  expect((vocabulary.buckets as Array<unknown>).length).toBe(2);
+  expect(vocabulary.unavailable).toBeUndefined();
+});
+
+test("a 404 on both paths is unavailable after exactly one retry", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 404, body: NOT_FOUND },
+    [`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`]: { status: 404, body: NOT_FOUND },
+    [`GET ${WORKSPACE}/sprints`]: { status: 404, body: NOT_FOUND },
+    [`GET ${WORKSPACE}/backlog_buckets`]: { status: 404, body: NOT_FOUND },
+  });
+
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  expect((await storedVocabulary()).unavailable).toMatchObject({
+    sprints: { status: 404 },
+    buckets: { status: 404 },
+  });
+  expect(requested(`GET /api/v3/projects/${String(PROJECT)}/sprints`)).toBe(1);
+  expect(requested(`GET ${WORKSPACE}/sprints`)).toBe(1);
+});
+
+test("a 403 does not retry under /workspaces/", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 403, body: { _type: "Error" } },
+  });
+
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  expect(requested(`GET ${WORKSPACE}/sprints`)).toBe(0);
 });
