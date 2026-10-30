@@ -72,7 +72,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`, `wp history`/`comments`/
-    `relations`, `time log`/`get`/`update`, `project get`/`create`/
+    `attachments`/`relations`, `time log`/`get`/`update`, `project get`/`create`/
     `update`/`copy`/`member`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
@@ -152,6 +152,12 @@ op-cli wp comment <id> <text>
 # edit a comment by the activity id `wp comments` lists (no delete: API v3 has none)
 op-cli wp comment-edit <activity-id> <text>
 op-cli wp history <id>
+# attachments: list, upload (refused before sending when the file is missing
+# or over the instance maximum), download by the attachment id the list shows;
+# download refuses to overwrite without --force, `--output -` writes to stdout
+op-cli wp attachments <id>
+op-cli wp attach <id> <path> --description <text> --name <fileName>
+op-cli wp attachment-download <attachment-id> --output <path-or-dir> --force
 # relations between work packages
 op-cli wp relations <id>
 op-cli wp relate <id> <to>
