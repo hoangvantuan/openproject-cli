@@ -1,0 +1,315 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { Agent, MockAgent, setGlobalDispatcher } from "undici";
+import { afterEach, beforeEach, expect, test } from "vitest";
+
+import { run } from "../src/run.js";
+
+// Sprints and backlog buckets as project vocabulary (#46): read from the
+// project-scoped collections, written as single links on work packages,
+// filterable on wp list/count.
+const INSTANCE_URL = "https://openproject.example";
+const PROJECT = 16;
+const MEMBER_FILTERS = encodeURIComponent(
+  JSON.stringify([{ project: { operator: "=", values: [String(PROJECT)] } }]),
+);
+const NOT_FOUND = {
+  _type: "Error",
+  errorIdentifier: "urn:openproject-org:api:v3:errors:NotFound",
+  message: "The requested resource could not be found.",
+};
+
+interface Reply {
+  readonly status: number;
+  readonly body?: unknown;
+}
+
+function collection(elements: unknown[]): Record<string, unknown> {
+  return {
+    _type: "Collection",
+    total: elements.length,
+    count: elements.length,
+    _embedded: { elements },
+    _links: { self: { href: "/self" } },
+  };
+}
+
+function sprint(
+  id: number,
+  name: string,
+  status: string,
+  startDate: string,
+  finishDate: string,
+): Record<string, unknown> {
+  return {
+    _type: "Sprint",
+    id,
+    name,
+    startDate,
+    finishDate,
+    startedAt: null,
+    completedAt: null,
+    _links: {
+      self: { href: `/api/v3/sprints/${String(id)}`, title: name },
+      // The title is localized; the urn tail is what the store keeps.
+      status: { href: `urn:openproject-org:api:v3:sprints:status:${status}`, title: "計画中" },
+      definingWorkspace: { href: `/api/v3/projects/${String(PROJECT)}`, title: "Mobile" },
+    },
+  };
+}
+
+function bucket(id: number, name: string): Record<string, unknown> {
+  return {
+    _type: "BacklogBucket",
+    id,
+    name,
+    _links: {
+      self: { href: `/api/v3/backlog_buckets/${String(id)}`, title: name },
+      definingWorkspace: { href: `/api/v3/projects/${String(PROJECT)}`, title: "Mobile" },
+    },
+  };
+}
+
+const SPRINTS = [
+  sprint(58, "Sprint 14", "in_planning", "2026-10-26", "2026-10-30"),
+  sprint(57, "Sprint 13", "active", "2026-10-19", "2026-10-23"),
+];
+const BUCKETS = [bucket(2, "Managements"), bucket(4, "PoC")];
+
+function workPackage(lockVersion: number): Record<string, unknown> {
+  return {
+    _type: "WorkPackage",
+    id: 42,
+    lockVersion,
+    subject: "Ship the thing",
+    createdAt: "2026-08-23T09:00:00Z",
+    updatedAt: "2026-08-23T09:00:00Z",
+    _links: {
+      self: { href: "/api/v3/work_packages/42" },
+      project: { href: `/api/v3/projects/${String(PROJECT)}`, title: "Mobile" },
+      type: { href: "/api/v3/types/2", title: "Task" },
+      status: { href: "/api/v3/statuses/1", title: "New" },
+      priority: { href: "/api/v3/priorities/3", title: "High" },
+      sprint: { href: null },
+      backlogBucket: { href: null },
+    },
+  };
+}
+
+function routes(): Record<string, Reply> {
+  return {
+    "GET /api/v3/": { status: 200, body: { _type: "Root", apiVersion: "3", coreVersion: "17.0.0" } },
+    "GET /api/v3/types": {
+      status: 200,
+      body: collection([{ _type: "Type", id: 2, name: "Task", isMilestone: false }]),
+    },
+    "GET /api/v3/statuses": {
+      status: 200,
+      body: collection([{ _type: "Status", id: 1, name: "New", isClosed: false, isDefault: true }]),
+    },
+    "GET /api/v3/priorities": {
+      status: 200,
+      body: collection([{ _type: "Priority", id: 3, name: "High", isDefault: true }]),
+    },
+    [`GET /api/v3/projects/${String(PROJECT)}`]: {
+      status: 200,
+      body: { _type: "Project", id: PROJECT, identifier: "mobile", name: "Mobile" },
+    },
+    [`GET /api/v3/memberships?filters=${MEMBER_FILTERS}`]: { status: 200, body: collection([]) },
+    [`GET /api/v3/projects/${String(PROJECT)}/versions`]: { status: 200, body: collection([]) },
+    [`GET /api/v3/projects/${String(PROJECT)}/categories`]: { status: 200, body: collection([]) },
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 200, body: collection(SPRINTS) },
+    [`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`]: {
+      status: 200,
+      body: collection(BUCKETS),
+    },
+    [`GET /api/v3/projects/${String(PROJECT)}/types`]: {
+      status: 200,
+      body: collection([{ _type: "Type", id: 2, name: "Task" }]),
+    },
+    [`POST /api/v3/projects/${String(PROJECT)}/work_packages/form`]: {
+      status: 200,
+      body: { _type: "Form", _embedded: { schema: { _type: "Schema" } } },
+    },
+    "POST /api/v3/time_entries/form": { status: 200, body: { _embedded: { schema: {} } } },
+    "GET /api/v3/work_packages/42": { status: 200, body: workPackage(1) },
+    "PATCH /api/v3/work_packages/42": { status: 200, body: workPackage(2) },
+    "POST /api/v3/work_packages": { status: 201, body: workPackage(1) },
+  };
+}
+
+let root: string;
+let env: Record<string, string>;
+let mockAgent: MockAgent;
+let requests: Array<{ key: string; body: unknown }>;
+let table: Record<string, Reply>;
+
+/** Serves the routes table; anything unlisted answers 599 and is recorded. */
+function install(overrides: Record<string, Reply> = {}): void {
+  table = { ...routes(), ...overrides };
+  mockAgent.get(INSTANCE_URL)
+    .intercept({ path: () => true, method: () => true })
+    .reply((call) => {
+      const key = `${call.method} ${call.path}`;
+      requests.push({
+        key,
+        body: typeof call.body === "string" ? JSON.parse(call.body) as unknown : undefined,
+      });
+      const reply = table[key] ?? { status: 599, body: { unexpected: key } };
+      return { statusCode: reply.status, data: reply.body ?? {} };
+    })
+    .persist();
+}
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "op-cli-sprint-"));
+  const configDir = join(root, "config");
+  await mkdir(configDir, { recursive: true });
+  await writeFile(
+    join(configDir, "config.json"),
+    JSON.stringify({
+      default_profile: "default",
+      profiles: { default: { url: INSTANCE_URL, project: PROJECT } },
+    }),
+  );
+  await writeFile(
+    join(configDir, "credentials.json"),
+    JSON.stringify({ default: { api_key: "secret-key" } }),
+    { mode: 0o600 },
+  );
+  env = { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: join(root, "cache") };
+  mockAgent = new MockAgent();
+  mockAgent.disableNetConnect();
+  setGlobalDispatcher(mockAgent);
+  requests = [];
+});
+
+afterEach(async () => {
+  await mockAgent.close();
+  setGlobalDispatcher(new Agent());
+  await rm(root, { recursive: true, force: true });
+});
+
+function storePath(): string {
+  return join(root, "cache", "default", "metadata.json");
+}
+
+async function storedVocabulary(): Promise<Record<string, unknown>> {
+  const stored = JSON.parse(await readFile(storePath(), "utf8")) as {
+    projectScoped: Record<string, Record<string, unknown>>;
+  };
+  return stored.projectScoped[String(PROJECT)] as Record<string, unknown>;
+}
+
+function sent(key: string): unknown {
+  return requests.find((entry) => entry.key === key)?.body;
+}
+
+// ---------------------------------------------------------------------------
+// Vocabulary
+
+test("the project vocabulary stores sprints and buckets sorted by name", async () => {
+  install();
+
+  const result = await run(["meta", "sprints", "--json"], env, {});
+
+  expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
+  const vocabulary = await storedVocabulary();
+  expect(vocabulary.sprints).toEqual([
+    { id: 57, name: "Sprint 13", start_date: "2026-10-19", finish_date: "2026-10-23", status: "active" },
+    { id: 58, name: "Sprint 14", start_date: "2026-10-26", finish_date: "2026-10-30", status: "in_planning" },
+  ]);
+  expect(vocabulary.buckets).toEqual([
+    { id: 2, name: "Managements" },
+    { id: 4, name: "PoC" },
+  ]);
+  expect(vocabulary.unavailable).toBeUndefined();
+});
+
+test("meta sprints and meta buckets list the stored vocabulary", async () => {
+  install();
+
+  const sprints = await run(["meta", "sprints"], env, {});
+  expect(sprints.stderr).toBe("");
+  expect(sprints.exitCode).toBe(0);
+  expect(sprints.stdout).toMatch(/ID\s+NAME\s+START\s+FINISH\s+STATUS/);
+  expect(sprints.stdout).toMatch(/58\s+Sprint 14\s+2026-10-26\s+2026-10-30\s+in_planning/);
+
+  const buckets = await run(["meta", "buckets", "--json"], env, {});
+  expect(buckets.exitCode).toBe(0);
+  expect(JSON.parse(buckets.stdout)).toEqual([
+    { id: 2, name: "Managements" },
+    { id: 4, name: "PoC" },
+  ]);
+});
+
+test("a project without the backlogs module stores both sources as unavailable", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 404, body: NOT_FOUND },
+    [`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`]: { status: 404, body: NOT_FOUND },
+  });
+
+  const versions = await run(["meta", "versions"], env, {});
+  expect(versions.exitCode).toBe(0);
+  const vocabulary = await storedVocabulary();
+  expect(vocabulary.sprints).toEqual([]);
+  expect(vocabulary.unavailable).toMatchObject({
+    sprints: { status: 404 },
+    buckets: { status: 404 },
+  });
+
+  const sprints = await run(["meta", "sprints"], env, {});
+  expect(sprints.exitCode).toBe(8);
+  expect(sprints.stderr).toMatch(/^\[PERMISSION_DENIED\] .*sprints of project 16/);
+});
+
+test("a forbidden sprint source is unavailable with its 403", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: {
+      status: 403,
+      body: { _type: "Error", message: "You are not authorized to access this resource." },
+    },
+  });
+
+  expect((await run(["meta", "buckets"], env, {})).exitCode).toBe(0);
+  const vocabulary = await storedVocabulary();
+  expect(vocabulary.unavailable).toEqual({
+    sprints: { status: 403, message: expect.stringContaining("not authorized") as unknown },
+  });
+});
+
+test("meta refresh diffs sprints and buckets", async () => {
+  install();
+  expect((await run(["meta", "sprints"], env, {})).exitCode).toBe(0);
+  table[`GET /api/v3/projects/${String(PROJECT)}/sprints`] = {
+    status: 200,
+    body: collection([
+      SPRINTS[0],
+      sprint(59, "Sprint 15", "in_planning", "2026-11-02", "2026-11-06"),
+    ]),
+  };
+  table[`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`] = {
+    status: 200,
+    body: collection([bucket(2, "Management")]),
+  };
+
+  const refreshed = await run(["meta", "refresh", "--json"], env, {});
+
+  expect(refreshed.stderr).toBe("");
+  expect(refreshed.exitCode).toBe(0);
+  const changes = JSON.parse(refreshed.stdout).changes as Array<Record<string, unknown>>;
+  expect(changes).toEqual(expect.arrayContaining([
+    { section: "sprints", kind: "added", id: 59, detail: "added Sprint 15 (59)" },
+    { section: "sprints", kind: "removed", id: 57, detail: "removed Sprint 13 (57)" },
+    {
+      section: "buckets",
+      kind: "changed",
+      id: 2,
+      detail: "name: Managements -> Management (2)",
+    },
+    { section: "buckets", kind: "removed", id: 4, detail: "removed PoC (4)" },
+  ]));
+});

@@ -12,11 +12,13 @@ import {
   type MetadataChange,
   type ProjectVocabulary,
   type StoredActivity,
+  type StoredBucket,
   type StoredCategory,
   type StoredCustomField,
   type StoredMember,
   type StoredMetadata,
   type StoredPriority,
+  type StoredSprint,
   type StoredStatus,
   type StoredVersion,
   type StoredType,
@@ -133,6 +135,31 @@ const categoryLookup: LookupSpec<StoredCategory, ProjectVocabulary> = {
   name: "categories",
   description: "List the categories of the active project",
   select: (vocabulary) => requireVocabulary(vocabulary, "categories"),
+  options: [profileOption, projectOption],
+  columns: [
+    { title: "ID", cell: (entry) => String(entry.id) },
+    { title: "NAME", cell: (entry) => entry.name },
+  ],
+};
+
+const sprintLookup: LookupSpec<StoredSprint, ProjectVocabulary> = {
+  name: "sprints",
+  description: "List the sprints of the active project",
+  select: (vocabulary) => requireVocabulary(vocabulary, "sprints"),
+  options: [profileOption, projectOption],
+  columns: [
+    { title: "ID", cell: (entry) => String(entry.id) },
+    { title: "NAME", cell: (entry) => entry.name },
+    { title: "START", cell: (entry) => entry.start_date ?? "" },
+    { title: "FINISH", cell: (entry) => entry.finish_date ?? "" },
+    { title: "STATUS", cell: (entry) => entry.status },
+  ],
+};
+
+const bucketLookup: LookupSpec<StoredBucket, ProjectVocabulary> = {
+  name: "buckets",
+  description: "List the backlog buckets of the active project",
+  select: (vocabulary) => requireVocabulary(vocabulary, "buckets"),
   options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
@@ -381,6 +408,23 @@ function projectLoad(runtime: MetaRuntime): MetaLoader<ProjectVocabulary> {
 }
 
 /**
+ * The project load for the sprint and bucket lookups: a vocabulary stored
+ * before those sources were captured is refreshed once instead of
+ * listing nothing.
+ */
+function backlogLoad(runtime: MetaRuntime): MetaLoader<ProjectVocabulary> {
+  return async (options) => {
+    const profile = await projectProfile(runtime, options);
+    const vocabulary = await loadProjectVocabulary(runtime.env, profile);
+    if (vocabulary.sprints !== undefined && vocabulary.buckets !== undefined) {
+      return vocabulary;
+    }
+    await refreshStoredMetadata(runtime.env, profile);
+    return loadProjectVocabulary(runtime.env, profile);
+  };
+}
+
+/**
  * The fields lookup needs the instance types too, to name them. Instance
  * metadata is loaded first because the vocabulary is stored inside it, so
  * an empty cache is filled by one fetch of each rather than two.
@@ -397,7 +441,7 @@ function fieldLoad(runtime: MetaRuntime): MetaLoader<FieldData> {
 }
 
 export function registerMetaCommands(parent: Command, runtime: MetaRuntime): void {
-  // Eight read-only lookups, one declaration each.
+  // Ten read-only lookups, one declaration each.
   const instance = instanceLoad(runtime);
   const project = projectLoad(runtime);
   addLookup(parent, runtime, typeLookup, instance);
@@ -408,6 +452,8 @@ export function registerMetaCommands(parent: Command, runtime: MetaRuntime): voi
   addLookup(parent, runtime, categoryLookup, project);
   addLookup(parent, runtime, fieldLookup, fieldLoad(runtime));
   addLookup(parent, runtime, activityLookup, project);
+  addLookup(parent, runtime, sprintLookup, backlogLoad(runtime));
+  addLookup(parent, runtime, bucketLookup, backlogLoad(runtime));
   registerShow(parent, runtime);
   registerRefresh(parent, runtime);
   registerClear(parent, runtime);

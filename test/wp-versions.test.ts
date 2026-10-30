@@ -275,7 +275,7 @@ describe("wp --version writes through the schema (#47)", () => {
       .reply(200, collection([{ id: 32, name: "1.0.0", status: "open" }])).persist();
     pool.intercept({ path: (c) => c.startsWith("/api/v3/projects/13/types"), method: "GET" })
       .reply(200, collection([{ id: 2, name: "Task" }])).persist();
-    for (const p of ["memberships", "categories", "time_entries/activities"]) {
+    for (const p of ["memberships", "categories", "sprints", "backlog_buckets", "time_entries/activities"]) {
       pool.intercept({ path: (c) => c.includes(p), method: "GET" })
         .reply(200, empty).persist();
     }
