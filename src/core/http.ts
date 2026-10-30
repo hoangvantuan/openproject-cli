@@ -214,6 +214,15 @@ export async function apiDelete(
   return send(instanceUrl, apiKey, path, "DELETE");
 }
 
+export async function apiDeleteRaw(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<RawWriteResponse> {
+  const response = await request(instanceUrl, apiKey, path, "DELETE");
+  return { status: response.status, body: await bodyOf(response) };
+}
+
 export async function apiGet(
   instanceUrl: string,
   apiKey: string,

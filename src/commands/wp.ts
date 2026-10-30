@@ -1,6 +1,12 @@
 import { Option, type Command } from "commander";
 
-import { OpCliError, refuseCombined, writeRefusal } from "../core/errors.js";
+import {
+  OpCliError,
+  refuseCombined,
+  unknownIfUnfinished,
+  writeFailure,
+  type WriteWording,
+} from "../core/errors.js";
 import {
   applyScalars,
   SCALAR_OPTIONS,
@@ -25,6 +31,7 @@ import {
 import { flattenHalRecord, isFlatLink, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
+  apiDeleteRaw,
   apiGet,
   apiPatch,
   apiPost,
@@ -1486,37 +1493,41 @@ function pointedAttribute(body: unknown): string | undefined {
   return name.replace(/^links[./]/i, "");
 }
 
+/** What a work package write says when its outcome cannot be known. */
+const WP_WRITES = {
+  create: {
+    action: "create",
+    unknown: "whether the work package was created is unknown",
+    check: "check whether the work package exists before repeating the command.",
+  },
+  update: {
+    action: "update",
+    unknown: "whether the change was applied is unknown",
+    check: "run op-cli wp get to see the stored values before repeating the command.",
+  },
+  move: {
+    action: "move",
+    unknown: "whether the change was applied is unknown",
+    check: "run op-cli wp get to see the stored values before repeating the command.",
+  },
+} as const satisfies Record<string, WriteWording>;
+
 /**
  * Catalogue mapping for a write that survived the proof-carrying retry:
- * 404 stays NOT_FOUND, 5xx becomes the unknown-state NETWORK_ERROR, and
- * everything else is the shared refusal mapping.
+ * 409 is the optimistic-locking CONFLICT, everything else is the shared
+ * write mapping (404, the unknown-state 5xx, the refusal).
  */
-function writeRejection(status: number, body: unknown, verb = "create"): OpCliError {
-  if (status === 404) {
-    return new OpCliError("NOT_FOUND");
-  }
+function writeRejection(
+  status: number,
+  body: unknown,
+  verb: keyof typeof WP_WRITES = "create",
+): OpCliError {
   // A 409 is the optimistic-locking catalogue entry: the caller either
   // already handled the retry rule or has nothing safe left to try.
   if (status === 409) {
     return new OpCliError("CONFLICT");
   }
-  // A 5xx means the request may still have been applied server-side, so
-  // the honest answer is "unknown state", never a retry that could
-  // duplicate the work package.
-  if (status >= 500) {
-    const unknownState = verb === "create"
-      ? "whether the work package was created is unknown."
-      : "whether the change was applied is unknown.";
-    const hint = verb === "create"
-      ? "check whether the work package exists before repeating the command."
-      : "run op-cli wp get to see the stored values before repeating the command.";
-    return new OpCliError(
-      "NETWORK_ERROR",
-      `the ${verb} failed with HTTP ${status}; ${unknownState}`,
-      hint,
-    );
-  }
-  return writeRefusal(verb, status, body);
+  return writeFailure(status, body, WP_WRITES[verb]);
 }
 
 /**
@@ -1524,56 +1535,54 @@ function writeRejection(status: number, body: unknown, verb = "create"): OpCliEr
  * timeouts and network errors are never retried on writes, and exit 6
  * says so instead of inviting a duplicate.
  */
-async function postCreate(
+function postCreate(
   profile: ActiveProfile,
   payload: Record<string, unknown>,
 ): Promise<RawWriteResponse> {
-  try {
-    return await apiPostRaw(
+  return unknownIfUnfinished(
+    () => apiPostRaw(
       profile.instanceUrl,
       profile.apiKey,
       "/api/v3/work_packages",
       payload,
-    );
-  } catch (error) {
-    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
-      throw new OpCliError(
-        "NETWORK_ERROR",
-        "the create request did not complete; whether the work package was created is unknown.",
-        "check whether the work package exists before repeating the command.",
-      );
-    }
-    throw error;
-  }
+    ),
+    WP_WRITES.create,
+  );
 }
 
 /**
  * An update request whose failure to complete leaves the state unknown:
  * like create, timeouts and network errors are never retried on writes.
  */
-async function patchWp(
+function patchWp(
   profile: ActiveProfile,
   id: string,
   payload: Record<string, unknown>,
 ): Promise<RawWriteResponse> {
-  try {
-    return await apiPatchRaw(
+  return unknownIfUnfinished(
+    () => apiPatchRaw(
       profile.instanceUrl,
       profile.apiKey,
       `/api/v3/work_packages/${id}`,
       payload,
-    );
-  } catch (error) {
-    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
-      throw new OpCliError(
-        "NETWORK_ERROR",
-        "the update request did not complete; whether the change was applied is unknown.",
-        "run op-cli wp get to see the stored values before repeating the command.",
-      );
-    }
-    throw error;
-  }
+    ),
+    WP_WRITES.update,
+  );
 }
+
+/** What a comment write says when its outcome cannot be known. */
+const COMMENT_WRITE = (reference: string): WriteWording => ({
+  action: "comment",
+  unknown: "whether the comment was posted is unknown",
+  check: `run op-cli wp comments ${reference} before repeating the command.`,
+});
+
+/** What a watch or unwatch says when its outcome cannot be known. */
+const WATCH_WRITE = (reference: string): WriteWording => ({
+  action: "watch change",
+  unknown: "whether the watcher list changed is unknown",
+  check: `run op-cli wp watchers ${reference} before repeating the command.`,
+});
 
 /** The lockVersion a stored record carries; without it there is no safe update. */
 function lockVersionOf(record: unknown): number {
@@ -3343,12 +3352,22 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       const body = options.internal === true
         ? { comment: { raw: text }, internal: true }
         : { comment: { raw: text } };
-      const created = activityRow(await apiPost(
-        profile.instanceUrl,
-        profile.apiKey,
-        `/api/v3/work_packages/${reference}/activities`,
-        body,
-      ));
+      const response = await unknownIfUnfinished(
+        () => apiPostRaw(
+          profile.instanceUrl,
+          profile.apiKey,
+          `/api/v3/work_packages/${reference}/activities`,
+          body,
+        ),
+        COMMENT_WRITE(reference),
+      );
+      // The instance explains its own refusals (an internal comment with
+      // the feature off is a 422, not a 403), so the status goes through
+      // the shared write mapping instead of a bare API_ERROR.
+      if (response.status < 200 || response.status >= 300) {
+        throw writeFailure(response.status, response.body, COMMENT_WRITE(reference));
+      }
+      const created = activityRow(response.body);
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
       )(created);
@@ -3475,15 +3494,28 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         }
         const changed = present !== watching;
         if (changed && watching) {
-          const created = watcherRow(await apiPost(
-            profile.instanceUrl,
-            profile.apiKey,
-            path,
-            { user: { href: `/api/v3/users/${userId}` } },
-          ));
+          const response = await unknownIfUnfinished(
+            () => apiPostRaw(
+              profile.instanceUrl,
+              profile.apiKey,
+              path,
+              { user: { href: `/api/v3/users/${userId}` } },
+            ),
+            WATCH_WRITE(reference),
+          );
+          if (response.status < 200 || response.status >= 300) {
+            throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
+          }
+          const created = watcherRow(response.body);
           name = typeof created.name === "string" ? created.name : null;
         } else if (changed) {
-          await apiDelete(profile.instanceUrl, profile.apiKey, `${path}/${userId}`);
+          const response = await unknownIfUnfinished(
+            () => apiDeleteRaw(profile.instanceUrl, profile.apiKey, `${path}/${userId}`),
+            WATCH_WRITE(reference),
+          );
+          if (response.status < 200 || response.status >= 300) {
+            throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
+          }
         }
         if (options.json === true) {
           runtime.write(`${JSON.stringify({

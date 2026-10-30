@@ -234,6 +234,22 @@ describe("wp watch", () => {
     expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
   });
 
+  // A 5xx on a write leaves the state unknown: exit 6, never API_ERROR
+  // (ADR-0002; roundup review S4).
+  test("a 5xx on the add is the unknown-state NETWORK_ERROR", async () => {
+    installApi([
+      { method: "GET", path: "/api/v3/users/me", body: ME },
+      { method: "GET", path: WATCHERS, body: collection([]) },
+      { method: "POST", path: WATCHERS, status: 500, body: {} },
+    ]);
+
+    const result = await runWp(["watch", "12"]);
+
+    expect(result.exitCode).toBe(6);
+    expect(result.stderr).toMatch(/^\[NETWORK_ERROR\]/);
+    expect(result.stderr).toContain("unknown");
+  });
+
   test("a non-numeric id is a usage error before any request", async () => {
     const { calls } = installApi([]);
 
@@ -277,6 +293,20 @@ describe("wp unwatch", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("not watching");
     expect(writes(calls)).toHaveLength(0);
+  });
+
+  test("a 5xx on the remove is the unknown-state NETWORK_ERROR", async () => {
+    installApi([
+      { method: "GET", path: "/api/v3/users/me", body: ME },
+      { method: "GET", path: WATCHERS, body: collection([user(5, "Tuan Ha")]) },
+      { method: "DELETE", path: `${WATCHERS}/5`, status: 502, body: {} },
+    ]);
+
+    const result = await runWp(["unwatch", "12"]);
+
+    expect(result.exitCode).toBe(6);
+    expect(result.stderr).toMatch(/^\[NETWORK_ERROR\]/);
+    expect(result.stderr).toContain("unknown");
   });
 
   test("--user accepts a numeric id", async () => {

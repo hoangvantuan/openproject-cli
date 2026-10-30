@@ -920,6 +920,50 @@ describe("wp comment", () => {
     expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
     expect(result.stderr).toMatch(/internal comments/);
   });
+
+  // The server answers 422 (not 403) when the feature is off for the
+  // project; its explanation must reach the caller (roundup review S1).
+  test("a 422 on an internal comment surfaces the server's message", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-422-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 422,
+          body: { message: "Internal comments are disabled for this project." },
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, [
+      "comment",
+      "1520",
+      "secret",
+      "--internal",
+    ]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toMatch(/^\[API_ERROR\]/);
+    expect(result.stderr).toContain("Internal comments are disabled for this project.");
+  });
+
+  test("a 5xx on a comment is the unknown-state NETWORK_ERROR, never a retry", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-500-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        { path: activitiesPath(), method: "POST", status: 500, body: {} },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, ["comment", "1520", "hello"]);
+
+    expect(result.exitCode).toBe(6);
+    expect(result.stderr).toMatch(/^\[NETWORK_ERROR\]/);
+    expect(result.stderr).toContain("unknown");
+  });
 });
 
 /**

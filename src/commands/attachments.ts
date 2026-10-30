@@ -8,7 +8,12 @@ import {
   defineCollectionCommand,
   type CollectionRuntime,
 } from "../core/define.js";
-import { OpCliError, writeRefusal } from "../core/errors.js";
+import {
+  OpCliError,
+  unknownIfUnfinished,
+  writeFailure,
+  type WriteWording,
+} from "../core/errors.js";
 import { flattenHalRecord } from "../core/hal.js";
 import {
   apiGet,
@@ -116,6 +121,13 @@ function renderAttachment(
   ));
 }
 
+/** What an upload says when its outcome cannot be known. */
+const UPLOAD_WRITE = (reference: string): WriteWording => ({
+  action: "upload",
+  unknown: "whether the file was attached is unknown",
+  check: `run op-cli wp attachments ${reference} before repeating the command.`,
+});
+
 async function pathKind(path: string): Promise<"file" | "directory" | "other" | "missing"> {
   try {
     const info = await stat(path);
@@ -180,36 +192,17 @@ async function upload(
     ...(options.description === undefined ? {} : { description: { raw: options.description } }),
   }));
   form.append("file", blob, fileName);
-  let response;
-  try {
-    response = await apiPostMultipartRaw(
+  const response = await unknownIfUnfinished(
+    () => apiPostMultipartRaw(
       profile.instanceUrl,
       profile.apiKey,
       `/api/v3/work_packages/${reference}/attachments`,
       form,
-    );
-  } catch (error) {
-    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
-      throw new OpCliError(
-        "NETWORK_ERROR",
-        "the upload did not complete; whether the file was attached is unknown.",
-        `run op-cli wp attachments ${reference} before repeating the command.`,
-      );
-    }
-    throw error;
-  }
-  if (response.status === 404) {
-    throw new OpCliError("NOT_FOUND");
-  }
-  if (response.status >= 500) {
-    throw new OpCliError(
-      "NETWORK_ERROR",
-      `the upload failed with HTTP ${String(response.status)}; whether the file was attached is unknown.`,
-      `run op-cli wp attachments ${reference} before repeating the command.`,
-    );
-  }
+    ),
+    UPLOAD_WRITE(reference),
+  );
   if (response.status < 200 || response.status >= 300) {
-    throw writeRefusal("upload", response.status, response.body);
+    throw writeFailure(response.status, response.body, UPLOAD_WRITE(reference));
   }
   renderAttachment(runtime, options.json === true, attachmentRow(response.body));
 }

@@ -125,6 +125,64 @@ export function writeRefusal(
   );
 }
 
+/** How one kind of write words its refusals and its unknown outcomes. */
+export interface WriteWording {
+  /** The write as a noun: "create", "update", "upload", "comment". */
+  readonly action: string;
+  /** What is not known after a 5xx or an unfinished request. */
+  readonly unknown: string;
+  /** What to run before repeating the command. */
+  readonly check: string;
+}
+
+/**
+ * The catalogue entry for a write that did not succeed, shared by every
+ * command that writes (ADR-0002): 404 is NOT_FOUND, a 5xx is the
+ * unknown-state NETWORK_ERROR because the request may still have been
+ * applied (never a retry that could write twice), and anything else is a
+ * refusal that quotes the instance's own explanation.
+ */
+export function writeFailure(
+  status: number,
+  body: unknown,
+  wording: WriteWording,
+): OpCliError {
+  if (status === 404) {
+    return new OpCliError("NOT_FOUND");
+  }
+  if (status >= 500) {
+    return new OpCliError(
+      "NETWORK_ERROR",
+      `the ${wording.action} failed with HTTP ${String(status)}; ${wording.unknown}.`,
+      wording.check,
+    );
+  }
+  return writeRefusal(wording.action, status, body);
+}
+
+/**
+ * Runs a write whose request may never complete: timeouts and network
+ * errors are never retried on writes, and exit 6 says the outcome is
+ * unknown instead of inviting a duplicate.
+ */
+export async function unknownIfUnfinished<T>(
+  attempt: () => Promise<T>,
+  wording: WriteWording,
+): Promise<T> {
+  try {
+    return await attempt();
+  } catch (error) {
+    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
+      throw new OpCliError(
+        "NETWORK_ERROR",
+        `the ${wording.action} request did not complete; ${wording.unknown}.`,
+        wording.check,
+      );
+    }
+    throw error;
+  }
+}
+
 export function renderTextError(error: OpCliError): string {
   return `[${error.code}] ${error.message} Hint: ${error.hint}\n`;
 }
