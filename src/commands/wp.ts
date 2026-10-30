@@ -279,7 +279,11 @@ function addFilterFlags(command: Command): Command {
       "--created-after <value>",
       "only work packages created since; same date forms as --updated-after",
     )
-    .option("--due-before <date>", "due on or before this date; same date forms as --updated-after, future dates allowed")
+    .option(
+      "--due-before <date>",
+      "due on or before this date: YYYY-MM-DD, today, yesterday, or Nd; "
+        + "today/yesterday/Nd count back from today, only YYYY-MM-DD reaches the future",
+    )
     .option("--due-after <date>", "due on or after this date; same date forms as --due-before")
     .option("--overdue", "open work packages whose due date is before today")
     .option("--search <text>", "substring matched against work package subjects")

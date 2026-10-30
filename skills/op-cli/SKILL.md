@@ -30,9 +30,10 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it. The same empty-value convention
     clears links on `wp update`: `--assignee ""`, `--accountable ""`,
-    `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`. `--type`, `--status`, `--priority`,
-    and `--subject` refuse an empty value, and so does every empty value
-    on `wp create`, all with `USAGE_ERROR` before any request.
+    `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`.
+    `--type`, `--status`, `--priority`, and `--subject` refuse an empty
+    value, and so does every empty value on `wp create`, all with
+    `USAGE_ERROR` before any request.
   - Scalar attributes: `--start`/`--due` (YYYY-MM-DD), `--estimate`/
     `--remaining` (durations like `4h`, `1h30m`, `PT4H`, sent as ISO 8601),
     `--done` (0-100), `--story-points` (whole number), on `wp create` and
@@ -40,7 +41,8 @@ numeric; use each command's help to distinguish them. Run any command below with
     validated locally with `USAGE_ERROR`; server refusals such as
     `--done` in status-based progress mode show the server's message.
     `wp create --stdin` items use the keys `start`, `due`, `estimate`,
-    `remaining`, `done`, `storyPoints` (or `story-points`).
+    `remaining`, `done`, `storyPoints` (or `story-points`); `observedIn`
+    also reads as `observed-in`.
   - `--accountable <name|id|me>` sets the work package Accountable (API
     field `responsible`) on `wp create`/`update`, resolved like
     `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk

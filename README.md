@@ -61,8 +61,9 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
   four commands report instance-wide.
 - **Finding things needs no id.** `wp list --search <text>` matches
   subjects server-side, `--created-after` / `--updated-after` bound by
-  date, `--due-before` / `--due-after` / `--overdue` bound by due date, and `time list` / `time report` take `--from` and an inclusive
-  `--to`. Every name flag also accepts the human name or the id.
+  date, `--due-before` / `--due-after` / `--overdue` bound by due date
+  (`7d` counts back from today; only `YYYY-MM-DD` reaches the future), and
+  `time list` / `time report` take `--from` and an inclusive `--to`. Every name flag also accepts the human name or the id.
 - **Tables respect the terminal.** Read from a terminal, a table is
   bounded to its width and long cells are cut with an ellipsis; `--json`
   output is never truncated.

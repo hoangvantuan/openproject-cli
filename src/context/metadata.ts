@@ -775,12 +775,10 @@ export function requireVocabulary<S extends OptionalVocabularySource>(
 }
 
 /** One refused source of one stored project, flattened for reporting. */
-export interface UnavailableEntry {
+export type UnavailableEntry = UnavailableSource & {
   readonly project_id: number;
   readonly source: OptionalVocabularySource;
-  readonly status: 403 | 404;
-  readonly message: string;
-}
+};
 
 export function unavailableSources(metadata: StoredMetadata): Array<UnavailableEntry> {
   const entries: Array<UnavailableEntry> = [];
