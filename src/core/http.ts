@@ -1,4 +1,4 @@
-import { explanationOf, OpCliError } from "./errors.js";
+import { explanationOf, OpCliError, writeRefusal } from "./errors.js";
 import type { RunEnvironment } from "../run.js";
 
 export interface AuthenticatedUser {
@@ -156,6 +156,11 @@ async function send(
   }
   if (response.status === 404) {
     throw new OpCliError("NOT_FOUND");
+  }
+  if (response.status < 500 && !response.ok) {
+    // A client error carries OpenProject's own explanation, and waiting
+    // will not change the answer: quote it instead of "try again later".
+    throw writeRefusal("request", response.status, await bodyOf(response));
   }
   if (!response.ok) {
     throw new OpCliError("API_ERROR");

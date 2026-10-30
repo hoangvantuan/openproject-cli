@@ -98,7 +98,10 @@ async function runEdit(args: ReadonlyArray<string>) {
 }
 
 describe("wp comment-edit", () => {
-  test("patches {comment:{raw}} and prints the updated comment", async () => {
+  // PATCH /activities/{id} takes the comment as a plain string; the
+  // {raw} object POST /work_packages/{id}/activities takes is a 400 here
+  // ("comment is invalid") on a live OpenProject 17.
+  test("patches {comment:<string>} and prints the updated comment", async () => {
     const { bodies } = installApi([
       { method: "GET", status: 200, body: activity("Comment", "old") },
       { method: "PATCH", status: 200, body: activity("Comment", "new text") },
@@ -108,7 +111,7 @@ describe("wp comment-edit", () => {
 
     expect(result.exitCode).toBe(0);
     expect(bodies.map((body) => JSON.parse(body) as unknown)).toEqual([
-      { comment: { raw: "new text" } },
+      { comment: "new text" },
     ]);
     expect(JSON.parse(result.stdout)).toMatchObject({
       id: 1480,
@@ -128,7 +131,7 @@ describe("wp comment-edit", () => {
 
     expect(result.exitCode).toBe(0);
     expect(bodies.map((body) => JSON.parse(body) as unknown)).toEqual([
-      { comment: { raw: "new text" } },
+      { comment: "new text" },
     ]);
     expect(JSON.parse(result.stdout)).toMatchObject({ id: 1480, internal: true });
   });
@@ -207,6 +210,34 @@ describe("wp comment-edit", () => {
     expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
     expect(result.stderr).toMatch(/edit notes/i);
     expect(result.stderr).not.toMatch(/auth login/);
+  });
+
+  // A client error carries the server's own explanation, and the hint must
+  // not suggest that trying again later helps.
+  test("a 400 on the PATCH surfaces the server's message without 'try again later'", async () => {
+    installApi([
+      { method: "GET", status: 200, body: activity("Comment", "old") },
+      { method: "PATCH", status: 400, body: { message: "Bad request: comment is invalid" } },
+    ]);
+
+    const result = await runEdit(["1480", "text"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toMatch(/^\[API_ERROR\]/);
+    expect(result.stderr).toContain("Bad request: comment is invalid");
+    expect(result.stderr).not.toMatch(/try again later/);
+  });
+
+  test("a 5xx on the PATCH is the unknown-state NETWORK_ERROR", async () => {
+    installApi([
+      { method: "GET", status: 200, body: activity("Comment", "old") },
+      { method: "PATCH", status: 502, body: {} },
+    ]);
+
+    const result = await runEdit(["1480", "text"]);
+
+    expect(result.exitCode).toBe(6);
+    expect(result.stderr).toContain("unknown");
   });
 
   test("a 401 on the PATCH still blames the credentials", async () => {

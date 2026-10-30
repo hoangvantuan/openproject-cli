@@ -33,7 +33,6 @@ import {
   apiDelete,
   apiDeleteRaw,
   apiGet,
-  apiPatch,
   apiPost,
   apiPatchRaw,
   apiPostRaw,
@@ -1575,6 +1574,13 @@ const COMMENT_WRITE = (reference: string): WriteWording => ({
   action: "comment",
   unknown: "whether the comment was posted is unknown",
   check: `run op-cli wp comments ${reference} before repeating the command.`,
+});
+
+/** What a comment edit says when its outcome cannot be known. */
+const COMMENT_EDIT_WRITE = (activityId: string): WriteWording => ({
+  action: "comment edit",
+  unknown: "whether the comment was changed is unknown",
+  check: `run op-cli wp comments to see comment ${activityId} before repeating the command.`,
 });
 
 /** What a watch or unwatch says when its outcome cannot be known. */
@@ -3452,12 +3458,21 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       }
       let updated: Record<string, unknown>;
       try {
-        updated = activityRow(await apiPatch(
-          profile.instanceUrl,
-          profile.apiKey,
-          path,
-          { comment: { raw: text } },
-        ));
+        // PATCH takes the comment as a plain string; the {raw} object the
+        // POST takes is a 400 here.
+        const response = await unknownIfUnfinished(
+          () => apiPatchRaw(
+            profile.instanceUrl,
+            profile.apiKey,
+            path,
+            { comment: text },
+          ),
+          COMMENT_EDIT_WRITE(activityId),
+        );
+        if (response.status < 200 || response.status >= 300) {
+          throw writeFailure(response.status, response.body, COMMENT_EDIT_WRITE(activityId));
+        }
+        updated = activityRow(response.body);
       } catch (error) {
         // A 401 stays AUTH_FAILED as http.ts raised it; only a 403 is
         // this key lacking the right to edit someone else's comment.
