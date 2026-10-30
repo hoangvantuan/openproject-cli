@@ -28,6 +28,14 @@ _Avoid_: task, issue, ticket, card
 The work packages of a project that sit in neither a sprint nor a backlog bucket. A placement state of the backlogs module, listed with `wp list --backlog-inbox`.
 _Avoid_: inbox on its own, notification inbox (the unrelated read/unread feed behind `op-cli notification`)
 
+**Watcher**:
+A user subscribed to a work package's changes, managed with `wp watch` / `wp unwatch` and listed with `wp watchers`. Plain users: the watcher's id is the user id.
+_Avoid_: follower, subscriber
+
+**Attachment**:
+A file stored on a work package, addressed by its own attachment id (not the work package id), as listed by `wp attachments` and fetched with `wp attachment-download`. There is deliberately no delete.
+_Avoid_: upload, file (for the stored record)
+
 **Escape hatch**:
 Any route to an endpoint the CLI does not cover: a raw request command, a printed `curl` line, an exposed auth header. Deliberately absent. Bypassing resolution defeats the CLI's purpose, so the answer to an uncovered endpoint is to cover it with a command.
 _Avoid_: passthrough, raw mode, proxy

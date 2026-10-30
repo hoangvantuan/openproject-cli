@@ -319,7 +319,7 @@ function addFilterFlags(command: Command): Command {
     .option("--id <id>", "work package id; repeat to OR values", collectValue, [])
     .option(
       "--include-subprojects",
-      "include subprojects in a --project listing (the default)",
+      "include subprojects in a --project listing (the default; an instance setting may change what a project clause covers)",
     )
     .option(
       "--no-include-subprojects",

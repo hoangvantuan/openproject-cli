@@ -45,6 +45,8 @@ op-cli wp list --sort updatedAt:desc   # repeatable; also --id <id>, --no-includ
 op-cli wp update 123 --sprint "Sprint 14"   # or --bucket <name>, never both
 op-cli wp list --backlog-inbox          # in neither a sprint nor a backlog bucket
 op-cli wp watchers <id>                # list watchers; also `wp watch` / `wp unwatch`, `wp list --watcher me`
+op-cli wp attach 42 ./trace.log        # upload; `wp attachments 42` lists, `wp attachment-download <id>` fetches
+op-cli wp comment 42 "Ask first" --internal   # internal comment, where the instance supports them
 op-cli time log 42 --hours 1h30m --activity Development
 op-cli time report --from 2026-08-01 --to 2026-08-31   # closed period
 op-cli project member add web alice Manager   # join members so assignment works

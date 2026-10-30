@@ -224,7 +224,7 @@ export function buildWpFilters(
   if (flags.includeSubprojects === false) {
     // The global project clause reaches subprojects. subprojectId "none"
     // drops them, but the instance only evaluates it inside the
-    // project-scoped collection (see projectScopedPath), so the project
+    // project-scoped collection (see workPackagesPath in commands/wp.ts), so the project
     // clause is left out here and the route carries the scope.
     filters.push({ name: "subprojectId", operator: "!*", values: [] });
   }
@@ -355,27 +355,27 @@ export function filtersQuery(filters: ReadonlyArray<WpFilter>): string {
 }
 
 /**
- * The sort fields `wp list --sort` accepts: the flattened record names
- * users see, mapped to the API's sortBy keys.
+ * The sort fields `wp list --sort` accepts. The flattened record names
+ * users see are also the API's sortBy keys, so no mapping is needed.
  */
-const SORT_FIELDS: Readonly<Record<string, string>> = {
-  updatedAt: "updatedAt",
-  createdAt: "createdAt",
-  dueDate: "dueDate",
-  startDate: "startDate",
-  priority: "priority",
-  status: "status",
-  id: "id",
-  subject: "subject",
-};
+const SORT_FIELDS = [
+  "updatedAt",
+  "createdAt",
+  "dueDate",
+  "startDate",
+  "priority",
+  "status",
+  "id",
+  "subject",
+] as const;
 
 /** Parse repeated `field[:asc|desc]` values into the API's sortBy pairs. */
 export function parseSort(raw: ReadonlyArray<string>): Array<[string, "asc" | "desc"]> {
-  const allowed = Object.keys(SORT_FIELDS).join(", ");
+  const allowed = SORT_FIELDS.join(", ");
   const pairs: Array<[string, "asc" | "desc"]> = [];
   for (const entry of raw) {
     const [name = "", direction = "asc", ...rest] = entry.trim().split(":");
-    const field = Object.keys(SORT_FIELDS).find(
+    const field = SORT_FIELDS.find(
       (candidate) => candidate.toLowerCase() === name.toLowerCase(),
     );
     if (field === undefined) {
@@ -393,14 +393,14 @@ export function parseSort(raw: ReadonlyArray<string>): Array<[string, "asc" | "d
         "--sort <field>:asc or <field>:desc; the direction defaults to asc.",
       );
     }
-    if (pairs.some(([existing]) => existing === SORT_FIELDS[field])) {
+    if (pairs.some(([existing]) => existing === field)) {
       throw new OpCliError(
         "USAGE_ERROR",
         `--sort lists ${field} twice.`,
         "name each field once.",
       );
     }
-    pairs.push([SORT_FIELDS[field]!, lowered]);
+    pairs.push([field, lowered]);
   }
   return pairs;
 }
