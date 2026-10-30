@@ -28,7 +28,15 @@ numeric; use each command's help to distinguish them. Run any command below with
     `time report` to that project and its subprojects. Without one, those
     four report instance-wide.
   - `--field "Estimate=5"` sets a custom field by human name;
-    `--field "Estimate="` clears it.
+    `--field "Estimate="` clears it. The same empty-value convention
+    clears links on `wp update`: `--assignee ""`, `--accountable ""`,
+    `--version ""`, `--category ""`, `--parent ""`. `--type`, `--status`, `--priority`,
+    and `--subject` refuse an empty value, and so does every empty value
+    on `wp create`, all with `USAGE_ERROR` before any request.
+  - `--accountable <name|id|me>` sets the work package Accountable (API
+    field `responsible`) on `wp create`/`update`, resolved like
+    `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk
+    `--stdin` items take an `accountable` key.
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`, `wp history`/`comments`/
@@ -74,6 +82,12 @@ op-cli wp create Subject --type Bug --priority High
 op-cli wp update <id> --field Estimate=5
 # change status, assignee, version, category, priority
 op-cli wp update <id> --status Closed --assignee me
+# clear a link with an empty value
+op-cli wp update <id> --assignee ""
+# Accountable (API field responsible): set, clear, filter
+op-cli wp update <id> --accountable Linh
+op-cli wp update <id> --accountable ""
+op-cli wp list --accountable me
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>

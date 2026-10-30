@@ -722,3 +722,91 @@ describe("wp update --description", () => {
     expect(patchBodies[0]?.description).toEqual({ raw: "" });
   });
 });
+
+describe("wp update --accountable", () => {
+  test("resolves a member name into _links.responsible", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update", "675", "--accountable", "Linh Nguyen",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toEqual([
+      { lockVersion: 1, _links: { responsible: { href: "/api/v3/users/7" } } },
+    ]);
+  });
+
+  test("a numeric id goes straight in", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    await runWp(configDir, cacheDir, ["update", "675", "--accountable", "9"]);
+    const links = patchBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.responsible.href).toBe("/api/v3/users/9");
+  });
+});
+
+describe("wp update clearing a link with an empty value", () => {
+  const CLEARS: ReadonlyArray<readonly [string, string]> = [
+    ["--assignee", "assignee"],
+    ["--accountable", "responsible"],
+    ["--version", "version"],
+    ["--category", "category"],
+    ["--parent", "parent"],
+  ];
+
+  for (const [flag, attribute] of CLEARS) {
+    test(`${flag} "" patches ${attribute} with a null href`, async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      const { patchBodies } = installUpdateApi({
+        gets: [wpRecord(1, "open")],
+        patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+      });
+      const result = await runWp(configDir, cacheDir, ["update", "675", flag, ""]);
+      expect(result.exitCode).toBe(0);
+      expect(patchBodies).toEqual([
+        { lockVersion: 1, _links: { [attribute]: { href: null } } },
+      ]);
+    });
+  }
+
+  for (const flag of ["--type", "--status", "--priority", "--subject"]) {
+    test(`${flag} "" is a usage error before any request`, async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      const { patchCalls } = installUpdateApi({ gets: [] });
+      const result = await runWp(configDir, cacheDir, ["update", "675", flag, ""]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("USAGE_ERROR");
+      expect(patchCalls()).toBe(0);
+    });
+  }
+
+  test("a cleared link somebody else changed is a conflict like any touched attribute", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const assigned = (id: number): Record<string, unknown> => {
+      const record = wpRecord(1, "open");
+      (record._links as Record<string, unknown>).assignee = {
+        href: `/api/v3/users/${String(id)}`,
+      };
+      return record;
+    };
+    const { patchBodies } = installUpdateApi({
+      gets: [assigned(7), assigned(8)],
+      patchReplies: [{ status: 409, body: {} }],
+    });
+    const result = await runWp(configDir, cacheDir, ["update", "675", "--assignee", ""]);
+    expect(result.exitCode).toBe(5);
+    expect(result.stderr).toContain("assignee");
+    expect(patchBodies).toHaveLength(1);
+  });
+});

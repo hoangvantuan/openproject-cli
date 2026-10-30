@@ -203,6 +203,7 @@ interface FilterFlagOptions {
   readonly status?: Array<string>;
   readonly type?: Array<string>;
   readonly assignee?: Array<string>;
+  readonly accountable?: Array<string>;
   readonly author?: Array<string>;
   readonly version?: Array<string>;
   readonly category?: Array<string>;
@@ -226,6 +227,12 @@ function addFilterFlags(command: Command): Command {
     .option("--status <name>", "status name or id; repeat to OR values", collectValue, [])
     .option("--type <name>", "type name or id; repeat to OR values", collectValue, [])
     .option("--assignee <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option(
+      "--accountable <name>",
+      "Accountable (API field responsible): user name, id, or me; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--author <name>", "user name, id, or me; repeat to OR values", collectValue, [])
     .option("--version <name>", "version name or id; repeat to OR values", collectValue, [])
     .option("--category <name>", "category name or id; repeat to OR values", collectValue, [])
@@ -251,6 +258,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     statuses: options.status,
     types: options.type,
     assignees: options.assignee,
+    accountables: options.accountable,
     authors: options.author,
     versions: options.version,
     categories: options.category,
@@ -392,6 +400,7 @@ interface CreateValueFlags {
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
+  readonly accountable?: string;
   readonly version?: string;
   readonly category?: string;
   readonly parent?: string;
@@ -530,6 +539,7 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "status",
   "priority",
   "assignee",
+  "accountable",
   "version",
   "category",
   "parent",
@@ -569,6 +579,7 @@ function parseBulkItem(
     status?: string;
     priority?: string;
     assignee?: string;
+    accountable?: string;
     version?: string;
     category?: string;
     parent?: string;
@@ -580,6 +591,7 @@ function parseBulkItem(
     "status",
     "priority",
     "assignee",
+    "accountable",
     "version",
     "category",
     "parent",
@@ -763,6 +775,7 @@ interface UpdateOptions {
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
+  readonly accountable?: string;
   readonly version?: string;
   readonly category?: string;
   readonly parent?: string;
@@ -892,6 +905,72 @@ interface ResolvedAttribute {
 }
 
 /**
+ * The clearing convention for a link attribute: an empty value sends the
+ * link with a null href. Array links clear by sending an empty array
+ * instead (see listFieldValues).
+ */
+function clearLink(links: Record<string, LinkValue>, attribute: string): void {
+  links[attribute] = { href: null };
+}
+
+/** Flags whose empty value is refused: the attribute cannot be empty. */
+const REQUIRED_VALUE_FLAGS: ReadonlyArray<"type" | "status" | "priority"> = [
+  "type",
+  "status",
+  "priority",
+];
+
+/** Flags whose empty value clears the link on update. */
+const CLEARABLE_LINK_FLAGS: ReadonlyArray<
+  "assignee" | "accountable" | "version" | "category" | "parent"
+> = [
+  "assignee",
+  "accountable",
+  "version",
+  "category",
+  "parent",
+];
+
+/**
+ * Refuse empty values that cannot mean anything, before any request: a
+ * required attribute never clears, and a create has nothing to clear.
+ * On update the clearable link flags pass through; the resolvers turn
+ * their empty value into a null href.
+ */
+function refuseEmptyValues(
+  options: CreateValueFlags & { readonly subject?: string },
+  mode: "create" | "update",
+): void {
+  if (mode === "update" && options.subject === "") {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--subject cannot be empty.",
+      "a work package always has a subject; give the new text.",
+    );
+  }
+  for (const flag of REQUIRED_VALUE_FLAGS) {
+    if (options[flag] === "") {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `--${flag} cannot be empty.`,
+        `a work package always has a ${flag}; give a name or id.`,
+      );
+    }
+  }
+  if (mode === "create") {
+    for (const flag of CLEARABLE_LINK_FLAGS) {
+      if (options[flag] === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `--${flag} cannot be empty on create.`,
+          "there is nothing to clear on a new work package; leave the flag out.",
+        );
+      }
+    }
+  }
+}
+
+/**
  * Resolve one link-valued option into the payload. An all-digits value is
  * an id and goes straight in; anything else is resolved here and
  * remembered so a rejection that blames this exact attribute can be
@@ -906,7 +985,11 @@ async function resolveLinkOption(
   source: LookupSource<number>,
   refs: Array<ResolvedAttribute>,
 ): Promise<void> {
-  if (raw === undefined || raw === "") {
+  if (raw === undefined) {
+    return;
+  }
+  if (raw === "") {
+    clearLink(links, attribute);
     return;
   }
   let id: number;
@@ -931,7 +1014,11 @@ async function resolveUserOption(
   refs: Array<ResolvedAttribute>,
   memo?: ResolutionMemo,
 ): Promise<void> {
-  if (raw === undefined || raw === "") {
+  if (raw === undefined) {
+    return;
+  }
+  if (raw === "") {
+    clearLink(links, attribute);
     return;
   }
   let id: number;
@@ -1391,6 +1478,7 @@ async function resolveListFlags(
     statuses?: Array<string>;
     types?: Array<string>;
     assignees?: Array<string>;
+    accountables?: Array<string>;
     authors?: Array<string>;
     versions?: Array<string>;
     categories?: Array<string>;
@@ -1435,6 +1523,10 @@ async function resolveListFlags(
   const assignee = options.assignee ?? [];
   if (assignee.length > 0) {
     flags.assignees = await resolveUserValues(runtime, profile, "assignee", assignee);
+  }
+  const accountable = options.accountable ?? [];
+  if (accountable.length > 0) {
+    flags.accountables = await resolveUserValues(runtime, profile, "accountable", accountable);
   }
   const author = options.author ?? [];
   if (author.length > 0) {
@@ -1574,6 +1666,18 @@ async function resolveNamedValues(
     refs,
     memo,
   );
+  // Accountable is the API's `responsible` link.
+  await resolveUserOption(
+    runtime,
+    profile,
+    links,
+    "responsible",
+    "/api/v3/users/",
+    "accountable",
+    options.accountable,
+    refs,
+    memo,
+  );
   await resolveLinkOption(
     links,
     "version",
@@ -1606,7 +1710,9 @@ async function resolveNamedValues(
   // The parent is a live lookup over work packages, not cached metadata,
   // so it never joins the ADR-0002 refs: an id given here is already the
   // caller's own, and a subject search re-runs against current state.
-  if (options.parent !== undefined) {
+  if (options.parent === "") {
+    clearLink(links, "parent");
+  } else if (options.parent !== undefined) {
     const parentId = isIdForm(options.parent)
       ? options.parent
       : String(await searchParentByName(profile, options.parent));
@@ -2103,6 +2209,10 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--status <name-or-id>", "initial status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
     .option("--assignee <name-or-id>", "assignee, by name, id, or me")
+    .option(
+      "--accountable <name-or-id>",
+      "Accountable (API field responsible), by name, id, or me",
+    )
     .option("--version <name-or-id>", "version of the project, by name or id")
     .option("--category <name-or-id>", "category of the project, by name or id")
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
@@ -2141,6 +2251,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "give <subject> to create one, or pipe a JSON array with --stdin.",
         );
       }
+      refuseEmptyValues(options, "create");
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseProjectOverride(options.project),
@@ -2175,10 +2286,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--type <name-or-id>", "work package type, by name or id")
     .option("--status <name-or-id>", "status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
-    .option("--assignee <name-or-id>", "assignee, by name, id, or me")
-    .option("--version <name-or-id>", "version of the project, by name or id")
-    .option("--category <name-or-id>", "category of the project, by name or id")
-    .option("--parent <id-or-subject>", "re-parent under this work package, by id or exact subject")
+    .option("--assignee <name-or-id>", 'assignee, by name, id, or me; "" clears')
+    .option(
+      "--accountable <name-or-id>",
+      'Accountable (API field responsible), by name, id, or me; "" clears',
+    )
+    .option("--version <name-or-id>", 'version of the project, by name or id; "" clears')
+    .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
+    .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
     .option("--description <text>", "new markdown description of the work package")
     .option(
       "--field <pair>",
@@ -2200,6 +2315,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.priority !== undefined
         || options.parent !== undefined
         || options.assignee !== undefined
+        || options.accountable !== undefined
         || options.version !== undefined
         || options.category !== undefined
         || options.description !== undefined
@@ -2211,6 +2327,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "pass --subject, an attribute flag like --status, or --field Name=Value.",
         );
       }
+      refuseEmptyValues(options, "update");
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseProjectOverride(options.project),
