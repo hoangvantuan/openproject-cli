@@ -3451,40 +3451,102 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       renderRecord(runtime, options, named);
     });
 
-  // Watching is idempotent on this surface: the watcher list is read first,
-  // so "already watching" and "not watching" are reported states (exit 0)
-  // instead of whatever the API answers to a repeated add or remove.
-  for (const watching of [true, false]) {
-    wp.command(watching ? "watch" : "unwatch")
-      .description(
-        watching
-          ? "Add a watcher to one work package (default: me); no-op when already watching"
-          : "Remove a watcher from one work package (default: me); no-op when not watching",
-      )
-      .argument("<id>")
-      .option("--user <name-or-id>", "user name, id, or me", "me")
-      .option(recordOptions.json, "emit a flat JSON record")
-      .option(recordOptions.profile, "use this profile for this command only")
-      .option(recordOptions.project, "override the profile default project")
-      .action(async (reference: string, options: {
-        user?: string;
-        json?: boolean;
-        profile?: string;
-        project?: string;
-      }) => {
-        requireWpId(reference);
-        const profile = await openProfile(runtime, options);
-        const [userId] = await resolveUserValues(
-          runtime,
-          profile,
-          "user",
-          [options.user ?? "me"],
-        );
-        const path = `/api/v3/work_packages/${reference}/watchers`;
-        const getPage = (lookup: string): Promise<unknown> =>
-          apiGet(profile.instanceUrl, profile.apiKey, lookup);
-        let name: string | null = null;
-        let present = false;
+  // Both directions are idempotent on this surface. Watching posts straight
+  // away: the server answers 201 when it added the watcher and 200 when
+  // the user already watched, and adding oneself needs less permission
+  // than reading the watcher list. Unwatching reads the list first so a
+  // watcher that is not there is a reported state (exit 0) rather than
+  // whatever the API answers to a repeated remove.
+  interface WatchOptions {
+    user?: string;
+    json?: boolean;
+    profile?: string;
+    project?: string;
+  }
+  const watchTarget = async (reference: string, options: WatchOptions) => {
+    requireWpId(reference);
+    const profile = await openProfile(runtime, options);
+    const [userId] = await resolveUserValues(
+      runtime,
+      profile,
+      "user",
+      [options.user ?? "me"],
+    );
+    return {
+      profile,
+      userId: userId as string,
+      path: `/api/v3/work_packages/${reference}/watchers`,
+      myself: (options.user ?? "me").toLowerCase() === "me",
+    };
+  };
+  /** `changed` is null when the outcome of the write was not observed. */
+  const reportWatch = (
+    reference: string,
+    options: WatchOptions,
+    userId: string,
+    name: string | null,
+    watching: boolean,
+    changed: boolean | null,
+  ): void => {
+    if (options.json === true) {
+      runtime.write(`${JSON.stringify({
+        id: Number(reference),
+        user: Number(userId),
+        name,
+        watching,
+        changed,
+      })}\n`);
+      return;
+    }
+    const who = name === null ? `user ${userId}` : `${name} (${userId})`;
+    const verdict = watching
+      ? (changed === false ? "is already watching" : "now watches")
+      : (changed === false ? "was not watching" : "no longer watches");
+    runtime.write(`${who} ${verdict} work package ${reference}.\n`);
+  };
+  const watchOptions = (command: Command): Command => command
+    .argument("<id>")
+    .option("--user <name-or-id>", "user name, id, or me", "me")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project");
+
+  watchOptions(wp.command("watch")
+    .description("Add a watcher to one work package (default: me); no-op when already watching"))
+    .action(async (reference: string, options: WatchOptions) => {
+      const { profile, userId, path } = await watchTarget(reference, options);
+      const response = await unknownIfUnfinished(
+        () => apiPostRaw(
+          profile.instanceUrl,
+          profile.apiKey,
+          path,
+          { user: { href: `/api/v3/users/${userId}` } },
+        ),
+        WATCH_WRITE(reference),
+      );
+      if (response.status < 200 || response.status >= 300) {
+        throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
+      }
+      const watcher = watcherRow(response.body);
+      reportWatch(
+        reference,
+        options,
+        userId,
+        typeof watcher.name === "string" ? watcher.name : null,
+        true,
+        response.status === 201,
+      );
+    });
+
+  watchOptions(wp.command("unwatch")
+    .description("Remove a watcher from one work package (default: me); no-op when not watching"))
+    .action(async (reference: string, options: WatchOptions) => {
+      const { profile, userId, path, myself } = await watchTarget(reference, options);
+      const getPage = (lookup: string): Promise<unknown> =>
+        apiGet(profile.instanceUrl, profile.apiKey, lookup);
+      let name: string | null = null;
+      let present: boolean | null = false;
+      try {
         for await (const element of halElements(getPage, withPageSize(path, DEFAULT_PAGE_SIZE))) {
           const watcher = watcherRow(element);
           if (String(watcher.id) === userId) {
@@ -3492,48 +3554,28 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
             name = typeof watcher.name === "string" ? watcher.name : null;
           }
         }
-        const changed = present !== watching;
-        if (changed && watching) {
-          const response = await unknownIfUnfinished(
-            () => apiPostRaw(
-              profile.instanceUrl,
-              profile.apiKey,
-              path,
-              { user: { href: `/api/v3/users/${userId}` } },
-            ),
-            WATCH_WRITE(reference),
-          );
-          if (response.status < 200 || response.status >= 300) {
-            throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
-          }
-          const created = watcherRow(response.body);
-          name = typeof created.name === "string" ? created.name : null;
-        } else if (changed) {
-          const response = await unknownIfUnfinished(
-            () => apiDeleteRaw(profile.instanceUrl, profile.apiKey, `${path}/${userId}`),
-            WATCH_WRITE(reference),
-          );
-          if (response.status < 200 || response.status >= 300) {
-            throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
-          }
+      } catch (error) {
+        // Reading the list needs a permission that removing oneself does
+        // not: for oneself the read is only a courtesy, so go on and
+        // report the outcome as unobserved.
+        if (!(myself && error instanceof OpCliError && error.code === "PERMISSION_DENIED")) {
+          throw error;
         }
-        if (options.json === true) {
-          runtime.write(`${JSON.stringify({
-            id: Number(reference),
-            user: Number(userId),
-            name,
-            watching,
-            changed,
-          })}\n`);
-          return;
-        }
-        const who = name === null ? `user ${userId}` : `${name} (${userId})`;
-        const verdict = watching
-          ? (changed ? "now watches" : "is already watching")
-          : (changed ? "no longer watches" : "was not watching");
-        runtime.write(`${who} ${verdict} work package ${reference}.\n`);
-      });
-  }
+        present = null;
+      }
+      if (present === false) {
+        reportWatch(reference, options, userId, name, false, false);
+        return;
+      }
+      const response = await unknownIfUnfinished(
+        () => apiDeleteRaw(profile.instanceUrl, profile.apiKey, `${path}/${userId}`),
+        WATCH_WRITE(reference),
+      );
+      if (response.status < 200 || response.status >= 300) {
+        throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
+      }
+      reportWatch(reference, options, userId, name, false, present === null ? null : true);
+    });
 
   wp.command("relate")
     .description("Relate one work package to another")

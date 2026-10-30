@@ -146,7 +146,8 @@ op-cli wp update <id> --accountable Linh
 op-cli wp update <id> --accountable ""
 op-cli wp list --accountable me
 # watchers: list, add, remove (default user me; already watching or not
-# watching is reported with exit 0, not an error); filter by watcher
+# watching is reported with exit 0, not an error; "changed" is null when
+# unwatch could not read the list and removed the watcher blind); filter by watcher
 op-cli wp watchers <id>
 op-cli wp watch <id> --user Linh
 op-cli wp unwatch <id>

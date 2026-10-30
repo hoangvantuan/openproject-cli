@@ -174,7 +174,6 @@ describe("wp watch", () => {
   test("defaults to me: posts the user link and reports the change", async () => {
     const { calls } = installApi([
       { method: "GET", path: "/api/v3/users/me", body: ME },
-      { method: "GET", path: WATCHERS, body: collection([user(9, "Linh Nguyen")]) },
       { method: "POST", path: WATCHERS, status: 201, body: user(5, "Tuan Ha") },
     ]);
 
@@ -193,22 +192,54 @@ describe("wp watch", () => {
     });
   });
 
-  test("already watching reports the state, exit 0, no write", async () => {
-    const { calls } = installApi([
+  // The POST itself says whether it created the watcher (201) or found
+  // it already there (200), so watching needs no permission to read the
+  // watcher list (roundup review S3).
+  test("already watching: the server's 200 is reported as no change, exit 0", async () => {
+    installApi([
       { method: "GET", path: "/api/v3/users/me", body: ME },
-      { method: "GET", path: WATCHERS, body: collection([user(5, "Tuan Ha")]) },
+      { method: "POST", path: WATCHERS, status: 200, body: user(5, "Tuan Ha") },
     ]);
 
     const result = await runWp(["watch", "12"]);
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("already watching");
-    expect(writes(calls)).toHaveLength(0);
+  });
+
+  test("--json of an already-watching 200 carries changed:false", async () => {
+    installApi([
+      { method: "GET", path: "/api/v3/users/me", body: ME },
+      { method: "POST", path: WATCHERS, status: 200, body: user(5, "Tuan Ha") },
+    ]);
+
+    const result = await runWp(["watch", "12", "--json"]);
+
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: 12,
+      user: 5,
+      name: "Tuan Ha",
+      watching: true,
+      changed: false,
+    });
+  });
+
+  test("never reads the watcher list: a key that may not see it can still watch", async () => {
+    // No GET of the list is registered, and net connect is disabled: a
+    // read would fail the run.
+    installApi([
+      { method: "GET", path: "/api/v3/users/me", body: ME },
+      { method: "POST", path: WATCHERS, status: 201, body: user(5, "Tuan Ha") },
+    ]);
+
+    const result = await runWp(["watch", "12"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("now watches");
   });
 
   test("--user resolves a member name like --assignee", async () => {
     const { calls } = installApi([
-      { method: "GET", path: WATCHERS, body: collection([]) },
       { method: "POST", path: WATCHERS, status: 201, body: user(9, "Linh Nguyen") },
     ]);
 
@@ -224,7 +255,6 @@ describe("wp watch", () => {
   test("403 is PERMISSION_DENIED", async () => {
     installApi([
       { method: "GET", path: "/api/v3/users/me", body: ME },
-      { method: "GET", path: WATCHERS, body: collection([]) },
       { method: "POST", path: WATCHERS, status: 403, body: { message: "no" } },
     ]);
 
@@ -239,7 +269,6 @@ describe("wp watch", () => {
   test("a 5xx on the add is the unknown-state NETWORK_ERROR", async () => {
     installApi([
       { method: "GET", path: "/api/v3/users/me", body: ME },
-      { method: "GET", path: WATCHERS, body: collection([]) },
       { method: "POST", path: WATCHERS, status: 500, body: {} },
     ]);
 
@@ -292,6 +321,40 @@ describe("wp unwatch", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("not watching");
+    expect(writes(calls)).toHaveLength(0);
+  });
+
+  // GET .../watchers needs a permission that removing oneself does not;
+  // for "me" the read is a courtesy, not a gate (roundup review S3).
+  test("a 403 on the list still removes myself; changed is unknown (null)", async () => {
+    const { calls } = installApi([
+      { method: "GET", path: "/api/v3/users/me", body: ME },
+      { method: "GET", path: WATCHERS, status: 403, body: { message: "no" } },
+      { method: "DELETE", path: `${WATCHERS}/5`, status: 204 },
+    ]);
+
+    const result = await runWp(["unwatch", "12", "--json"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(writes(calls).map((call) => call.method)).toEqual(["DELETE"]);
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: 12,
+      user: 5,
+      name: null,
+      watching: false,
+      changed: null,
+    });
+  });
+
+  test("a 403 on the list stays PERMISSION_DENIED when removing someone else", async () => {
+    const { calls } = installApi([
+      { method: "GET", path: WATCHERS, status: 403, body: { message: "no" } },
+    ]);
+
+    const result = await runWp(["unwatch", "12", "--user", "9"]);
+
+    expect(result.exitCode).toBe(8);
+    expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
     expect(writes(calls)).toHaveLength(0);
   });
 
