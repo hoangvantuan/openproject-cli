@@ -57,10 +57,16 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--sprint <name|id>` or `--bucket <name|id>` (backlog bucket) places
     a work package on `wp create`/`update`; bulk `--stdin` items take
     `sprint`/`bucket` keys. A work package sits in one or the other, so
-    passing both in one command or item is a `USAGE_ERROR`; to move from
-    a sprint to a bucket, run one update per flag. `wp list`/`count`
-    filter by `--sprint`/`--bucket` (repeatable) or `--inbox` (in
-    neither); combining any two of the three is a `USAGE_ERROR`. Sprint
+    passing both in one command or item is a `USAGE_ERROR`. To move
+    between a sprint and a bucket, clear the current placement first
+    (`wp update <id> --sprint ""`), then set the other (`wp update <id>
+    --bucket <bucket>`); in between, the work package is in the backlog
+    inbox. Run them in that order: it is safe whatever the server does
+    with a second placement. `wp list`/`count` filter by
+    `--sprint`/`--bucket` (repeatable) or `--backlog-inbox` (the backlog
+    inbox: in neither a sprint nor a bucket, unrelated to the
+    notification inbox); combining any two of the three is a
+    `USAGE_ERROR`. Sprint
     names repeat across projects but resolve inside the project in
     context; a project without sprints or buckets fails naming it.
   - `--all` streams NDJSON: one JSON record per line, not an array.
@@ -119,8 +125,11 @@ op-cli wp list --observed-in 0.9.0
 # plan into a sprint or a backlog bucket; list a sprint or the backlog inbox
 op-cli wp update <id> --sprint <sprint>
 op-cli wp update <id> --bucket <bucket>
+# move from a sprint to a bucket: clear first, then set (never both flags)
+op-cli wp update <id> --sprint ""
+op-cli wp update <id> --bucket <bucket>
 op-cli wp list --sprint <sprint>
-op-cli wp count --inbox
+op-cli wp count --backlog-inbox
 # clear a link with an empty value
 op-cli wp update <id> --assignee ""
 # dates, effort, progress, points; an empty value clears on update
@@ -172,11 +181,13 @@ op-cli project buckets <reference>
 # project on the profile (meta types, statuses, priorities are instance-wide).
 # Versions, categories, activities, sprints, or buckets the account may not
 # read (or a project without the backlogs module) are stored as
-# unavailable: only commands that need that one (time log --activity)
-# fail with PERMISSION_DENIED; meta show and meta refresh list them
+# unavailable: only commands that need that one (time log --activity,
+# wp --sprint, wp --bucket) fail with PERMISSION_DENIED; meta show and
+# meta refresh list them
 op-cli meta members --project <id>
 op-cli meta fields
 op-cli meta sprints
+op-cli meta buckets
 # something does not work: diagnose connectivity, credentials, versions
 op-cli doctor
 # self-update (prints the right command for Volta and Homebrew installs)
