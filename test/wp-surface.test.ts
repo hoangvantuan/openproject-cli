@@ -286,9 +286,35 @@ describe("wp comments", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe(
       renderTable(
-        ["ID", "AUTHOR", "COMMENT", "CREATED"],
+        ["ID", "AUTHOR", "COMMENT", "INTERNAL", "CREATED"],
         [
-          ["1480", "Linh Nguyen", "Looks fixed on staging.", "2026-08-21T09:30:12Z"],
+          ["1480", "Linh Nguyen", "Looks fixed on staging.", "false", "2026-08-21T09:30:12Z"],
+        ],
+      ),
+    );
+  });
+
+  test("shows an INTERNAL column that marks internal comments", async () => {
+    const root = await makeTempRoom("op-cli-wp-comments-internal-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      gets: {
+        [activitiesPath("?pageSize=100")]: halCollection(2, [
+          commentActivity(1480, "Looks fixed on staging.", 9, "Linh Nguyen"),
+          { ...commentActivity(1481, "Ping the client first.", 9, "Linh Nguyen"), internal: true },
+        ]),
+      },
+    });
+
+    const result = await runWp(configDir, cacheDir, ["comments", "1520"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      renderTable(
+        ["ID", "AUTHOR", "COMMENT", "INTERNAL", "CREATED"],
+        [
+          ["1480", "Linh Nguyen", "Looks fixed on staging.", "false", "2026-08-21T09:30:12Z"],
+          ["1481", "Linh Nguyen", "Ping the client first.", "true", "2026-08-21T09:30:12Z"],
         ],
       ),
     );
@@ -314,6 +340,7 @@ describe("wp comments", () => {
         kind: "Comment",
         user: { id: 9, name: "Linh Nguyen" },
         comment: "Looks fixed on staging.",
+        internal: false,
         details: "",
         createdAt: "2026-08-21T09:30:12Z",
       },
@@ -459,10 +486,10 @@ describe("wp comments", () => {
     expect(table.stderr).toBe("");
     expect(table.stdout).toBe(
       renderTable(
-        ["ID", "AUTHOR", "COMMENT", "CREATED"],
+        ["ID", "AUTHOR", "COMMENT", "INTERNAL", "CREATED"],
         [
-          ["1480", "Linh Nguyen", "First.", "2026-08-21T09:30:12Z"],
-          ["1481", "Linh Nguyen", "Second.", "2026-08-21T09:30:12Z"],
+          ["1480", "Linh Nguyen", "First.", "false", "2026-08-21T09:30:12Z"],
+          ["1481", "Linh Nguyen", "Second.", "false", "2026-08-21T09:30:12Z"],
         ],
       ),
     );
@@ -485,8 +512,8 @@ describe("wp comments", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       renderTable(
-        ["ID", "AUTHOR", "COMMENT", "CREATED"],
-        [["1480", "9", "First.", "2026-08-21T09:30:12Z"]],
+        ["ID", "AUTHOR", "COMMENT", "INTERNAL", "CREATED"],
+        [["1480", "9", "First.", "false", "2026-08-21T09:30:12Z"]],
       ),
     );
   });
@@ -666,6 +693,7 @@ describe("wp comment", () => {
           ["kind", "Comment"],
           ["user", "Linh Nguyen"],
           ["comment", "Deployed to staging."],
+          ["internal", "false"],
           ["details", ""],
         ],
       ),
@@ -700,6 +728,7 @@ describe("wp comment", () => {
       kind: "Comment",
       user: { id: 9, name: "Linh Nguyen" },
       comment: "Deployed to staging.",
+      internal: false,
       details: "",
     });
   });
@@ -812,6 +841,84 @@ describe("wp comment", () => {
 
     expect(result.exitCode).toBe(4);
     expect(result.stderr).toMatch(/^\[NOT_FOUND\]/);
+  });
+
+  test("--internal posts the flag alongside the raw text", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-internal-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const { writes } = installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 200,
+          body: { ...commentActivity(1482, "Ping the client first.", 9, "Linh Nguyen"), internal: true },
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, [
+      "comment",
+      "1520",
+      "Ping the client first.",
+      "--internal",
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(writes[0]?.body ?? "{}")).toEqual({
+      comment: { raw: "Ping the client first." },
+      internal: true,
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({ id: 1482, internal: true });
+  });
+
+  test("without --internal the payload carries no internal key", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-public-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const { writes } = installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 200,
+          body: commentActivity(1483, "Deployed.", 9, "Linh Nguyen"),
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, ["comment", "1520", "Deployed."]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(writes[0]?.body ?? "{}")).toEqual({
+      comment: { raw: "Deployed." },
+    });
+  });
+
+  test("a server refusal of an internal comment surfaces its message", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-refused-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 403,
+          body: { message: "You are not allowed to add internal comments." },
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, [
+      "comment",
+      "1520",
+      "secret",
+      "--internal",
+    ]);
+
+    expect(result.exitCode).toBe(8);
+    expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
+    expect(result.stderr).toMatch(/internal comments/);
   });
 });
 

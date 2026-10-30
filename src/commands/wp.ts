@@ -2454,6 +2454,7 @@ export const COMMENT_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "AUTHOR", field: "user" },
   { title: "COMMENT", field: "comment" },
+  { title: "INTERNAL", field: "internal" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -2538,6 +2539,10 @@ function linkIdOf(link: unknown): number | null {
  * behind a system activity, one instance-spelled sentence per attribute
  * ("Status changed from New to In progress"). A comment activity changed
  * nothing, so its details render empty rather than absent.
+ *
+ * `internal` is the visibility flag of a comment: true when only users with
+ * the internal-comment permission may read it. An activity the instance
+ * does not flag reads as false.
  */
 export function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
@@ -2551,6 +2556,7 @@ export function activityRow(element: unknown): Record<string, unknown> {
     kind,
     user: record.user,
     comment: typeof comment?.raw === "string" ? comment.raw : "",
+    internal: record.internal === true,
     details: activityDetails(record.details),
     createdAt: record.createdAt,
   };
@@ -3315,11 +3321,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .description("Add a comment to one work package")
     .argument("<id>")
     .argument("<text>", "markdown body of the comment")
+    .option("--internal", "post an internal comment, visible only to users who may see internal comments")
     .option(recordOptions.json, "emit a flat JSON record")
     .option(recordOptions.fields, "comma-separated columns to show")
     .option(recordOptions.profile, "use this profile for this command only")
     .option(recordOptions.project, "override the profile default project")
     .action(async (reference: string, text: string, options: {
+      internal?: boolean;
       json?: boolean;
       fields?: string;
       profile?: string;
@@ -3330,11 +3338,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // a caller who fixes the flag and retries cannot post it twice.
       selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
       const profile = await openProfile(runtime, options);
+      // The key is sent only with the flag: an instance without the
+      // internal_comments feature then sees exactly the public request.
+      const body = options.internal === true
+        ? { comment: { raw: text }, internal: true }
+        : { comment: { raw: text } };
       const created = activityRow(await apiPost(
         profile.instanceUrl,
         profile.apiKey,
         `/api/v3/work_packages/${reference}/activities`,
-        { comment: { raw: text } },
+        body,
       ));
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),

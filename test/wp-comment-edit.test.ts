@@ -118,6 +118,21 @@ describe("wp comment-edit", () => {
     });
   });
 
+  test("an internal comment keeps its flag: the PATCH never names it", async () => {
+    const { bodies } = installApi([
+      { method: "GET", status: 200, body: activity("Comment", "old", { internal: true }) },
+      { method: "PATCH", status: 200, body: activity("Comment", "new text", { internal: true }) },
+    ]);
+
+    const result = await runEdit(["1480", "new text", "--json"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(bodies.map((body) => JSON.parse(body) as unknown)).toEqual([
+      { comment: { raw: "new text" } },
+    ]);
+    expect(JSON.parse(result.stdout)).toMatchObject({ id: 1480, internal: true });
+  });
+
   test("--fields narrows the output", async () => {
     installApi([
       { method: "GET", status: 200, body: activity("Comment", "old") },
