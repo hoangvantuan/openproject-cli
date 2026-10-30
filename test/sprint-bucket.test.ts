@@ -24,6 +24,8 @@ const NOT_FOUND = {
 interface Reply {
   readonly status: number;
   readonly body?: unknown;
+  /** Answers given once each before this reply, in order. */
+  readonly first?: Array<Reply>;
 }
 
 function collection(elements: unknown[]): Record<string, unknown> {
@@ -160,7 +162,9 @@ function install(overrides: Record<string, Reply> = {}): void {
       const listing = key.startsWith("GET /api/v3/work_packages?")
         ? { status: 200, body: collection([]) }
         : undefined;
-      const reply = table[key] ?? listing ?? { status: 599, body: { unexpected: key } };
+      const entry = table[key];
+      const reply = entry?.first?.shift() ?? entry ?? listing
+        ?? { status: 599, body: { unexpected: key } };
       return { statusCode: reply.status, data: reply.body ?? {} };
     })
     .persist();
@@ -432,4 +436,140 @@ test("a vocabulary stored before #46 is refreshed once for --sprint", async () =
     { sprint: { operator: "=", values: ["58"] } },
   ]);
   expect((await storedVocabulary()).sprints).toHaveLength(2);
+});
+
+// ---------------------------------------------------------------------------
+// wp create / update / bulk
+
+function linksSent(key: string): Record<string, unknown> {
+  return (sent(key) as { _links: Record<string, unknown> })._links;
+}
+
+test("wp create --sprint and --bucket write their single links", async () => {
+  install();
+
+  const sprinted = await run(
+    ["wp", "create", "Ship the thing", "--sprint", "Sprint 14", "--json"],
+    env,
+    {},
+  );
+  expect(sprinted.stderr).toBe("");
+  expect(sprinted.exitCode).toBe(0);
+  expect(linksSent("POST /api/v3/work_packages")).toMatchObject({
+    sprint: { href: "/api/v3/sprints/58" },
+  });
+
+  requests = [];
+  const bucketed = await run(["wp", "create", "Ship the thing", "--bucket", "4"], env, {});
+  expect(bucketed.exitCode).toBe(0);
+  const links = linksSent("POST /api/v3/work_packages");
+  expect(links.backlogBucket).toEqual({ href: "/api/v3/backlog_buckets/4" });
+  expect(links.sprint).toBeUndefined();
+});
+
+test("wp update --sprint moves the work package and \"\" clears it", async () => {
+  install();
+
+  const moved = await run(["wp", "update", "42", "--sprint", "Sprint 13", "--json"], env, {});
+  expect(moved.stderr).toBe("");
+  expect(moved.exitCode).toBe(0);
+  expect(linksSent("PATCH /api/v3/work_packages/42")).toEqual({
+    sprint: { href: "/api/v3/sprints/57" },
+  });
+
+  requests = [];
+  const cleared = await run(["wp", "update", "42", "--bucket", "", "--json"], env, {});
+  expect(cleared.exitCode).toBe(0);
+  expect(linksSent("PATCH /api/v3/work_packages/42")).toEqual({
+    backlogBucket: { href: null },
+  });
+});
+
+test("--sprint with --bucket is refused before any traffic", async () => {
+  install();
+
+  for (const argv of [
+    ["wp", "create", "Ship the thing", "--sprint", "58", "--bucket", "4"],
+    ["wp", "update", "42", "--sprint", "", "--bucket", "PoC"],
+  ]) {
+    const result = await run(argv, env, {});
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/^\[USAGE_ERROR\] --sprint and --bucket cannot be combined/);
+  }
+  expect(requests).toEqual([]);
+});
+
+test("wp create refuses an empty --sprint: nothing to clear", async () => {
+  install();
+
+  const result = await run(["wp", "create", "Ship the thing", "--sprint", ""], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] --sprint cannot be empty on create/);
+  expect(requests).toEqual([]);
+});
+
+test("wp create --stdin takes sprint and bucket keys and refuses both on one item", async () => {
+  install();
+
+  const result = await run(
+    ["wp", "create", "--stdin"],
+    env,
+    {
+      readStdin: async () => JSON.stringify([
+        { subject: "A", sprint: "Sprint 14" },
+        { subject: "B", bucket: "PoC" },
+        { subject: "C", sprint: "58", bucket: "4" },
+      ]),
+    },
+  );
+
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(lines[0]).toMatchObject({ index: 0, ok: true });
+  expect(lines[1]).toMatchObject({ index: 1, ok: true });
+  expect(lines[2]).toMatchObject({ index: 2, ok: false, code: "USAGE_ERROR" });
+  expect(String(lines[2]?.message)).toMatch(/^input 2: .*sprint.*bucket/);
+  const posted = requests
+    .filter((entry) => entry.key === "POST /api/v3/work_packages")
+    .map((entry) => (entry.body as { _links: Record<string, unknown> })._links);
+  expect(posted).toEqual([
+    expect.objectContaining({ sprint: { href: "/api/v3/sprints/58" } }),
+    expect.objectContaining({ backlogBucket: { href: "/api/v3/backlog_buckets/4" } }),
+  ]);
+  expect(result.exitCode).toBe(1);
+});
+
+test("a stale sprint id is retried once after a refresh moves it", async () => {
+  install();
+  expect((await run(["meta", "sprints"], env, {})).exitCode).toBe(0);
+  table[`GET /api/v3/projects/${String(PROJECT)}/sprints`] = {
+    status: 200,
+    body: collection([sprint(60, "Sprint 14", "in_planning", "2026-10-26", "2026-10-30")]),
+  };
+  table["POST /api/v3/work_packages"] = {
+    status: 201,
+    body: workPackage(1),
+    first: [{
+      status: 422,
+      body: {
+        _type: "Error",
+        errorIdentifier: "urn:openproject-org:api:v3:errors:PropertyConstraintViolation",
+        message: "Sprint is invalid.",
+        _embedded: { details: { attribute: "sprint" } },
+      },
+    }],
+  };
+  requests = [];
+
+  const result = await run(["wp", "create", "Ship the thing", "--sprint", "Sprint 14"], env, {});
+
+  expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
+  const posts = requests
+    .filter((entry) => entry.key === "POST /api/v3/work_packages")
+    .map((entry) => (entry.body as { _links: Record<string, unknown> })._links.sprint);
+  expect(posts).toEqual([
+    { href: "/api/v3/sprints/58" },
+    { href: "/api/v3/sprints/60" },
+  ]);
 });

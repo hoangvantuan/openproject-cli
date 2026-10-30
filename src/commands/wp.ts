@@ -515,6 +515,9 @@ interface CreateValueFlags {
   readonly version?: ReadonlyArray<string>;
   readonly observedIn?: ReadonlyArray<string>;
   readonly category?: string;
+  /** A sprint or, exclusively, a backlog bucket (#46). */
+  readonly sprint?: string;
+  readonly bucket?: string;
   readonly parent?: string;
   readonly description?: string;
   readonly start?: string;
@@ -661,6 +664,8 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "version",
   "observedIn",
   "category",
+  "sprint",
+  "bucket",
   "parent",
   "description",
   "start",
@@ -717,6 +722,8 @@ function parseBulkItem(
     version?: Array<string>;
     observedIn?: Array<string>;
     category?: string;
+    sprint?: string;
+    bucket?: string;
     parent?: string;
     description?: string;
     start?: string;
@@ -736,6 +743,8 @@ function parseBulkItem(
     "assignee",
     "accountable",
     "category",
+    "sprint",
+    "bucket",
     "parent",
     "description",
   ];
@@ -748,6 +757,14 @@ function parseBulkItem(
       throw usage(`"${key}" must be a non-empty name-or-id string.`);
     }
     values[key] = rawValue;
+  }
+  try {
+    refuseTwoPlacements(values);
+  } catch (error) {
+    if (error instanceof OpCliError) {
+      throw usage(error.message, error.hint);
+    }
+    throw error;
   }
   // A version key takes one name-or-id string or an array of them.
   for (const key of ["version", "observedIn"] as const) {
@@ -961,6 +978,8 @@ interface UpdateOptions {
   readonly version?: ReadonlyArray<string>;
   readonly observedIn?: ReadonlyArray<string>;
   readonly category?: string;
+  readonly sprint?: string;
+  readonly bucket?: string;
   readonly parent?: string;
   readonly description?: string;
   readonly start?: string;
@@ -1111,13 +1130,30 @@ const REQUIRED_VALUE_FLAGS: ReadonlyArray<"type" | "status" | "priority"> = [
 
 /** Flags whose empty value clears the link on update. */
 const CLEARABLE_LINK_FLAGS: ReadonlyArray<
-  "assignee" | "accountable" | "category" | "parent"
+  "assignee" | "accountable" | "category" | "sprint" | "bucket" | "parent"
 > = [
   "assignee",
   "accountable",
   "category",
+  "sprint",
+  "bucket",
   "parent",
 ];
+
+/**
+ * A work package sits in a sprint or in a backlog bucket, never both, so
+ * one command naming both is refused whatever the values (#46). Moving
+ * between the two is one command per placement.
+ */
+function refuseTwoPlacements(options: Pick<CreateValueFlags, "sprint" | "bucket">): void {
+  if (options.sprint !== undefined && options.bucket !== undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--sprint and --bucket cannot be combined.",
+      "a work package sits in a sprint or in a backlog bucket; pass one of the two.",
+    );
+  }
+}
 
 /** The repeatable version flags; their empty value is `[""]`. */
 const VERSION_FLAGS = [
@@ -1135,6 +1171,7 @@ function refuseEmptyValues(
   options: CreateValueFlags & { readonly subject?: string },
   mode: "create" | "update",
 ): void {
+  refuseTwoPlacements(options);
   if (mode === "update" && options.subject === "") {
     throw new OpCliError(
       "USAGE_ERROR",
@@ -2158,6 +2195,24 @@ async function resolveNamedValues(
       })), memo),
     refs,
   );
+  await resolveLinkOption(
+    links,
+    "sprint",
+    "/api/v3/sprints/",
+    "--sprint",
+    options.sprint,
+    backlogSource(runtime, profile, "sprint", memo),
+    refs,
+  );
+  await resolveLinkOption(
+    links,
+    "backlogBucket",
+    "/api/v3/backlog_buckets/",
+    "--bucket",
+    options.bucket,
+    backlogSource(runtime, profile, "bucket", memo),
+    refs,
+  );
 
   // The parent is a live lookup over work packages, not cached metadata,
   // so it never joins the ADR-0002 refs: an id given here is already the
@@ -2677,6 +2732,11 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       collectOptional,
     )
     .option("--category <name-or-id>", "category of the project, by name or id")
+    .option("--sprint <name-or-id>", "sprint of the project, by name or id; not with --bucket")
+    .option(
+      "--bucket <name-or-id>",
+      "backlog bucket of the project, by name or id; not with --sprint",
+    )
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
     .option("--description <text>", "markdown description of the work package")
     .option("--start <date>", "start date, YYYY-MM-DD")
@@ -2770,6 +2830,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       collectOptional,
     )
     .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
+    .option(
+      "--sprint <name-or-id>",
+      'sprint of the project, by name or id; "" clears; not with --bucket',
+    )
+    .option(
+      "--bucket <name-or-id>",
+      'backlog bucket of the project, by name or id; "" clears; not with --sprint',
+    )
     .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
     .option("--description <text>", "new markdown description of the work package")
     .option("--start <date>", 'start date, YYYY-MM-DD; "" clears')
@@ -2802,6 +2870,8 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         || options.version !== undefined
         || options.observedIn !== undefined
         || options.category !== undefined
+        || options.sprint !== undefined
+        || options.bucket !== undefined
         || options.description !== undefined
         || SCALAR_OPTIONS.some((option) => options[option] !== undefined)
         || (options.field?.length ?? 0) > 0;
