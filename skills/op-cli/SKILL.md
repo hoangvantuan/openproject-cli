@@ -108,7 +108,10 @@ op-cli wp move <id> <project>
 op-cli project types <reference>
 # project vocabulary: members, versions, categories, activities, fields;
 # a project context is required: pass --project <id> or set a default
-# project on the profile (meta types, statuses, priorities are instance-wide)
+# project on the profile (meta types, statuses, priorities are instance-wide).
+# Versions, categories, or activities the account may not read are stored
+# as unavailable: only commands that need that one (time log --activity)
+# fail with PERMISSION_DENIED; meta show and meta refresh list them
 op-cli meta members --project <id>
 op-cli meta fields
 # something does not work: diagnose connectivity, credentials, versions

@@ -7,6 +7,8 @@ import {
   loadStoredMetadata,
   readStoredMetadata,
   refreshStoredMetadata,
+  requireVocabulary,
+  unavailableSources,
   type MetadataChange,
   type ProjectVocabulary,
   type StoredActivity,
@@ -118,7 +120,7 @@ const memberLookup: LookupSpec<StoredMember, ProjectVocabulary> = {
 const versionLookup: LookupSpec<StoredVersion, ProjectVocabulary> = {
   name: "versions",
   description: "List the versions of the active project",
-  select: (vocabulary) => vocabulary.versions,
+  select: (vocabulary) => requireVocabulary(vocabulary, "versions"),
   options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
@@ -130,7 +132,7 @@ const versionLookup: LookupSpec<StoredVersion, ProjectVocabulary> = {
 const categoryLookup: LookupSpec<StoredCategory, ProjectVocabulary> = {
   name: "categories",
   description: "List the categories of the active project",
-  select: (vocabulary) => vocabulary.categories,
+  select: (vocabulary) => requireVocabulary(vocabulary, "categories"),
   options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
@@ -202,7 +204,7 @@ const fieldLookup: LookupSpec<FieldRow, FieldData> = {
 const activityLookup: LookupSpec<StoredActivity, ProjectVocabulary> = {
   name: "activities",
   description: "List the time entry activities of the active project",
-  select: (vocabulary) => vocabulary.activities,
+  select: (vocabulary) => requireVocabulary(vocabulary, "activities"),
   options: [profileOption, projectOption],
   columns: [
     { title: "ID", cell: (entry) => String(entry.id) },
@@ -246,6 +248,10 @@ function registerShow(parent: Command, runtime: MetaRuntime): void {
           ["types", String(stored.types.length)],
           ["statuses", String(stored.statuses.length)],
           ["priorities", String(stored.priorities.length)],
+          ...unavailableSources(stored).map((entry) => [
+            "unavailable",
+            `project ${String(entry.project_id)}: ${entry.source} (${String(entry.status)})`,
+          ]),
         ],
       ),
     );
@@ -267,12 +273,17 @@ function registerRefresh(parent: Command, runtime: MetaRuntime): void {
     runtime.setJsonMode(options.json === true);
     const profile = await runtime.resolve({ profile: options.profile });
     const changes = await refreshStoredMetadata(runtime.env, profile);
+    // A refused source is not a change, but a caller relying on it needs
+    // to hear about it on every refresh, not only when it flips.
+    const stored = await readStoredMetadata(runtime.env, profile);
+    const unavailable = stored === undefined ? [] : unavailableSources(stored);
     if (options.json === true) {
       runtime.write(
         `${JSON.stringify({
           profile: profile.name,
           instance: profile.instanceUrl,
           changes,
+          unavailable,
         })}\n`,
       );
       return;
@@ -281,6 +292,12 @@ function registerRefresh(parent: Command, runtime: MetaRuntime): void {
       `Refreshing metadata for profile ${profile.name} at ${profile.instanceUrl}.\n`,
     );
     writeChangeLines(runtime.write, changes);
+    for (const entry of unavailable) {
+      runtime.write(
+        `unavailable: project ${String(entry.project_id)} ${entry.source}`
+          + ` (${String(entry.status)}: ${entry.message})\n`,
+      );
+    }
     runtime.write(changes.length > 0 ? "Metadata updated.\n" : "No changes.\n");
   });
 }

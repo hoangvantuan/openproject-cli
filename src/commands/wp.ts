@@ -49,6 +49,7 @@ import {
   loadProjectVocabulary,
   loadStoredMetadata,
   refreshStoredMetadata,
+  requireVocabulary,
   type ProjectVocabulary,
   type StoredCustomField,
   type StoredMetadata,
@@ -1444,7 +1445,7 @@ async function resolveListFlags(
     flags.versions = await resolveValues(
       version,
       projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
-        vocabulary.versions.map((entry) => ({
+        requireVocabulary(vocabulary, "versions").map((entry) => ({
           name: entry.name,
           owner: "Version",
           value: entry.id,
@@ -1457,7 +1458,7 @@ async function resolveListFlags(
     flags.categories = await resolveValues(
       category,
       projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
-        vocabulary.categories.map((entry) => ({
+        requireVocabulary(vocabulary, "categories").map((entry) => ({
           name: entry.name,
           owner: "Category",
           value: entry.id,
@@ -1580,7 +1581,7 @@ async function resolveNamedValues(
     "--version",
     options.version,
     projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
-      vocabulary.versions.map((entry) => ({
+      requireVocabulary(vocabulary, "versions").map((entry) => ({
         name: entry.name,
         owner: "Version",
         value: entry.id,
@@ -1594,7 +1595,7 @@ async function resolveNamedValues(
     "--category",
     options.category,
     projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
-      vocabulary.categories.map((entry) => ({
+      requireVocabulary(vocabulary, "categories").map((entry) => ({
         name: entry.name,
         owner: "Category",
         value: entry.id,

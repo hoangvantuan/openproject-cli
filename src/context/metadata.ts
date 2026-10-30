@@ -115,6 +115,20 @@ export interface StoredCustomField {
   readonly allowed_options?: ReadonlyArray<StoredCustomOption>;
 }
 
+/**
+ * The project vocabularies a user may be refused without the project being
+ * unusable: each is fetched on its own, and a 403 or 404 stores it empty
+ * with a marker instead of failing the whole load (#44). A new optional
+ * source (sprints, backlog buckets) joins by adding its name here.
+ */
+export type OptionalVocabularySource = "versions" | "categories" | "activities";
+
+/** Why one optional source could not be read when it was fetched. */
+export interface UnavailableSource {
+  readonly status: 403 | 404;
+  readonly message: string;
+}
+
 export interface ProjectVocabulary {
   readonly project_id: number;
   readonly fetched_at: string;
@@ -123,6 +137,12 @@ export interface ProjectVocabulary {
   readonly categories: ReadonlyArray<StoredCategory>;
   readonly activities: ReadonlyArray<StoredActivity>;
   readonly custom_fields: Readonly<Record<string, ReadonlyArray<StoredCustomField>>>;
+  /**
+   * Optional sources the instance refused, keyed by source. Absent when
+   * every source answered, which is also how a store written before this
+   * marker existed reads.
+   */
+  readonly unavailable?: Readonly<Partial<Record<OptionalVocabularySource, UnavailableSource>>>;
 }
 
 export interface StoredMetadata {
@@ -641,19 +661,105 @@ export async function refreshStoredMetadata(
   return changes;
 }
 
+/**
+ * One optional source, read so that a refusal empties it rather than
+ * failing the load. Only a 403 or 404 counts as a refusal; a 5xx, a
+ * timeout, or a 401 still fails, since an empty list there would hide an
+ * outage as "no values".
+ */
+async function fetchOptional<T>(
+  source: OptionalVocabularySource,
+  unavailable: Partial<Record<OptionalVocabularySource, UnavailableSource>>,
+  fetch: () => Promise<ReadonlyArray<T>>,
+): Promise<ReadonlyArray<T>> {
+  try {
+    return await fetch();
+  } catch (error) {
+    if (
+      error instanceof OpCliError
+      && (error.code === "PERMISSION_DENIED" || error.code === "NOT_FOUND")
+    ) {
+      unavailable[source] = {
+        status: error.code === "PERMISSION_DENIED" ? 403 : 404,
+        message: error.message,
+      };
+      return [];
+    }
+    throw error;
+  }
+}
+
 export async function fetchProjectVocabulary(
   profile: ActiveProfile,
   projectId: number,
 ): Promise<ProjectVocabulary> {
+  const unavailable: Partial<Record<OptionalVocabularySource, UnavailableSource>> = {};
+  // Members come first and stay required: a deleted project answers 404
+  // there, which the refresh reads as "drop this project".
+  const members = await fetchMembers(profile, projectId);
+  const versions = await fetchOptional("versions", unavailable,
+    () => fetchVersions(profile, projectId));
+  const categories = await fetchOptional("categories", unavailable,
+    () => fetchCategories(profile, projectId));
+  const activities = await fetchOptional("activities", unavailable,
+    () => fetchActivities(profile, projectId));
   return {
     project_id: projectId,
     fetched_at: new Date().toISOString(),
-    members: await fetchMembers(profile, projectId),
-    versions: await fetchVersions(profile, projectId),
-    categories: await fetchCategories(profile, projectId),
-    activities: await fetchActivities(profile, projectId),
+    members,
+    versions,
+    categories,
+    activities,
     custom_fields: await fetchCustomFields(profile, projectId),
+    ...(Object.keys(unavailable).length > 0 ? { unavailable } : {}),
   };
+}
+
+/**
+ * The entries of one optional source for a command that cannot proceed
+ * without them. A source the instance refused fails here with
+ * PERMISSION_DENIED naming it, instead of reading as an empty vocabulary
+ * where every name misses.
+ */
+export function requireVocabulary<S extends OptionalVocabularySource>(
+  vocabulary: ProjectVocabulary,
+  source: S,
+): ProjectVocabulary[S] {
+  const refusal = vocabulary.unavailable?.[source];
+  if (refusal !== undefined) {
+    throw new OpCliError(
+      "PERMISSION_DENIED",
+      `The ${source} of project ${String(vocabulary.project_id)} are unavailable`
+        + ` to this account (HTTP ${String(refusal.status)}): ${refusal.message}`,
+      "ask a project administrator for the permission or module, then run op-cli meta refresh.",
+      { source, project_id: vocabulary.project_id, status: refusal.status },
+    );
+  }
+  return vocabulary[source];
+}
+
+/** One refused source of one stored project, flattened for reporting. */
+export interface UnavailableEntry {
+  readonly project_id: number;
+  readonly source: OptionalVocabularySource;
+  readonly status: 403 | 404;
+  readonly message: string;
+}
+
+export function unavailableSources(metadata: StoredMetadata): Array<UnavailableEntry> {
+  const entries: Array<UnavailableEntry> = [];
+  for (const vocabulary of Object.values(metadata.projectScoped ?? {})) {
+    for (const [source, refusal] of Object.entries(vocabulary.unavailable ?? {})) {
+      entries.push({
+        project_id: vocabulary.project_id,
+        source: source as OptionalVocabularySource,
+        status: refusal.status,
+        message: refusal.message,
+      });
+    }
+  }
+  return entries.sort((a, b) =>
+    a.project_id - b.project_id || a.source.localeCompare(b.source));
 }
 
 export async function loadProjectVocabulary(
@@ -846,9 +952,38 @@ function diffVocabulary(
       before?.members.map(memberEntry),
       after.members.map(memberEntry),
     ),
-    ...diffEntries("versions", before?.versions, after.versions),
-    ...diffEntries("categories", before?.categories, after.categories),
-    ...diffEntries("activities", before?.activities, after.activities),
+    ...diffOptional("versions", before, after),
+    ...diffOptional("categories", before, after),
+    ...diffOptional("activities", before, after),
     ...diffEntries("fields", fields(before), fields(after)),
   ];
+}
+
+/**
+ * The entry diff of one optional source, unless either side was refused:
+ * an emptied list is a lost permission, not every entry being removed, so
+ * it reports the flip once instead of one removal per entry.
+ */
+function diffOptional(
+  source: OptionalVocabularySource,
+  before: ProjectVocabulary | undefined,
+  after: ProjectVocabulary,
+): Array<MetadataChange> {
+  const was = before?.unavailable?.[source];
+  const is = after.unavailable?.[source];
+  if (was === undefined && is === undefined) {
+    return diffEntries(source, before?.[source], after[source]);
+  }
+  if (before === undefined || was?.status === is?.status) {
+    return [];
+  }
+  const project = String(after.project_id);
+  return [{
+    section: source,
+    kind: "changed",
+    id: null,
+    detail: is === undefined
+      ? `became available in project ${project}`
+      : `became unavailable in project ${project} (${String(is.status)})`,
+  }];
 }
