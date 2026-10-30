@@ -143,11 +143,11 @@ describe("wp get", () => {
           ["category", ""],
           ["startDate", "2026-08-10"],
           ["dueDate", ""],
+          ["percentageDone", "40"],
           ["createdAt", "2026-08-01T09:15:00Z"],
           ["updatedAt", "2026-08-20T14:02:11Z"],
           ["lockVersion", "7"],
           ["description", '{"format":"markdown","raw":"Repro: open /login."}'],
-          ["percentageDone", "40"],
         ],
       ),
     );
