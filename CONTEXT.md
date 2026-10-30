@@ -12,6 +12,11 @@ _Avoid_: server, host, tenant
 A named triple of instance URL, API key, and default project. The unit of context: every command runs under exactly one profile, and stored metadata is keyed by it. Environment variables alone form an implicit, unnamed profile.
 _Avoid_: account, environment, config, context
 
+**Project**:
+The container work packages, versions, categories, sprints, and members belong to; the canonical term in this CLI's commands, output, and errors. OpenProject 17 renamed projects to workspaces in API v3, so `--workspace` is accepted wherever `--project` is, and `op-cli workspace` is an alias of `op-cli project` (ADR-0005). Output and JSON keys keep the API's spelling.
+_Also accepted_: workspace
+_Avoid_: workspace in prose, docs, and error messages (it is an accepted input, not a second concept)
+
 **Metadata**:
 An instance's configurable vocabulary: types, statuses, priorities, custom fields, versions, categories, activities, sprints, backlog buckets, and members. What resolution reads. Stored on disk per profile as an implementation detail, refreshable and safe to delete, never something the user has to manage. A project's versions, categories, activities, sprints, and backlog buckets are each optional: one the account may not read is stored as **unavailable**, and only resolution that needs it fails.
 _Avoid_: cache, schema, config
