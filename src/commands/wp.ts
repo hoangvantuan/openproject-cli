@@ -1834,8 +1834,10 @@ async function versionFieldsFor(
   runtime: WpRuntime,
   profile: ActiveProfile,
   typeId: number | undefined,
-  memo?: ResolutionMemo,
-  projectId?: number,
+  memo: ResolutionMemo | undefined,
+  projectId: number | undefined,
+  /** The fields the caller will write; only these must be agreed on. */
+  needs: ReadonlyArray<"targetVersions" | "observedInVersions">,
 ): Promise<StoredVersionFields> {
   const byType = await versionFieldsByType(runtime, profile, typeId, memo, projectId);
   const own = typeId === undefined ? undefined : byType[String(typeId)];
@@ -1862,7 +1864,7 @@ async function versionFieldsFor(
     }
     return { [name]: { multiple: present[0]?.multiple === true } };
   };
-  return { ...agreed("targetVersions"), ...agreed("observedInVersions") };
+  return Object.assign({}, ...needs.map(agreed)) as StoredVersionFields;
 }
 
 function categorySource(
@@ -1941,7 +1943,10 @@ async function resolveVersionLinks(
   if (options.version === undefined && options.observedIn === undefined) {
     return;
   }
-  const fields = await versionFieldsFor(runtime, profile, typeId, memo, projectId);
+  const fields = await versionFieldsFor(runtime, profile, typeId, memo, projectId, [
+    ...(options.version === undefined ? [] : ["targetVersions" as const]),
+    ...(options.observedIn === undefined ? [] : ["observedInVersions" as const]),
+  ]);
   if (options.version !== undefined) {
     const target = fields.targetVersions;
     if (target === undefined) {

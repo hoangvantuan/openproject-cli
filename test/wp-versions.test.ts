@@ -590,6 +590,25 @@ describe("wp create without --type needs the types to agree (review S1)", () => 
     expect(api.bodies).toEqual([]);
   });
 
+  test("only the field the caller uses has to be agreed on", async () => {
+    // Task and Bug agree on targetVersions; only Bug has observedInVersions.
+    const r = await room(undefined, undefined, {
+      byType: {
+        "2": { targetVersions: { multiple: true } },
+        "6": MULTI,
+      },
+    });
+    const api = install();
+    const result = await wp(r, ["create", "Ship", "--version", "0.9.0"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const links = api.bodies[0]?.body._links as Record<string, unknown>;
+    expect(links.targetVersions).toEqual([{ href: "/api/v3/versions/31" }]);
+    // The disagreeing field still refuses when it is the one asked for.
+    const observed = await wp(r, ["create", "Ship", "--observed-in", "0.9.0"]);
+    expect(observed.exitCode).toBe(1);
+    expect(observed.stderr).toContain("--type");
+  });
+
   test("the same disagreement is settled by passing --type", async () => {
     const r = await room(undefined, undefined, { byType: { "2": MULTI, "6": LEGACY } });
     const api = install();
