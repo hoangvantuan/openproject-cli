@@ -4,29 +4,22 @@ import { basename, join } from "node:path";
 
 import type { Command } from "commander";
 
-import {
-  defineCollectionCommand,
-  type CollectionRuntime,
-} from "../core/define.js";
+import { defineCollectionCommand, type CollectionRuntime } from "../core/define.js";
 import {
   OpCliError,
+  refuseCombined,
   unknownIfUnfinished,
   writeFailure,
   type WriteWording,
 } from "../core/errors.js";
-import { flattenHalRecord } from "../core/hal.js";
+import { flattenHalRecord, formattableRaw } from "../core/hal.js";
 import {
   apiGet,
   apiGetBytes,
   apiPostMultipartRaw,
 } from "../core/http.js";
 import { isIdForm } from "../context/resolve.js";
-import {
-  parseProjectOverride,
-  type ActiveProfile,
-  type ContextOverrides,
-} from "../context/profile.js";
-import { formatCell, renderTable } from "../output/table.js";
+import type { ActiveProfile, ContextOverrides } from "../context/profile.js";
 
 export interface AttachmentRuntime {
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
@@ -49,29 +42,52 @@ export const ATTACHMENT_COLUMNS = [
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
-/** One attachment as the flat record every attachment command shows. */
+/**
+ * One attachment as the flat record every attachment command shows: the
+ * whole flattened resource (ADR-0003), with the Formattable description
+ * reduced to its markdown. `--fields` is the projection.
+ */
 export function attachmentRow(element: unknown): Record<string, unknown> {
   const record = flattenHalRecord(element);
-  const description = record.description as { raw?: unknown } | null | undefined;
-  return {
-    id: record.id,
-    fileName: record.fileName,
-    fileSize: record.fileSize,
-    contentType: record.contentType,
-    author: record.author,
-    createdAt: record.createdAt,
-    ...(typeof description?.raw === "string" && description.raw !== ""
-      ? { description: description.raw }
-      : {}),
-  };
+  if (!("description" in record)) {
+    return record;
+  }
+  const description = formattableRaw(record.description);
+  return { ...record, description: description === "" ? null : description };
 }
 
-/** The list-only author resolver: the generic one reads the `user` key. */
-function asAuthorResolver(resolveUser: RowResolver): RowResolver {
-  return async (row) => {
-    const named = await resolveUser({ user: row.author });
-    return { ...row, author: named.user };
-  };
+/** The attributes of an attachment the API documents; a --fields name is checked against them. */
+const ATTACHMENT_RECORD_SHAPE: Record<string, unknown> = Object.fromEntries(
+  [
+    "id", "title", "fileName", "fileSize", "description", "status",
+    "contentType", "digest", "createdAt", "author", "container",
+  ].map((field) => [field, null]),
+);
+
+/** What the attachment commands borrow from the work package surface. */
+export interface AttachmentHelpers {
+  /** The author-name resolver; the key names the user link of the row. */
+  readonly authorResolver: (
+    getPage: (path: string) => Promise<unknown>,
+    key?: string,
+  ) => RowResolver;
+  readonly selectedFields: (
+    raw: string | undefined,
+    record: Record<string, unknown>,
+    done?: string,
+  ) => Array<string>;
+  readonly renderRecord: (
+    runtime: Pick<AttachmentRuntime, "write">,
+    options: { json?: boolean; fields?: string },
+    record: Record<string, unknown>,
+    done?: string,
+  ) => void;
+  readonly openProfile: (
+    runtime: Pick<AttachmentRuntime, "resolve" | "setJsonMode" | "write">,
+    options: { json?: boolean; profile?: string; project?: string },
+  ) => Promise<ActiveProfile>;
+  readonly requireWpId: (reference: string) => void;
+  readonly collectionRuntime: CollectionRuntime;
 }
 
 function requireId(reference: string, what: string): void {
@@ -84,17 +100,6 @@ function requireId(reference: string, what: string): void {
   }
 }
 
-async function openProfile(
-  runtime: Pick<AttachmentRuntime, "resolve" | "setJsonMode">,
-  options: { json?: boolean; profile?: string; project?: string },
-): Promise<ActiveProfile> {
-  runtime.setJsonMode(options.json === true);
-  return runtime.resolve({
-    profile: options.profile,
-    project: parseProjectOverride(options.project),
-  });
-}
-
 /** The size ceiling of the instance, or undefined when it names none. */
 async function maximumFileSize(profile: ActiveProfile): Promise<number | undefined> {
   const configuration = await apiGet(
@@ -104,21 +109,6 @@ async function maximumFileSize(profile: ActiveProfile): Promise<number | undefin
   ) as { maximumAttachmentFileSize?: unknown } | null;
   const limit = configuration?.maximumAttachmentFileSize;
   return typeof limit === "number" && limit > 0 ? limit : undefined;
-}
-
-function renderAttachment(
-  runtime: Pick<AttachmentRuntime, "write">,
-  json: boolean,
-  record: Record<string, unknown>,
-): void {
-  if (json) {
-    runtime.write(`${JSON.stringify(record)}\n`);
-    return;
-  }
-  runtime.write(renderTable(
-    ["FIELD", "VALUE"],
-    Object.entries(record).map(([field, value]) => [field, formatCell(value)]),
-  ));
 }
 
 /** What an upload says when its outcome cannot be known. */
@@ -139,17 +129,23 @@ async function pathKind(path: string): Promise<"file" | "directory" | "other" | 
 
 async function upload(
   runtime: AttachmentRuntime,
+  helpers: AttachmentHelpers,
   reference: string,
   path: string,
   options: {
     description?: string;
     name?: string;
     json?: boolean;
+    fields?: string;
     profile?: string;
     project?: string;
   },
 ): Promise<void> {
-  requireId(reference, "work package");
+  helpers.requireWpId(reference);
+  // --fields is checked against the columns every attachment record has,
+  // so a typo is refused before the upload and a repeat cannot attach
+  // the file twice.
+  helpers.selectedFields(options.fields, ATTACHMENT_RECORD_SHAPE);
   // Every refusal that needs no network comes before the first request,
   // so a repeated command can never upload twice.
   const kind = await pathKind(path);
@@ -167,7 +163,7 @@ async function upload(
     throw new OpCliError("USAGE_ERROR", "--name must not be empty.");
   }
   const size = (await stat(path)).size;
-  const profile = await openProfile(runtime, options);
+  const profile = await helpers.openProfile(runtime, options);
   const limit = await maximumFileSize(profile);
   if (limit !== undefined && size > limit) {
     throw new OpCliError(
@@ -204,11 +200,17 @@ async function upload(
   if (response.status < 200 || response.status >= 300) {
     throw writeFailure(response.status, response.body, UPLOAD_WRITE(reference));
   }
-  renderAttachment(runtime, options.json === true, attachmentRow(response.body));
+  helpers.renderRecord(
+    runtime,
+    options,
+    attachmentRow(response.body),
+    "the file was attached",
+  );
 }
 
 async function download(
   runtime: AttachmentRuntime,
+  helpers: AttachmentHelpers,
   reference: string,
   options: {
     output?: string;
@@ -219,12 +221,23 @@ async function download(
   },
 ): Promise<void> {
   requireId(reference, "attachment");
-  const profile = await openProfile(runtime, options);
+  // Bytes on stdout carry no JSON record, and there is no file to
+  // overwrite: refuse the combination instead of ignoring a flag.
+  const toStdout = options.output === "-";
+  refuseCombined(
+    [toStdout ? "--output -" : undefined, options.json === true ? "--json" : undefined],
+    "--output - writes the file's bytes to stdout; drop --json or write to a path.",
+  );
+  refuseCombined(
+    [toStdout ? "--output -" : undefined, options.force === true ? "--force" : undefined],
+    "--output - writes to stdout, where there is no file to overwrite.",
+  );
+  const profile = await helpers.openProfile(runtime, options);
   const get = (path: string): Promise<unknown> =>
     apiGet(profile.instanceUrl, profile.apiKey, path);
   const contentPath = `/api/v3/attachments/${reference}/content`;
 
-  if (options.output === "-") {
+  if (toStdout) {
     runtime.writeBytes(await apiGetBytes(profile.instanceUrl, profile.apiKey, contentPath));
     return;
   }
@@ -286,25 +299,8 @@ async function download(
 export function registerAttachmentCommands(
   wp: Command,
   runtime: AttachmentRuntime,
-  authorResolver: (
-    getPage: (path: string) => Promise<unknown>,
-  ) => RowResolver,
+  helpers: AttachmentHelpers,
 ): void {
-  const collectionRuntime: CollectionRuntime = {
-    connect: async (options) => {
-      const profile = await runtime.resolve({
-        profile: typeof options.profile === "string" ? options.profile : undefined,
-        project: typeof options.project === "string"
-          ? parseProjectOverride(options.project)
-          : undefined,
-      });
-      return (path) => apiGet(profile.instanceUrl, profile.apiKey, path);
-    },
-    write: runtime.write,
-    writeErr: runtime.writeErr,
-    setJsonMode: runtime.setJsonMode,
-  };
-
   wp.addCommand(defineCollectionCommand(
     {
       name: "attachments",
@@ -312,9 +308,9 @@ export function registerAttachmentCommands(
       path: (id) => `/api/v3/work_packages/${id}/attachments`,
       row: attachmentRow,
       columns: ATTACHMENT_COLUMNS,
-      resolve: (getPage) => asAuthorResolver(authorResolver(getPage)),
+      resolve: (getPage) => helpers.authorResolver(getPage, "author"),
     },
-    collectionRuntime,
+    helpers.collectionRuntime,
   ));
 
   wp.command("attach")
@@ -324,15 +320,17 @@ export function registerAttachmentCommands(
     .option("--description <text>", "description stored with the attachment")
     .option("--name <fileName>", "file name to store instead of the file's own")
     .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated columns to show")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <name-or-id>", "override the profile default project")
     .action((reference: string, path: string, options: {
       description?: string;
       name?: string;
       json?: boolean;
+      fields?: string;
       profile?: string;
       project?: string;
-    }) => upload(runtime, reference, path, options));
+    }) => upload(runtime, helpers, reference, path, options));
 
   // Named after its target, like `comment-edit`: the argument is an
   // attachment id, never a work package id.
@@ -350,5 +348,5 @@ export function registerAttachmentCommands(
       json?: boolean;
       profile?: string;
       project?: string;
-    }) => download(runtime, reference, options));
+    }) => download(runtime, helpers, reference, options));
 }

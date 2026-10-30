@@ -84,7 +84,7 @@ describe("wp attachments", () => {
 
     const result = await run(["wp", "attachments", "12", "--json"], env, {});
 
-    expect(JSON.parse(result.stdout)).toEqual([{
+    expect(JSON.parse(result.stdout)).toMatchObject([{
       id: 5,
       fileName: "notes.txt",
       fileSize: 1024,
@@ -92,6 +92,22 @@ describe("wp attachments", () => {
       author: { id: 7, name: "Linh Nguyen" },
       createdAt: "2026-09-01T08:00:00Z",
       description: "a note",
+    }]);
+  });
+
+  // ADR-0003: without --fields the JSON carries the whole flattened
+  // record, including what the CLI has never heard of (roundup review S7).
+  test("--json carries every field the server sent, not a projection", async () => {
+    pool().intercept({ path: "/api/v3/work_packages/12/attachments?pageSize=100", method: "GET" })
+      .reply(200, collection([
+        { ...attachment(5, "notes.txt", 1024), status: "uploaded", digest: { algorithm: "md5", hash: "ab" } },
+      ]));
+
+    const result = await run(["wp", "attachments", "12", "--json"], env, {});
+
+    expect(JSON.parse(result.stdout)).toMatchObject([{
+      status: "uploaded",
+      digest: { algorithm: "md5", hash: "ab" },
     }]);
   });
 
@@ -140,6 +156,33 @@ describe("wp attach", () => {
     expect(file.name).toBe("notes.txt");
     expect(await file.text()).toBe("hello world");
     expect(JSON.parse(result.stdout)).toMatchObject({ id: 9, fileName: "notes.txt", fileSize: 11 });
+  });
+
+  // ADR-0003: --fields exists wherever a record is returned, and a bad one
+  // is refused before the upload so the repeat cannot attach twice
+  // (roundup review S6).
+  test("--fields picks the printed columns", async () => {
+    const path = await sampleFile();
+    pool().intercept({ path: CONFIG_PATH, method: "GET" }).reply(200, {});
+    pool().intercept({ path: "/api/v3/work_packages/12/attachments", method: "POST" })
+      .reply(201, attachment(9, "notes.txt", 11));
+
+    const result = await run(
+      ["wp", "attach", "12", path, "--fields", "id,fileName", "--json"], env, {},
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ id: 9, fileName: "notes.txt" });
+  });
+
+  test("an unknown --fields name is refused before any request", async () => {
+    const path = await sampleFile();
+
+    const result = await run(["wp", "attach", "12", path, "--fields", "nope"], env, {});
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("USAGE_ERROR");
+    expect(result.stderr).toContain("nope");
   });
 
   test("--name overrides the uploaded file name", async () => {
@@ -273,6 +316,21 @@ describe("wp attachment-download", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
     expect(Buffer.from(result.stdoutBytes ?? new Uint8Array()).toString("utf8")).toBe("hello world");
+  });
+
+  // Bytes on stdout cannot carry a JSON record, and there is no file to
+  // overwrite: say so instead of ignoring the flag (roundup review S5).
+  test("--output - refuses --json and --force before any request", async () => {
+    for (const flag of ["--json", "--force"]) {
+      const result = await run(
+        ["wp", "attachment-download", "5", "--output", "-", flag], env, {},
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("USAGE_ERROR");
+      expect(result.stderr).toContain(flag);
+      expect(result.stdoutBytes ?? new Uint8Array()).toHaveLength(0);
+    }
   });
 
   test("403 and 404 map to the catalogue and write nothing", async () => {

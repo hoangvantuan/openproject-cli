@@ -71,7 +71,7 @@ numeric; use each command's help to distinguish them. Run any command below with
     context; a project without sprints or buckets fails naming it.
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
-    commands: `wp get`/`create`/`update`, `wp history`/`comments`/
+    commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
     `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
     `update`/`copy`/`member`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
@@ -174,6 +174,7 @@ op-cli wp history <id>
 op-cli wp attachments <id>
 op-cli wp attach <id> <path> --description <text> --name <fileName>
 op-cli wp attachment-download <attachment-id> --output <path-or-dir> --force
+# --output - writes the bytes to stdout and cannot be combined with --json or --force
 # relations between work packages
 op-cli wp relations <id>
 op-cli wp relate <id> <to>

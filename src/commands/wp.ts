@@ -2642,10 +2642,12 @@ async function principalName(
  */
 function authorResolver(
   getPage: (path: string) => Promise<unknown>,
+  /** The key of the row that holds the user link: comments use `user`. */
+  key = "user",
 ): (row: Record<string, unknown>) => Promise<Record<string, unknown>> {
   const named = new Map<number, string | null>();
   return async (row) => {
-    const user = row.user;
+    const user = row[key];
     if (!isFlatLink(user) || user.id === null || user.name !== null) {
       return row;
     }
@@ -2654,7 +2656,7 @@ function authorResolver(
       named.set(id, await principalName(getPage, id));
     }
     const name = named.get(id) ?? null;
-    return name === null ? row : { ...row, user: { id, name } };
+    return name === null ? row : { ...row, [key]: { id, name } };
   };
 }
 
@@ -2664,10 +2666,9 @@ export function commentRow(element: unknown): Record<string, unknown> | undefine
   return row.kind === "Comment" ? row : undefined;
 }
 
-/** A watcher is a plain user resource: id and name are all there is to show. */
+/** A watcher is a plain user resource; the whole flat record, `--fields` projects it. */
 export function watcherRow(element: unknown): Record<string, unknown> {
-  const record = flattenHalRecord(element);
-  return { id: record.id, name: record.name };
+  return flattenHalRecord(element);
 }
 
 /** Only the typed fields and both ends; the action links carry no data. */
@@ -3295,7 +3296,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     collectionRuntime,
   ));
 
-  registerAttachmentCommands(wp, runtime, authorResolver);
+  registerAttachmentCommands(wp, runtime, {
+    authorResolver,
+    selectedFields,
+    renderRecord,
+    openProfile,
+    requireWpId,
+    collectionRuntime,
+  });
 
   wp.addCommand(defineCollectionCommand(
     {

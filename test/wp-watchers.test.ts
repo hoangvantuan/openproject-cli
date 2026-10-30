@@ -158,7 +158,7 @@ describe("wp watchers", () => {
     expect(result.stdout).toMatch(/5\s+Tuan Ha/);
   });
 
-  test("--json is a flat array of {id, name}", async () => {
+  test("--json is the flat user records, id and name included", async () => {
     installApi([
       { method: "GET", path: WATCHERS, body: collection([user(9, "Linh Nguyen")]) },
     ]);
@@ -166,7 +166,7 @@ describe("wp watchers", () => {
     const result = await runWp(["watchers", "12", "--json"]);
 
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual([{ id: 9, name: "Linh Nguyen" }]);
+    expect(JSON.parse(result.stdout)).toMatchObject([{ id: 9, name: "Linh Nguyen", login: "linh.nguyen" }]);
   });
 });
 
