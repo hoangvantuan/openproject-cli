@@ -142,9 +142,9 @@ describe("notification reads", () => {
     listReply(page([item(8)], 2, 1, 1));
     mock.get(INSTANCE).intercept({ method: "GET", path: (path) => path.startsWith(`${ROOT}?`) }).reply(403, {});
     const result = await run(["notification", "list", "--json", "--all", "--limit", "1"], env, {});
-    expect(result.exitCode).toBe(3);
+    expect(result.exitCode).toBe(8);
     expect(lines(result.stdout)[0].id).toBe(8);
-    expect(lines(result.stderr).map((row) => row.type ?? row.error.code)).toEqual(["pagination", "AUTH_FAILED"]);
+    expect(lines(result.stderr).map((row) => row.type ?? row.error.code)).toEqual(["pagination", "PERMISSION_DENIED"]);
   });
 
   test("get preserves custom scalar fields and nullable or polymorphic relationships", async () => {

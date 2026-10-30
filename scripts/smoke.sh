@@ -50,6 +50,7 @@ WP_ID=""
 LIST_WP_ID=""
 ENTRY_ID=""
 DAY_ENTRY_ID=""
+SMOKE_TMP=""
 on_error() {
   echo "smoke: FAIL at step: ${CURRENT_STEP:-<unknown>}" >&2
   if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ]; then
@@ -65,6 +66,7 @@ cleanup_scoped() {
   local original=$?
   local cleanup_failed=0
   trap - ERR EXIT
+  if [ -n "$SMOKE_TMP" ]; then rm -rf "$SMOKE_TMP"; fi
   if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ] && [ "$DRY" != "1" ]; then
     # These variables are populated only from this run's creation responses.
     # Never delete by subject, search result, or IDs supplied by the caller.
@@ -139,6 +141,70 @@ json_field() {
     }
     console.log(String(value));
   ' "$1"
+}
+
+wp_writable() {
+  # True when the disposable work package's schema lists FIELD as writable.
+  # Reads $SCHEMA_JSON; the dry shadow of node always answers yes, so every
+  # optional step still walks through in a dry run.
+  printf '%s' "$SCHEMA_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const field = process.argv[1];
+    process.exit(Array.isArray(rows)
+      && rows.some((row) => row.field === field && row.writable === true) ? 0 : 1);
+  ' "$1"
+}
+
+wp_expect() {
+  # wp_expect <path> <want> [<path> <want>]...: read the work package back
+  # with `wp get --json` and fail unless every dotted path reads as wanted.
+  # A {id,name} link or a list of them compares by name, "" means empty, "*"
+  # any non-empty value, and "a|b" accepts either spelling. The failure
+  # message names the path; the step name is already printed by the trap.
+  # The paths and wanted values are argv, never interpolated into the script.
+  $BIN wp get "$WP_ID" --json | node -e '
+    const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const text = (entry) => {
+      if (entry === null || entry === undefined) return "";
+      if (typeof entry === "object") return entry.name === null || entry.name === undefined ? "" : String(entry.name);
+      return String(entry);
+    };
+    const args = process.argv.slice(1);
+    for (let i = 0; i < args.length; i += 2) {
+      let value = data;
+      for (const step of args[i].split(".")) {
+        value = value === null || typeof value !== "object" ? undefined : value[step];
+      }
+      const got = Array.isArray(value) ? value.map(text).filter((s) => s !== "").join(",") : text(value);
+      const want = args[i + 1];
+      const ok = want === "*" ? got !== "" : want.split("|").includes(got);
+      if (!ok) {
+        console.error("smoke: wp get reads " + args[i] + " = " + JSON.stringify(got) + " instead of " + JSON.stringify(want));
+        process.exit(3);
+      }
+    }
+  ' "$@" || return $?
+  # The explicit return hands the failure to the caller, where the ERR
+  # trap that names the step is armed; a function would otherwise exit
+  # under set -e without the trap seeing it.
+}
+
+vocab_first() {
+  # First entry name of a project vocabulary (meta versions|sprints|buckets),
+  # empty when the instance does not expose it to this account or the
+  # project has none; an open version is preferred. The optional steps skip
+  # on an empty answer.
+  local json
+  if ! json="$($BIN meta "$1" --project "$PROJ_ID" --json 2> /dev/null)"; then
+    return 0
+  fi
+  node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows)) process.exit(0);
+    const open = rows.find((row) => row && row.status === "open");
+    const row = open ?? rows[0];
+    if (row && typeof row.name === "string") console.log(row.name);
+  ' <<<"$json"
 }
 
 if [ "$DRY" != "1" ] && { [ -z "${OPENPROJECT_URL:-}" ] || [ -z "${OPENPROJECT_API_KEY:-}" ]; }; then
@@ -228,6 +294,225 @@ if [ "$DRY" != "1" ]; then
       process.exit(3);
     }
   ' "$COMMENT_TEXT"
+fi
+
+# --- Write paths of #43-#49 -------------------------------------------------
+# Every step writes with `wp update`, then reads the record back with
+# `wp get --json` (wp_expect): an accepted-then-ignored payload only shows on
+# the read. Which fields exist is instance configuration, so each optional
+# step probes first (wp schema, meta versions|sprints|buckets) and prints a
+# "skip:" line instead of failing. The disposable work package is deleted at
+# teardown whatever is set on it, so nothing here needs its own cleanup.
+
+step "probe the writable fields of work package $WP_ID"
+SCHEMA_JSON="$($BIN wp schema "$WP_ID" --json)"
+
+step "edit the comment on work package $WP_ID and read it back"
+COMMENT_EDITED="smoke comment **C2**"
+ACTIVITY_ID="$(printf '%s' "$COMMENTS_JSON" | node -e '
+  const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  const row = Array.isArray(rows) ? rows.find((r) => r.comment === process.argv[1]) : undefined;
+  if (!row || row.id === undefined || row.id === null) {
+    console.error("smoke: no activity carries the comment just posted");
+    process.exit(3);
+  }
+  console.log(String(row.id));
+' "$COMMENT_TEXT")"
+$BIN wp comment-edit "$ACTIVITY_ID" "$COMMENT_EDITED" > /dev/null
+EDITED_JSON="$($BIN wp comments "$WP_ID" --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$EDITED_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const want = process.argv[1];
+    if (!Array.isArray(rows) || !rows.some((row) => row.comment === want)) {
+      console.error("smoke: reading the comments back found none equal to " + JSON.stringify(want));
+      process.exit(3);
+    }
+  ' "$COMMENT_EDITED"
+fi
+
+step "watch and unwatch work package $WP_ID (default: me)"
+$BIN wp watch "$WP_ID" > /dev/null
+WATCHERS_JSON="$($BIN wp watchers "$WP_ID" --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$WATCHERS_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows) || rows.length === 0) {
+      console.error("smoke: wp watch left the watcher list empty");
+      process.exit(3);
+    }
+  '
+fi
+$BIN wp unwatch "$WP_ID" > /dev/null
+UNWATCHED_JSON="$($BIN wp watchers "$WP_ID" --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$UNWATCHED_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows) || rows.length !== 0) {
+      console.error("smoke: wp unwatch left " + JSON.stringify(rows) + " in the watcher list");
+      process.exit(3);
+    }
+  '
+fi
+
+# The attachment dies with the work package at teardown (the API offers no
+# attachment delete on this surface); only the local temp directory needs
+# its own cleanup, which the EXIT trap does.
+step "attach a small file to work package $WP_ID and download it back"
+SMOKE_TMP="$(mktemp -d)"
+ATTACH_SRC="$SMOKE_TMP/up.txt"
+ATTACH_DST="$SMOKE_TMP/down.txt"
+printf 'smoke attachment %s\n' "$STAMP" > "$ATTACH_SRC"
+ATTACH_JSON="$($BIN wp attach "$WP_ID" "$ATTACH_SRC" --name "smoke-$STAMP.txt" \
+  --description "smoke attachment" --json)"
+ATTACH_ID="$(printf '%s' "$ATTACH_JSON" | json_field id)"
+ATTACHMENTS_JSON="$($BIN wp attachments "$WP_ID" --json)"
+$BIN wp attachment-download "$ATTACH_ID" --output "$ATTACH_DST" > /dev/null
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$ATTACHMENTS_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows) || !rows.some((row) => String(row.id) === process.argv[1])) {
+      console.error("smoke: wp attachments missed the attachment " + process.argv[1]);
+      process.exit(3);
+    }
+  ' "$ATTACH_ID"
+  if ! cmp -s "$ATTACH_SRC" "$ATTACH_DST"; then
+    echo "smoke: the downloaded attachment differs from the uploaded file" >&2
+    false
+  fi
+fi
+
+# Internal comments need the instance's internal_comments feature and the
+# permission to write them; a rejection is a skip, not a failure.
+INTERNAL_TEXT="smoke internal **I**"
+if $BIN wp comment "$WP_ID" "$INTERNAL_TEXT" --internal --json > /dev/null 2>&1; then
+  step "read the internal comment on work package $WP_ID back flagged internal"
+  INTERNAL_JSON="$($BIN wp comments "$WP_ID" --json)"
+  if [ "$DRY" != "1" ]; then
+    printf '%s' "$INTERNAL_JSON" | node -e '
+      const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const want = process.argv[1];
+      if (!Array.isArray(rows) || !rows.some((r) => r.comment === want && r.internal === true)) {
+        console.error("smoke: no comment equal to " + JSON.stringify(want) + " reads back as internal");
+        process.exit(3);
+      }
+    ' "$INTERNAL_TEXT"
+  fi
+else
+  echo "[smoke] skip: the instance rejected an internal comment on work package $WP_ID; internal comment step skipped."
+fi
+
+if wp_writable startDate && wp_writable dueDate; then
+  step "set, then clear, start and due dates on work package $WP_ID"
+  $BIN wp update "$WP_ID" --start 2030-01-07 --due 2030-01-11 --json > /dev/null
+  wp_expect startDate 2030-01-07 dueDate 2030-01-11
+  $BIN wp update "$WP_ID" --start "" --due "" --json > /dev/null
+  wp_expect startDate "" dueDate ""
+else
+  echo "[smoke] skip: startDate/dueDate are not writable on work package $WP_ID; dates step skipped."
+fi
+
+if wp_writable estimatedTime && wp_writable remainingTime; then
+  step "set, then clear, estimate and remaining work on work package $WP_ID"
+  $BIN wp update "$WP_ID" --estimate 4h --remaining 2h --json > /dev/null
+  wp_expect estimatedTime PT4H remainingTime PT2H
+  $BIN wp update "$WP_ID" --estimate "" --remaining "" --json > /dev/null
+  wp_expect estimatedTime "" remainingTime ""
+else
+  echo "[smoke] skip: estimatedTime/remainingTime are not writable on work package $WP_ID; estimate step skipped."
+fi
+
+if wp_writable percentageDone; then
+  step "set, then clear, percent complete on work package $WP_ID"
+  $BIN wp update "$WP_ID" --done 50 --json > /dev/null
+  wp_expect percentageDone 50
+  $BIN wp update "$WP_ID" --done "" --json > /dev/null
+  wp_expect percentageDone "|0"
+else
+  echo "[smoke] skip: percentageDone is not writable (derived from status); percent complete step skipped."
+fi
+
+if wp_writable storyPoints; then
+  step "set, then clear, story points on work package $WP_ID"
+  $BIN wp update "$WP_ID" --story-points 3 --json > /dev/null
+  wp_expect storyPoints 3
+  $BIN wp update "$WP_ID" --story-points "" --json > /dev/null
+  wp_expect storyPoints ""
+else
+  echo "[smoke] skip: storyPoints is not in the schema of work package $WP_ID; story points step skipped."
+fi
+
+if wp_writable responsible; then
+  step "set, then clear, the accountable of work package $WP_ID"
+  $BIN wp update "$WP_ID" --accountable me --json > /dev/null
+  wp_expect responsible "*"
+  $BIN wp update "$WP_ID" --accountable "" --json > /dev/null
+  wp_expect responsible ""
+else
+  echo "[smoke] skip: responsible (accountable) is not writable on work package $WP_ID; accountable step skipped."
+fi
+
+VERSION_NAME="$(vocab_first versions)"
+if [ "$DRY" = "1" ]; then VERSION_NAME="dry version"; fi
+if [ -z "$VERSION_NAME" ]; then
+  echo "[smoke] skip: project $PROJ_ID has no versions visible to this account; version steps skipped."
+else
+  if wp_writable version || wp_writable targetVersions; then
+    step "set, then clear, version '$VERSION_NAME' (targetVersions) on work package $WP_ID"
+    $BIN wp update "$WP_ID" --version "$VERSION_NAME" --project "$PROJ_ID" --json > /dev/null
+    wp_expect version "$VERSION_NAME" targetVersions "$VERSION_NAME"
+    $BIN wp update "$WP_ID" --version "" --project "$PROJ_ID" --json > /dev/null
+    wp_expect version "" targetVersions ""
+  else
+    echo "[smoke] skip: version is not writable on work package $WP_ID; version step skipped."
+  fi
+  if wp_writable observedInVersions; then
+    step "set, then clear, observed-in '$VERSION_NAME' on work package $WP_ID"
+    $BIN wp update "$WP_ID" --observed-in "$VERSION_NAME" --project "$PROJ_ID" --json > /dev/null
+    wp_expect observedInVersions "$VERSION_NAME"
+    $BIN wp update "$WP_ID" --observed-in "" --project "$PROJ_ID" --json > /dev/null
+    wp_expect observedInVersions ""
+  else
+    echo "[smoke] skip: observedInVersions is not writable on work package $WP_ID; observed-in step skipped."
+  fi
+fi
+
+# A work package sits in a sprint or a backlog bucket, never both: moving
+# between them is clear-then-set, and the placement is empty in between.
+SPRINT_NAME="$(vocab_first sprints)"
+BUCKET_NAME="$(vocab_first buckets)"
+if [ "$DRY" = "1" ]; then
+  SPRINT_NAME="dry sprint"
+  BUCKET_NAME="dry bucket"
+fi
+if [ -n "$SPRINT_NAME" ] && ! wp_writable sprint; then SPRINT_NAME=""; fi
+if [ -n "$BUCKET_NAME" ] && ! wp_writable backlogBucket; then BUCKET_NAME=""; fi
+if [ -z "$SPRINT_NAME" ] && [ -z "$BUCKET_NAME" ]; then
+  echo "[smoke] skip: project $PROJ_ID has no usable sprints or buckets; placement steps skipped."
+fi
+if [ -n "$SPRINT_NAME" ]; then
+  step "place work package $WP_ID in sprint '$SPRINT_NAME'"
+  $BIN wp update "$WP_ID" --sprint "$SPRINT_NAME" --project "$PROJ_ID" --json > /dev/null
+  wp_expect sprint "$SPRINT_NAME"
+  if [ -z "$BUCKET_NAME" ]; then
+    step "clear the sprint of work package $WP_ID"
+    $BIN wp update "$WP_ID" --sprint "" --project "$PROJ_ID" --json > /dev/null
+    wp_expect sprint ""
+  fi
+fi
+if [ -n "$BUCKET_NAME" ]; then
+  if [ -n "$SPRINT_NAME" ]; then
+    step "move work package $WP_ID from the sprint to bucket '$BUCKET_NAME' (clear, then set)"
+    $BIN wp update "$WP_ID" --sprint "" --project "$PROJ_ID" --json > /dev/null
+    wp_expect sprint ""
+  else
+    step "place work package $WP_ID in bucket '$BUCKET_NAME'"
+  fi
+  $BIN wp update "$WP_ID" --bucket "$BUCKET_NAME" --project "$PROJ_ID" --json > /dev/null
+  wp_expect backlogBucket "$BUCKET_NAME" sprint ""
+  step "clear the bucket of work package $WP_ID"
+  $BIN wp update "$WP_ID" --bucket "" --project "$PROJ_ID" --json > /dev/null
+  wp_expect backlogBucket ""
 fi
 
 # --- List custom field ------------------------------------------------------

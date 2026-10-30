@@ -230,6 +230,8 @@ function projectRefreshInstall(
       [`/api/v3/memberships?filters=${memberFilters}`]: empty,
       "/api/v3/projects/13/versions": empty,
       "/api/v3/projects/13/categories": empty,
+      "/api/v3/projects/13/sprints": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
+      "/api/v3/projects/13/backlog_buckets": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
       "/api/v3/projects/13/types": {
         _type: "Collection",
         total: 1,
@@ -521,6 +523,33 @@ describe("wp create values by name", () => {
     ]);
   });
 
+  test("--accountable resolves a member name into _links.responsible", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1500, "Ship the thing") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create", "Ship the thing", "--accountable", "Linh Nguyen",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.responsible.href).toBe("/api/v3/users/7");
+    expect(links.assignee).toBeUndefined();
+  });
+
+  for (const flag of ["--assignee", "--accountable", "--version", "--category", "--parent", "--type", "--status", "--priority"]) {
+    test(`${flag} "" is a usage error on create, never dropped`, async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+      const { postBodies } = installMockApi({});
+      const result = await runWp(configDir, cacheDir, ["create", "QA bug", flag, ""]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("USAGE_ERROR");
+      expect(postBodies).toHaveLength(0);
+    });
+  }
+
   test("a single-valued list field refuses two values before any traffic", async () => {
     const { configDir, cacheDir } = await standardRoom();
     await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
@@ -663,6 +692,8 @@ describe("wp create values by name", () => {
           count: 0,
           _embedded: { elements: [] },
         },
+        "/api/v3/projects/13/sprints": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
+        "/api/v3/projects/13/backlog_buckets": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
         "/api/v3/projects/13/types": {
           _type: "Collection",
           total: 2,
@@ -1264,6 +1295,8 @@ describe("wp create retry rule", () => {
           count: freshVocabulary.categories.length,
           _embedded: { elements: freshVocabulary.categories },
         },
+        "/api/v3/projects/13/sprints": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
+        "/api/v3/projects/13/backlog_buckets": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
         "/api/v3/projects/13/types": {
           _type: "Collection",
           total: 2,
@@ -1447,4 +1480,47 @@ describe("wp create --description", () => {
     expect(result.exitCode).toBe(0);
     expect(postBodies[0]?.description).toEqual({ raw: "" });
   });
+
+describe("wp create scalar attributes", () => {
+  test("scalar flags land in the create payload in wire form", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1501, "Plan it") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create", "Plan it",
+      "--start", "2026-09-01", "--due", "2026-09-30",
+      "--estimate", "PT4H", "--remaining", "2h",
+      "--done", "10", "--story-points", "3",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies[0]).toMatchObject({
+      startDate: "2026-09-01",
+      dueDate: "2026-09-30",
+      estimatedTime: "PT4H",
+      remainingTime: "PT2H",
+      percentageDone: 10,
+      storyPoints: 3,
+    });
+  });
+
+  test("an empty scalar is a usage error on create, before any request", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({});
+    const result = await runWp(configDir, cacheDir, ["create", "Plan it", "--due", ""]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--due cannot be empty on create");
+    expect(postBodies).toHaveLength(0);
+  });
+
+  test("an invalid scalar is a usage error before any request", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({});
+    const result = await runWp(configDir, cacheDir, ["create", "Plan it", "--done", "250"]);
+    expect(result.exitCode).toBe(1);
+    expect(postBodies).toHaveLength(0);
+  });
+});
+
 });

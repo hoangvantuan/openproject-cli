@@ -1,9 +1,24 @@
-import type { Command } from "commander";
+import { Option, type Command } from "commander";
 
-import { OpCliError, writeRefusal } from "../core/errors.js";
+import {
+  OpCliError,
+  refuseCombined,
+  unknownIfUnfinished,
+  writeFailure,
+  type WriteWording,
+} from "../core/errors.js";
+import {
+  applyScalars,
+  SCALAR_OPTIONS,
+  scalarFlag,
+  validateScalars,
+  type ScalarFlags,
+} from "../core/scalars.js";
 import {
   buildWpFilters,
   filtersQuery,
+  parseSort,
+  sortByQuery,
   type WpFilter,
   type WpListFlags,
 } from "../core/filters.js";
@@ -16,6 +31,7 @@ import {
 import { flattenHalRecord, isFlatLink, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
+  apiDeleteRaw,
   apiGet,
   apiPost,
   apiPatchRaw,
@@ -47,20 +63,28 @@ import {
 import { resolveProjectRef } from "../context/projectref.js";
 import {
   loadProjectVocabulary,
+  loadProjectVocabularyById,
   loadStoredMetadata,
+  refreshProjectVocabulary,
   refreshStoredMetadata,
+  requireVocabulary,
   type ProjectVocabulary,
+  type StoredVersionField,
+  type StoredVersionFields,
   type StoredCustomField,
   type StoredMetadata,
 } from "../context/metadata.js";
 import type { RunEnvironment } from "../run.js";
 import { formatCell, renderTable } from "../output/table.js";
+import { registerAttachmentCommands } from "./attachments.js";
 
 export interface WpRuntime {
   readonly env: RunEnvironment;
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
   readonly write: (text: string) => void;
   readonly writeErr: (text: string) => void;
+  /** Raw bytes for stdout: a downloaded file is not text. */
+  readonly writeBytes: (bytes: Uint8Array) => void;
   readonly setJsonMode: (on: boolean) => void;
   /** Present only when the host can hand over stdin (bin.ts can). */
   readonly readStdin?: () => Promise<string>;
@@ -78,9 +102,15 @@ const PREFERRED_FIELDS = [
   "author",
   "project",
   "version",
+  "targetVersions",
+  "observedInVersions",
   "category",
   "startDate",
   "dueDate",
+  "estimatedTime",
+  "remainingTime",
+  "percentageDone",
+  "storyPoints",
   "createdAt",
   "updatedAt",
   "lockVersion",
@@ -198,18 +228,34 @@ function collectValue(value: string, previous: Array<string>): Array<string> {
   return [...previous, value];
 }
 
+/** Like collectValue, but a flag left out stays undefined, not empty. */
+function collectOptional(value: string, previous?: Array<string>): Array<string> {
+  return [...(previous ?? []), value];
+}
+
 interface FilterFlagOptions {
   readonly status?: Array<string>;
   readonly type?: Array<string>;
   readonly assignee?: Array<string>;
+  readonly accountable?: Array<string>;
   readonly author?: Array<string>;
+  readonly watcher?: Array<string>;
   readonly version?: Array<string>;
+  readonly observedIn?: Array<string>;
   readonly category?: Array<string>;
+  readonly sprint?: Array<string>;
+  readonly bucket?: Array<string>;
+  readonly backlogInbox?: boolean;
   readonly priority?: Array<string>;
   readonly parent?: Array<string>;
   readonly updatedAfter?: string;
   readonly createdAfter?: string;
+  readonly dueBefore?: string;
+  readonly dueAfter?: string;
+  readonly overdue?: boolean;
   readonly search?: string;
+  readonly id?: Array<string>;
+  readonly includeSubprojects?: boolean;
   readonly open?: boolean;
   readonly closed?: boolean;
   readonly profile?: string;
@@ -225,9 +271,33 @@ function addFilterFlags(command: Command): Command {
     .option("--status <name>", "status name or id; repeat to OR values", collectValue, [])
     .option("--type <name>", "type name or id; repeat to OR values", collectValue, [])
     .option("--assignee <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option(
+      "--accountable <name>",
+      "Accountable (API field responsible): user name, id, or me; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--author <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option(
+      "--watcher <name>",
+      "user name, id, or me, watching the work package; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--version <name>", "version name or id; repeat to OR values", collectValue, [])
+    .option(
+      "--observed-in <name>",
+      "observed-in version name or id; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--category <name>", "category name or id; repeat to OR values", collectValue, [])
+    .option("--sprint <name>", "sprint name or id; repeat to OR values", collectValue, [])
+    .option("--bucket <name>", "backlog bucket name or id; repeat to OR values", collectValue, [])
+    .option(
+      "--backlog-inbox",
+      "only work packages in the backlog inbox: in neither a sprint nor a backlog bucket",
+    )
     .option("--priority <name>", "priority name or id; repeat to OR values", collectValue, [])
     .option("--parent <reference>", "parent work package id or exact subject", collectValue, [])
     .option(
@@ -238,11 +308,42 @@ function addFilterFlags(command: Command): Command {
       "--created-after <value>",
       "only work packages created since; same date forms as --updated-after",
     )
+    .option(
+      "--due-before <date>",
+      "due on or before this date: YYYY-MM-DD, today, yesterday, or Nd; "
+        + "today/yesterday/Nd count back from today, only YYYY-MM-DD reaches the future",
+    )
+    .option("--due-after <date>", "due on or after this date; same date forms as --due-before")
+    .option("--overdue", "open work packages whose due date is before today")
     .option("--search <text>", "substring matched against work package subjects")
+    .option("--id <id>", "work package id; repeat to OR values", collectValue, [])
+    .option(
+      "--include-subprojects",
+      "include subprojects in a --project listing (the default; an instance setting may change what a project clause covers)",
+    )
+    .option(
+      "--no-include-subprojects",
+      "only the project's own work packages, not its subprojects' (needs a project)",
+    )
     .option("--open", "shorthand for every open status")
     .option("--closed", "shorthand for every closed status")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <name-or-id>", "override the profile default project");
+}
+
+/** Normalise --id values ("12" or "#12") to digit strings. */
+function parseIdValues(raw: ReadonlyArray<string>): Array<string> {
+  return raw.map((value) => {
+    const id = value.trim().replace(/^#/, "");
+    if (!/^[1-9]\d*$/.test(id)) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `"${value}" is not a work package id.`,
+        "--id takes a positive number such as 1234 or #1234.",
+      );
+    }
+    return id;
+  });
 }
 
 function rawListFlags(options: FilterFlagOptions): WpListFlags {
@@ -250,14 +351,24 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     statuses: options.status,
     types: options.type,
     assignees: options.assignee,
+    accountables: options.accountable,
     authors: options.author,
+    watchers: options.watcher,
     versions: options.version,
+    observedIn: options.observedIn,
     categories: options.category,
+    sprints: options.sprint,
+    buckets: options.bucket,
+    backlogInbox: options.backlogInbox,
     priorities: options.priority,
     parents: options.parent,
     updatedAfter: options.updatedAfter,
     createdAfter: options.createdAfter,
+    dueBefore: options.dueBefore,
+    dueAfter: options.dueAfter,
+    overdue: options.overdue,
     search: options.search,
+    ids: parseIdValues(options.id ?? []),
     open: options.open,
     closed: options.closed,
   };
@@ -313,6 +424,66 @@ function projectSource<V>(
       memo?.invalidate();
       await refreshStoredMetadata(runtime.env, profile);
     },
+  };
+}
+
+/** The two backlog placements a work package link can name (#46). */
+const BACKLOG_SOURCES = {
+  sprint: { source: "sprints", owner: "Sprint", plural: "sprints" },
+  bucket: { source: "buckets", owner: "Bucket", plural: "backlog buckets" },
+} as const;
+
+/**
+ * The sprints or backlog buckets of the profile's project, on the same
+ * footing as the other project sources. A store from before #46 lacks
+ * them and an empty list may simply be stale, so an empty read re-reads
+ * this project once; a project that still has none fails naming the
+ * project instead of matching against nothing. Only this project is
+ * refreshed: the failure path would otherwise re-fetch every cached
+ * project on each call.
+ */
+function backlogSource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  flag: keyof typeof BACKLOG_SOURCES,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  const { source, owner, plural } = BACKLOG_SOURCES[flag];
+  const project = projectSource<number>(
+    runtime,
+    profile,
+    flag,
+    flag,
+    (vocabulary) => {
+      const entries: ReadonlyArray<{ readonly id: number; readonly name: string }> =
+        requireVocabulary(vocabulary, source);
+      return entries.map((entry) => ({ name: entry.name, owner, value: entry.id }));
+    },
+    memo,
+  );
+  const refresh = async (): Promise<void> => {
+    memo?.invalidate();
+    await refreshProjectVocabulary(runtime.env, profile, Number(profile.project));
+  };
+  return {
+    label: project.label,
+    load: async () => {
+      let entries = await project.load();
+      if (entries.length === 0) {
+        await refresh();
+        entries = await project.load();
+      }
+      if (entries.length === 0) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `--${flag}: project ${String(profile.project)} has no ${plural}.`,
+          `run op-cli project ${source} ${String(profile.project)} to check, `
+            + `or leave --${flag} out.`,
+        );
+      }
+      return entries;
+    },
+    refresh,
   };
 }
 
@@ -385,18 +556,56 @@ function membersSource(
 // wp create
 
 
-/** The value flags shared verbatim by one create and every stdin item. */
-interface CreateValueFlags {
+/**
+ * The value flags shared verbatim by one create and every stdin item. The
+ * scalar attributes come from ScalarFlags, the one list the payload writer
+ * also reads.
+ */
+interface CreateValueFlags extends ScalarFlags {
   readonly type?: string;
   readonly status?: string;
   readonly priority?: string;
   readonly assignee?: string;
-  readonly version?: string;
+  readonly accountable?: string;
+  /** Versions by name or id; `[""]` clears on update. */
+  readonly version?: ReadonlyArray<string>;
+  readonly observedIn?: ReadonlyArray<string>;
   readonly category?: string;
+  /** A sprint or, exclusively, a backlog bucket (#46). */
+  readonly sprint?: string;
+  readonly bucket?: string;
   readonly parent?: string;
   readonly description?: string;
   readonly field?: Array<string>;
 }
+
+/**
+ * Every value flag, once. A key added to CreateValueFlags fails to compile
+ * until it is listed here, and this list feeds the stdin key check and the
+ * update "touches something" guard, so a new flag cannot be forgotten in
+ * either.
+ */
+const VALUE_OPTIONS: Readonly<Record<keyof CreateValueFlags, true>> = {
+  type: true,
+  status: true,
+  priority: true,
+  assignee: true,
+  accountable: true,
+  version: true,
+  observedIn: true,
+  category: true,
+  sprint: true,
+  bucket: true,
+  parent: true,
+  description: true,
+  field: true,
+  start: true,
+  due: true,
+  estimate: true,
+  remaining: true,
+  done: true,
+  storyPoints: true,
+};
 
 interface CreateOptions extends CreateValueFlags {
   readonly stdin?: boolean;
@@ -522,18 +731,20 @@ async function submitCreate(
   return response.body;
 }
 
+/**
+ * Kebab spellings a stdin item may use for a camelCase key, mirroring the
+ * flag. Both spell the same attribute; giving both is refused.
+ */
+const BULK_KEY_ALIASES: Readonly<Record<string, keyof CreateValueFlags>> = {
+  "story-points": "storyPoints",
+  "observed-in": "observedIn",
+};
+
 /** Keys one stdin item may carry; everything else is a loud usage error. */
 const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "subject",
-  "type",
-  "status",
-  "priority",
-  "assignee",
-  "version",
-  "category",
-  "parent",
-  "description",
-  "field",
+  ...Object.keys(VALUE_OPTIONS),
+  ...Object.keys(BULK_KEY_ALIASES),
 ];
 
 /**
@@ -550,7 +761,18 @@ function parseBulkItem(
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw usage('every input must be an object with a non-empty "subject".');
   }
-  const record = raw as Record<string, unknown>;
+  // Normalise into a copy: the caller's parsed object stays as it came in.
+  const record: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  for (const [alias, key] of Object.entries(BULK_KEY_ALIASES)) {
+    if (record[alias] === undefined) {
+      continue;
+    }
+    if (record[key] !== undefined) {
+      throw usage(`"${alias}" and "${key}" are the same key; give one.`);
+    }
+    record[key] = record[alias];
+    delete record[alias];
+  }
   const unknownKeys = Object.keys(record)
     .filter((key) => !BULK_ITEM_KEYS.includes(key));
   if (unknownKeys.length > 0) {
@@ -563,24 +785,18 @@ function parseBulkItem(
   if (typeof subject !== "string" || subject.trim() === "") {
     throw usage('every input needs a non-empty "subject" string.');
   }
-  const values: {
-    type?: string;
-    status?: string;
-    priority?: string;
-    assignee?: string;
-    version?: string;
-    category?: string;
-    parent?: string;
-    description?: string;
-    field?: Array<string>;
-  } = {};
-  const scalarKeys: ReadonlyArray<Exclude<keyof CreateValueFlags, "field">> = [
+  const values: { -readonly [K in keyof CreateValueFlags]?: CreateValueFlags[K] } = {};
+  const scalarKeys: ReadonlyArray<
+    Exclude<keyof CreateValueFlags, "field" | "version" | "observedIn">
+  > = [
     "type",
     "status",
     "priority",
     "assignee",
-    "version",
+    "accountable",
     "category",
+    "sprint",
+    "bucket",
     "parent",
     "description",
   ];
@@ -593,6 +809,55 @@ function parseBulkItem(
       throw usage(`"${key}" must be a non-empty name-or-id string.`);
     }
     values[key] = rawValue;
+  }
+  try {
+    refuseTwoPlacements(values);
+  } catch (error) {
+    if (error instanceof OpCliError) {
+      throw usage(error.message, error.hint);
+    }
+    throw error;
+  }
+  // A version key takes one name-or-id string or an array of them.
+  for (const key of ["version", "observedIn"] as const) {
+    const rawValue = record[key];
+    if (rawValue === undefined) {
+      continue;
+    }
+    const list = Array.isArray(rawValue) ? rawValue : [rawValue];
+    if (
+      list.length === 0
+      || list.some((entry) => typeof entry !== "string" || entry === "")
+    ) {
+      throw usage(
+        `"${key}" must be a non-empty name-or-id string or an array of them.`,
+      );
+    }
+    values[key] = list as Array<string>;
+  }
+  for (const key of SCALAR_OPTIONS) {
+    const rawValue = record[key];
+    if (rawValue === undefined) {
+      continue;
+    }
+    // Numbers are natural in JSON for done and story points, and hours
+    // for the durations; they travel as the text a flag would carry.
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      values[key] = String(rawValue);
+    } else if (typeof rawValue === "string" && rawValue !== "") {
+      values[key] = rawValue;
+    } else {
+      throw usage(`"${key}" must be a non-empty string or number.`);
+    }
+  }
+  try {
+    validateScalars(values);
+  } catch (error) {
+    // Re-raised with the item index; only a usage error is ours to relabel.
+    if (error instanceof OpCliError && error.code === "USAGE_ERROR") {
+      throw usage(error.message, error.hint);
+    }
+    throw error;
   }
   const field = record.field;
   if (field !== undefined) {
@@ -756,17 +1021,8 @@ async function runBulkCreate(
 // ---------------------------------------------------------------------------
 // wp update
 
-interface UpdateOptions {
+interface UpdateOptions extends CreateValueFlags {
   readonly subject?: string;
-  readonly type?: string;
-  readonly status?: string;
-  readonly priority?: string;
-  readonly assignee?: string;
-  readonly version?: string;
-  readonly category?: string;
-  readonly parent?: string;
-  readonly description?: string;
-  readonly field?: Array<string>;
   readonly json?: boolean;
   readonly fields?: string;
   readonly profile?: string;
@@ -891,6 +1147,124 @@ interface ResolvedAttribute {
 }
 
 /**
+ * The clearing convention for a link attribute: an empty value sends the
+ * link with a null href. Array links clear by sending an empty array
+ * instead (see listFieldValues).
+ */
+function clearLink(links: Record<string, LinkValue>, attribute: string): void {
+  links[attribute] = { href: null };
+}
+
+/** Flags whose empty value is refused: the attribute cannot be empty. */
+const REQUIRED_VALUE_FLAGS: ReadonlyArray<"type" | "status" | "priority"> = [
+  "type",
+  "status",
+  "priority",
+];
+
+/** Flags whose empty value clears the link on update. */
+const CLEARABLE_LINK_FLAGS: ReadonlyArray<
+  "assignee" | "accountable" | "category" | "sprint" | "bucket" | "parent"
+> = [
+  "assignee",
+  "accountable",
+  "category",
+  "sprint",
+  "bucket",
+  "parent",
+];
+
+/**
+ * A work package sits in a sprint or in a backlog bucket, never both, so
+ * one command naming both is refused whatever the values (#46). Moving
+ * between the two is one command per placement.
+ */
+function refuseTwoPlacements(options: Pick<CreateValueFlags, "sprint" | "bucket">): void {
+  refuseCombined(
+    [
+      options.sprint === undefined ? undefined : "--sprint",
+      options.bucket === undefined ? undefined : "--bucket",
+    ],
+    "a work package sits in a sprint or in a backlog bucket; pass one of the two.",
+  );
+}
+
+/** The repeatable version flags; their empty value is `[""]`. */
+const VERSION_FLAGS = [
+  { option: "version", flag: "--version" },
+  { option: "observedIn", flag: "--observed-in" },
+] as const;
+
+/**
+ * Refuse empty values that cannot mean anything, before any request: a
+ * required attribute never clears, and a create has nothing to clear.
+ * On update the clearable link flags pass through; the resolvers turn
+ * their empty value into a null href.
+ */
+function refuseEmptyValues(
+  options: CreateValueFlags & { readonly subject?: string },
+  mode: "create" | "update",
+): void {
+  if (mode === "update" && options.subject === "") {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--subject cannot be empty.",
+      "a work package always has a subject; give the new text.",
+    );
+  }
+  for (const flag of REQUIRED_VALUE_FLAGS) {
+    if (options[flag] === "") {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `--${flag} cannot be empty.`,
+        `a work package always has a ${flag}; give a name or id.`,
+      );
+    }
+  }
+  for (const { option, flag } of VERSION_FLAGS) {
+    const values = options[option];
+    if (values === undefined || !values.includes("")) {
+      continue;
+    }
+    if (mode === "create") {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `${flag} cannot be empty on create.`,
+        "there is nothing to clear on a new work package; leave the flag out.",
+      );
+    }
+    if (values.length > 1) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `${flag} mixes a clearing "" with other values.`,
+        `either pass ${flag} "" alone to clear, or give every occurrence a value.`,
+      );
+    }
+  }
+  validateScalars(options);
+  if (mode === "create") {
+    for (const option of SCALAR_OPTIONS) {
+      if (options[option] === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `${scalarFlag(option)} cannot be empty on create.`,
+          "there is nothing to clear on a new work package; leave the flag out.",
+        );
+      }
+    }
+    for (const flag of CLEARABLE_LINK_FLAGS) {
+      if (options[flag] === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `--${flag} cannot be empty on create.`,
+          "there is nothing to clear on a new work package; leave the flag out.",
+        );
+      }
+    }
+  }
+}
+
+/**
  * Resolve one link-valued option into the payload. An all-digits value is
  * an id and goes straight in; anything else is resolved here and
  * remembered so a rejection that blames this exact attribute can be
@@ -905,17 +1279,36 @@ async function resolveLinkOption(
   source: LookupSource<number>,
   refs: Array<ResolvedAttribute>,
 ): Promise<void> {
-  if (raw === undefined || raw === "") {
+  if (raw === undefined) {
     return;
   }
-  let id: number;
-  if (isIdForm(raw)) {
-    id = Number(raw);
-  } else {
-    id = Number(await resolveName(raw, source));
-    refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
+  if (raw === "") {
+    clearLink(links, attribute);
+    return;
   }
+  const id = await resolveOneLinkId(raw, attribute, hrefBase, source, refs);
   links[attribute] = { href: `${hrefBase}${String(id)}` };
+}
+
+/**
+ * One link value to its id: an id-form value is the caller's own and goes
+ * straight through; a name is resolved and remembered in `refs`, so a
+ * rejection that blames this attribute can be retried with a fresh id
+ * (ADR-0002). Every link-valued flag records its refs here and only here.
+ */
+async function resolveOneLinkId(
+  raw: string,
+  attribute: string,
+  hrefBase: string,
+  source: LookupSource<number>,
+  refs: Array<ResolvedAttribute>,
+): Promise<number> {
+  if (isIdForm(raw)) {
+    return Number(raw);
+  }
+  const id = Number(await resolveName(raw, source));
+  refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
+  return id;
 }
 
 /** Same contract as resolveLinkOption for members: names, ids, and me. */
@@ -930,7 +1323,11 @@ async function resolveUserOption(
   refs: Array<ResolvedAttribute>,
   memo?: ResolutionMemo,
 ): Promise<void> {
-  if (raw === undefined || raw === "") {
+  if (raw === undefined) {
+    return;
+  }
+  if (raw === "") {
+    clearLink(links, attribute);
     return;
   }
   let id: number;
@@ -938,12 +1335,14 @@ async function resolveUserOption(
     id = memo === undefined
       ? (await authenticate(profile.instanceUrl, profile.apiKey)).id
       : await memo.me();
-  } else if (isIdForm(raw)) {
-    id = Number(raw);
   } else {
-    const source = membersSource(runtime, profile, flag, memo);
-    id = Number(await resolveName(raw, source));
-    refs.push({ attribute, raw, idBefore: id, hrefBase, source, link: true });
+    id = await resolveOneLinkId(
+      raw,
+      attribute,
+      hrefBase,
+      membersSource(runtime, profile, flag, memo),
+      refs,
+    );
   }
   links[attribute] = { href: `${hrefBase}${String(id)}` };
 }
@@ -1093,37 +1492,41 @@ function pointedAttribute(body: unknown): string | undefined {
   return name.replace(/^links[./]/i, "");
 }
 
+/** What a work package write says when its outcome cannot be known. */
+const WP_WRITES = {
+  create: {
+    action: "create",
+    unknown: "whether the work package was created is unknown",
+    check: "check whether the work package exists before repeating the command.",
+  },
+  update: {
+    action: "update",
+    unknown: "whether the change was applied is unknown",
+    check: "run op-cli wp get to see the stored values before repeating the command.",
+  },
+  move: {
+    action: "move",
+    unknown: "whether the change was applied is unknown",
+    check: "run op-cli wp get to see the stored values before repeating the command.",
+  },
+} as const satisfies Record<string, WriteWording>;
+
 /**
  * Catalogue mapping for a write that survived the proof-carrying retry:
- * 404 stays NOT_FOUND, 5xx becomes the unknown-state NETWORK_ERROR, and
- * everything else is the shared refusal mapping.
+ * 409 is the optimistic-locking CONFLICT, everything else is the shared
+ * write mapping (404, the unknown-state 5xx, the refusal).
  */
-function writeRejection(status: number, body: unknown, verb = "create"): OpCliError {
-  if (status === 404) {
-    return new OpCliError("NOT_FOUND");
-  }
+function writeRejection(
+  status: number,
+  body: unknown,
+  verb: keyof typeof WP_WRITES = "create",
+): OpCliError {
   // A 409 is the optimistic-locking catalogue entry: the caller either
   // already handled the retry rule or has nothing safe left to try.
   if (status === 409) {
     return new OpCliError("CONFLICT");
   }
-  // A 5xx means the request may still have been applied server-side, so
-  // the honest answer is "unknown state", never a retry that could
-  // duplicate the work package.
-  if (status >= 500) {
-    const unknownState = verb === "create"
-      ? "whether the work package was created is unknown."
-      : "whether the change was applied is unknown.";
-    const hint = verb === "create"
-      ? "check whether the work package exists before repeating the command."
-      : "run op-cli wp get to see the stored values before repeating the command.";
-    return new OpCliError(
-      "NETWORK_ERROR",
-      `the ${verb} failed with HTTP ${status}; ${unknownState}`,
-      hint,
-    );
-  }
-  return writeRefusal(verb, status, body);
+  return writeFailure(status, body, WP_WRITES[verb]);
 }
 
 /**
@@ -1131,56 +1534,61 @@ function writeRejection(status: number, body: unknown, verb = "create"): OpCliEr
  * timeouts and network errors are never retried on writes, and exit 6
  * says so instead of inviting a duplicate.
  */
-async function postCreate(
+function postCreate(
   profile: ActiveProfile,
   payload: Record<string, unknown>,
 ): Promise<RawWriteResponse> {
-  try {
-    return await apiPostRaw(
+  return unknownIfUnfinished(
+    () => apiPostRaw(
       profile.instanceUrl,
       profile.apiKey,
       "/api/v3/work_packages",
       payload,
-    );
-  } catch (error) {
-    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
-      throw new OpCliError(
-        "NETWORK_ERROR",
-        "the create request did not complete; whether the work package was created is unknown.",
-        "check whether the work package exists before repeating the command.",
-      );
-    }
-    throw error;
-  }
+    ),
+    WP_WRITES.create,
+  );
 }
 
 /**
  * An update request whose failure to complete leaves the state unknown:
  * like create, timeouts and network errors are never retried on writes.
  */
-async function patchWp(
+function patchWp(
   profile: ActiveProfile,
   id: string,
   payload: Record<string, unknown>,
 ): Promise<RawWriteResponse> {
-  try {
-    return await apiPatchRaw(
+  return unknownIfUnfinished(
+    () => apiPatchRaw(
       profile.instanceUrl,
       profile.apiKey,
       `/api/v3/work_packages/${id}`,
       payload,
-    );
-  } catch (error) {
-    if (error instanceof OpCliError && error.code === "NETWORK_ERROR") {
-      throw new OpCliError(
-        "NETWORK_ERROR",
-        "the update request did not complete; whether the change was applied is unknown.",
-        "run op-cli wp get to see the stored values before repeating the command.",
-      );
-    }
-    throw error;
-  }
+    ),
+    WP_WRITES.update,
+  );
 }
+
+/** What a comment write says when its outcome cannot be known. */
+const COMMENT_WRITE = (reference: string): WriteWording => ({
+  action: "comment",
+  unknown: "whether the comment was posted is unknown",
+  check: `run op-cli wp comments ${reference} before repeating the command.`,
+});
+
+/** What a comment edit says when its outcome cannot be known. */
+const COMMENT_EDIT_WRITE = (activityId: string): WriteWording => ({
+  action: "comment edit",
+  unknown: "whether the comment was changed is unknown",
+  check: `run op-cli wp comments to see comment ${activityId} before repeating the command.`,
+});
+
+/** What a watch or unwatch says when its outcome cannot be known. */
+const WATCH_WRITE = (reference: string): WriteWording => ({
+  action: "watch change",
+  unknown: "whether the watcher list changed is unknown",
+  check: `run op-cli wp watchers ${reference} before repeating the command.`,
+});
 
 /** The lockVersion a stored record carries; without it there is no safe update. */
 function lockVersionOf(record: unknown): number {
@@ -1390,13 +1798,20 @@ async function resolveListFlags(
     statuses?: Array<string>;
     types?: Array<string>;
     assignees?: Array<string>;
+    accountables?: Array<string>;
     authors?: Array<string>;
+    watchers?: Array<string>;
     versions?: Array<string>;
+    observedIn?: Array<string>;
     categories?: Array<string>;
+    sprints?: Array<string>;
+    buckets?: Array<string>;
     priorities?: Array<string>;
     parents?: Array<string>;
     updatedAfter?: string;
     createdAfter?: string;
+    dueBefore?: string;
+    dueAfter?: string;
     search?: string;
   } = {};
   // The project in context scopes the listing itself, not just the
@@ -1435,35 +1850,57 @@ async function resolveListFlags(
   if (assignee.length > 0) {
     flags.assignees = await resolveUserValues(runtime, profile, "assignee", assignee);
   }
+  const accountable = options.accountable ?? [];
+  if (accountable.length > 0) {
+    flags.accountables = await resolveUserValues(runtime, profile, "accountable", accountable);
+  }
   const author = options.author ?? [];
   if (author.length > 0) {
     flags.authors = await resolveUserValues(runtime, profile, "author", author);
+  }
+  const watcher = options.watcher ?? [];
+  if (watcher.length > 0) {
+    flags.watchers = await resolveUserValues(runtime, profile, "watcher", watcher);
   }
   const version = options.version ?? [];
   if (version.length > 0) {
     flags.versions = await resolveValues(
       version,
-      projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
-        vocabulary.versions.map((entry) => ({
-          name: entry.name,
-          owner: "Version",
-          value: entry.id,
-        })),
-      ),
+      versionSource(runtime, profile, "version"),
+    );
+  }
+  const observedIn = options.observedIn ?? [];
+  if (observedIn.length > 0) {
+    if (profile.project !== undefined) {
+      // A filter spans the whole project: the field is there when any type has it.
+      const byType = await versionFieldsByType(runtime, profile, undefined, undefined, undefined);
+      if (!Object.values(byType).some((fields) => fields.observedInVersions !== undefined)) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--observed-in is not available in this project.",
+          "its work package schema has no observedInVersions field.",
+        );
+      }
+    }
+    flags.observedIn = await resolveValues(
+      observedIn,
+      versionSource(runtime, profile, "observed-in"),
     );
   }
   const category = options.category ?? [];
   if (category.length > 0) {
     flags.categories = await resolveValues(
       category,
-      projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
-        vocabulary.categories.map((entry) => ({
-          name: entry.name,
-          owner: "Category",
-          value: entry.id,
-        })),
-      ),
+      categorySource(runtime, profile),
     );
+  }
+  const sprint = options.sprint ?? [];
+  if (sprint.length > 0) {
+    flags.sprints = await resolveValues(sprint, backlogSource(runtime, profile, "sprint"));
+  }
+  const bucket = options.bucket ?? [];
+  if (bucket.length > 0) {
+    flags.buckets = await resolveValues(bucket, backlogSource(runtime, profile, "bucket"));
   }
   const priority = options.priority ?? [];
   if (priority.length > 0) {
@@ -1488,14 +1925,45 @@ async function resolveListFlags(
   if (options.createdAfter !== undefined && options.createdAfter !== "") {
     flags.createdAfter = options.createdAfter;
   }
+  if (options.dueBefore !== undefined && options.dueBefore !== "") {
+    flags.dueBefore = options.dueBefore;
+  }
+  if (options.dueAfter !== undefined && options.dueAfter !== "") {
+    flags.dueAfter = options.dueAfter;
+  }
   if (options.search !== undefined && options.search !== "") {
     flags.search = options.search;
   }
-  return { ...flags, open: options.open, closed: options.closed };
+  return {
+    ...flags,
+    ids: parseIdValues(options.id ?? []),
+    includeSubprojects: options.includeSubprojects,
+    open: options.open,
+    closed: options.closed,
+    overdue: options.overdue,
+    backlogInbox: options.backlogInbox,
+  };
 }
 
-function workPackagesPath(filters: ReadonlyArray<WpFilter>): string {
-  return `/api/v3/work_packages?filters=${filtersQuery(filters)}`;
+/**
+ * `subprojectId` is only valid on the project's own collection: the global
+ * endpoint answers 500, so --no-include-subprojects reads from there.
+ */
+function workPackagesPath(
+  filters: ReadonlyArray<WpFilter>,
+  sort: ReadonlyArray<[string, string]> = [],
+  ownProject?: string,
+): string {
+  const sortBy = sort.length > 0 ? `&sortBy=${sortByQuery(sort)}` : "";
+  const collection = ownProject === undefined
+    ? "/api/v3/work_packages"
+    : `/api/v3/projects/${encodeURIComponent(ownProject)}/work_packages`;
+  return `${collection}?filters=${filtersQuery(filters)}${sortBy}`;
+}
+
+/** The project whose own collection serves the listing, when subprojects are excluded. */
+function ownProjectOf(flags: WpListFlags): string | undefined {
+  return flags.includeSubprojects === false ? flags.project : undefined;
 }
 
 function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): string {
@@ -1505,6 +1973,260 @@ function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): st
       LIST_COLUMNS.map((column) => formatCell(record[column.field])),
     ),
   );
+}
+
+/** The id at the end of a link's href, such as a type or project link. */
+function typeIdOf(link: LinkValue | undefined): number | undefined {
+  if (link === undefined || Array.isArray(link)) {
+    return undefined;
+  }
+  const href = (link as { readonly href: string | null }).href;
+  const match = href === null ? null : /(\d+)$/.exec(href);
+  return match === null ? undefined : Number(match[1]);
+}
+
+/**
+ * The version fields of every type of one project, as the cached schema
+ * shape has them. A vocabulary stored before these fields were captured, or
+ * one that predates the type being asked about, is refreshed once for that
+ * project alone, so the decision always comes from the schema (ADR-0002).
+ * The project is the work package's own when given, else the profile's.
+ */
+async function versionFieldsByType(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  typeId: number | undefined,
+  memo: ResolutionMemo | undefined,
+  projectId: number | undefined,
+): Promise<Readonly<Record<string, StoredVersionFields>>> {
+  const own = projectId !== undefined && projectId !== profile.project;
+  const load = (): Promise<ProjectVocabulary> =>
+    own
+      ? loadProjectVocabularyById(runtime.env, profile, projectId)
+      : memo === undefined
+        ? loadProjectVocabulary(runtime.env, profile)
+        : memo.vocabulary();
+  let vocabulary = await load();
+  const known = (candidate: ProjectVocabulary): boolean =>
+    candidate.version_fields !== undefined
+    && (typeId === undefined || candidate.version_fields[String(typeId)] !== undefined);
+  if (!known(vocabulary)) {
+    await refreshProjectVocabulary(runtime.env, profile, vocabulary.project_id);
+    memo?.invalidate();
+    vocabulary = await load();
+  }
+  return vocabulary.version_fields ?? {};
+}
+
+/**
+ * The version fields the schema of this project and type exposes. A type of
+ * unknown identity (a create without --type, whose default type the server
+ * picks) is decided only when every type of the project agrees; otherwise
+ * guessing would send a field the real type refuses.
+ */
+async function versionFieldsFor(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  typeId: number | undefined,
+  memo: ResolutionMemo | undefined,
+  projectId: number | undefined,
+  /** The fields the caller will write; only these must be agreed on. */
+  needs: ReadonlyArray<"targetVersions" | "observedInVersions">,
+): Promise<StoredVersionFields> {
+  const byType = await versionFieldsByType(runtime, profile, typeId, memo, projectId);
+  const own = typeId === undefined ? undefined : byType[String(typeId)];
+  if (own !== undefined) {
+    return own;
+  }
+  const fields = Object.values(byType);
+  // Only what every type marks deprecated is safe to warn about untyped.
+  const deprecated = (fields[0]?.deprecated ?? []).filter((name) =>
+    fields.every((entry) => entry.deprecated?.includes(name) === true));
+  const agreed = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
+    const found = fields.map((entry) => entry[name]);
+    const present = found.filter((entry): entry is StoredVersionField => entry !== undefined);
+    if (present.length === 0) {
+      return {};
+    }
+    const first = present[0];
+    if (
+      present.length < found.length
+      || present.some((entry) => entry.multiple !== first?.multiple)
+    ) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "the project's types disagree on its version fields, so --version and --observed-in cannot be judged without a type.",
+        "pass --type <name-or-id> (or a type in the stdin item) so the schema of that type decides.",
+      );
+    }
+    return { [name]: { multiple: present[0]?.multiple === true } };
+  };
+  return {
+    ...(Object.assign({}, ...needs.map(agreed)) as StoredVersionFields),
+    ...(deprecated.length === 0 ? {} : { deprecated }),
+  };
+}
+
+function categorySource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  return projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
+    requireVocabulary(vocabulary, "categories").map((entry) => ({
+      name: entry.name,
+      owner: "Category",
+      value: entry.id,
+    })), memo);
+}
+
+function versionSource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  flag: string,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  return projectSource<number>(runtime, profile, flag, "version", (vocabulary) =>
+    requireVocabulary(vocabulary, "versions").map((entry) => ({
+      name: entry.name,
+      owner: "Version",
+      value: entry.id,
+    })), memo);
+}
+
+/**
+ * Write one repeatable version flag into an array link: `[{href}]`, or
+ * `[]` to clear.
+ */
+async function resolveVersionList(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  links: Record<string, LinkValue>,
+  attribute: string,
+  flag: string,
+  values: ReadonlyArray<string>,
+  refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
+): Promise<void> {
+  if (values.length === 1 && values[0] === "") {
+    links[attribute] = [];
+    return;
+  }
+  const source = versionSource(runtime, profile, flag.replace(/^--/, ""), memo);
+  const hrefs: Array<{ href: string }> = [];
+  for (const value of values) {
+    const id = await resolveOneLinkId(value, attribute, "/api/v3/versions/", source, refs);
+    const href = `/api/v3/versions/${String(id)}`;
+    if (!hrefs.some((entry) => entry.href === href)) {
+      hrefs.push({ href });
+    }
+  }
+  links[attribute] = hrefs;
+}
+
+/**
+ * --version and --observed-in. The schema decides where --version lands:
+ * `targetVersions` when the type exposes it, the deprecated `version`
+ * otherwise; the server refuses both in one request, so exactly one is
+ * ever sent.
+ */
+async function resolveVersionLinks(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  links: Record<string, LinkValue>,
+  options: CreateValueFlags,
+  typeId: number | undefined,
+  refs: Array<ResolvedAttribute>,
+  memo?: ResolutionMemo,
+  projectId?: number,
+): Promise<void> {
+  if (options.version === undefined && options.observedIn === undefined) {
+    return;
+  }
+  const fields = await versionFieldsFor(runtime, profile, typeId, memo, projectId, [
+    ...(options.version === undefined ? [] : ["targetVersions" as const]),
+    ...(options.observedIn === undefined ? [] : ["observedInVersions" as const]),
+  ]);
+  // The attributes this write actually sets, judged against the schema's
+  // own `deprecated` marks once the values resolved.
+  const written: Array<string> = [];
+  if (options.version !== undefined) {
+    const target = fields.targetVersions;
+    if (target === undefined) {
+      if (options.version.length > 1) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--version holds one value on this work package.",
+          "its schema has no targetVersions, only the single version field.",
+        );
+      }
+      written.push("version");
+      await resolveLinkOption(
+        links,
+        "version",
+        "/api/v3/versions/",
+        "--version",
+        options.version[0],
+        versionSource(runtime, profile, "version", memo),
+        refs,
+      );
+    } else {
+      written.push("targetVersions");
+      if (!target.multiple && options.version.length > 1) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "--version holds one value for this work package.",
+          "the schema's targetVersions takes a single version; pass --version once.",
+        );
+      }
+      await resolveVersionList(
+        runtime,
+        profile,
+        links,
+        "targetVersions",
+        "--version",
+        options.version,
+        refs,
+        memo,
+      );
+    }
+  }
+  if (options.observedIn !== undefined) {
+    const observed = fields.observedInVersions;
+    if (observed === undefined) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "--observed-in is not available for this work package.",
+        "its schema has no observedInVersions field; leave the flag out.",
+      );
+    }
+    if (!observed.multiple && options.observedIn.length > 1) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        "--observed-in holds one value for this work package.",
+        "the schema's observedInVersions takes a single version; pass --observed-in once.",
+      );
+    }
+    written.push("observedInVersions");
+    await resolveVersionList(
+      runtime,
+      profile,
+      links,
+      "observedInVersions",
+      "--observed-in",
+      options.observedIn,
+      refs,
+      memo,
+    );
+  }
+  const deprecated = written.filter((name) => fields.deprecated?.includes(name) === true);
+  if (deprecated.length > 0) {
+    runtime.writeErr(
+      deprecated.length === 1
+        ? `warning: the ${deprecated[0] ?? ""} attribute is deprecated in this instance's schema; the write still goes through.\n`
+        : `warning: the ${deprecated.join(", ")} attributes are deprecated in this instance's schema; the write still goes through.\n`,
+    );
+  }
 }
 
 /**
@@ -1517,6 +2239,14 @@ async function resolveNamedValues(
   profile: ActiveProfile,
   options: CreateValueFlags,
   memo?: ResolutionMemo,
+  /**
+   * What an update's work package already has: its type, when --type does
+   * not name one, and its project, whose schema decides the version fields.
+   */
+  existing: {
+    readonly typeId?: number | undefined;
+    readonly projectId?: number | undefined;
+  } = {},
 ): Promise<{ payload: Record<string, unknown>; refs: Array<ResolvedAttribute> }> {
   const refs: Array<ResolvedAttribute> = [];
   const links: Record<string, LinkValue> = {};
@@ -1573,19 +2303,27 @@ async function resolveNamedValues(
     refs,
     memo,
   );
-  await resolveLinkOption(
+  // Accountable is the API's `responsible` link.
+  await resolveUserOption(
+    runtime,
+    profile,
     links,
-    "version",
-    "/api/v3/versions/",
-    "--version",
-    options.version,
-    projectSource<number>(runtime, profile, "version", "version", (vocabulary) =>
-      vocabulary.versions.map((entry) => ({
-        name: entry.name,
-        owner: "Version",
-        value: entry.id,
-      })), memo),
+    "responsible",
+    "/api/v3/users/",
+    "accountable",
+    options.accountable,
     refs,
+    memo,
+  );
+  await resolveVersionLinks(
+    runtime,
+    profile,
+    links,
+    options,
+    typeIdOf(links.type) ?? existing.typeId,
+    refs,
+    memo,
+    existing.projectId,
   );
   await resolveLinkOption(
     links,
@@ -1593,19 +2331,34 @@ async function resolveNamedValues(
     "/api/v3/categories/",
     "--category",
     options.category,
-    projectSource<number>(runtime, profile, "category", "category", (vocabulary) =>
-      vocabulary.categories.map((entry) => ({
-        name: entry.name,
-        owner: "Category",
-        value: entry.id,
-      })), memo),
+    categorySource(runtime, profile, memo),
+    refs,
+  );
+  await resolveLinkOption(
+    links,
+    "sprint",
+    "/api/v3/sprints/",
+    "--sprint",
+    options.sprint,
+    backlogSource(runtime, profile, "sprint", memo),
+    refs,
+  );
+  await resolveLinkOption(
+    links,
+    "backlogBucket",
+    "/api/v3/backlog_buckets/",
+    "--bucket",
+    options.bucket,
+    backlogSource(runtime, profile, "bucket", memo),
     refs,
   );
 
   // The parent is a live lookup over work packages, not cached metadata,
   // so it never joins the ADR-0002 refs: an id given here is already the
   // caller's own, and a subject search re-runs against current state.
-  if (options.parent !== undefined) {
+  if (options.parent === "") {
+    clearLink(links, "parent");
+  } else if (options.parent !== undefined) {
     const parentId = isIdForm(options.parent)
       ? options.parent
       : String(await searchParentByName(profile, options.parent));
@@ -1619,6 +2372,7 @@ async function resolveNamedValues(
   if (options.description !== undefined) {
     payload.description = { raw: options.description };
   }
+  applyScalars(payload, options);
   const groups = new Map<string, {
     field: StoredCustomField;
     pairs: Array<FieldPair>;
@@ -1724,6 +2478,7 @@ export const COMMENT_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "AUTHOR", field: "user" },
   { title: "COMMENT", field: "comment" },
+  { title: "INTERNAL", field: "internal" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -1743,6 +2498,11 @@ export const RELATION_COLUMNS = [
   { title: "TO", field: "to" },
   { title: "LAG", field: "lag" },
   { title: "DESCRIPTION", field: "description" },
+] as const;
+
+export const WATCHER_COLUMNS = [
+  { title: "ID", field: "id" },
+  { title: "NAME", field: "name" },
 ] as const;
 
 export const SCHEMA_COLUMNS = [
@@ -1803,6 +2563,10 @@ function linkIdOf(link: unknown): number | null {
  * behind a system activity, one instance-spelled sentence per attribute
  * ("Status changed from New to In progress"). A comment activity changed
  * nothing, so its details render empty rather than absent.
+ *
+ * `internal` is the visibility flag of a comment: true when only users with
+ * the internal-comment permission may read it. An activity the instance
+ * does not flag reads as false.
  */
 export function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
@@ -1816,6 +2580,7 @@ export function activityRow(element: unknown): Record<string, unknown> {
     kind,
     user: record.user,
     comment: typeof comment?.raw === "string" ? comment.raw : "",
+    internal: record.internal === true,
     details: activityDetails(record.details),
     createdAt: record.createdAt,
   };
@@ -1874,7 +2639,9 @@ async function principalName(
   } catch (error) {
     if (
       error instanceof OpCliError
-      && (error.code === "AUTH_FAILED" || error.code === "NOT_FOUND")
+      && (error.code === "AUTH_FAILED"
+        || error.code === "PERMISSION_DENIED"
+        || error.code === "NOT_FOUND")
     ) {
       return null;
     }
@@ -1890,10 +2657,12 @@ async function principalName(
  */
 function authorResolver(
   getPage: (path: string) => Promise<unknown>,
+  /** The key of the row that holds the user link: comments use `user`. */
+  key = "user",
 ): (row: Record<string, unknown>) => Promise<Record<string, unknown>> {
   const named = new Map<number, string | null>();
   return async (row) => {
-    const user = row.user;
+    const user = row[key];
     if (!isFlatLink(user) || user.id === null || user.name !== null) {
       return row;
     }
@@ -1902,7 +2671,7 @@ function authorResolver(
       named.set(id, await principalName(getPage, id));
     }
     const name = named.get(id) ?? null;
-    return name === null ? row : { ...row, user: { id, name } };
+    return name === null ? row : { ...row, [key]: { id, name } };
   };
 }
 
@@ -1910,6 +2679,11 @@ function authorResolver(
 export function commentRow(element: unknown): Record<string, unknown> | undefined {
   const row = activityRow(element);
   return row.kind === "Comment" ? row : undefined;
+}
+
+/** A watcher is a plain user resource; the whole flat record, `--fields` projects it. */
+export function watcherRow(element: unknown): Record<string, unknown> {
+  return flattenHalRecord(element);
 }
 
 /** Only the typed fields and both ends; the action links carry no data. */
@@ -1966,25 +2740,36 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     wp.command("list")
       .description("List work packages by name-resolved filters")
       .option("--json", PAGED_JSON_HELP)
+      .option(
+        "--sort <field[:asc|desc]>",
+        "sort by updatedAt, createdAt, dueDate, startDate, priority, status, id or subject; "
+          + "repeat for tie-breakers; the direction defaults to asc",
+        collectValue,
+        [],
+      )
       .option("--limit <n>", "maximum number of results to show")
       .option("--all", "fetch every page instead of one limited page"),
-  ).action(async (options: FilterFlagOptions & { json?: boolean; limit?: string; all?: boolean }) => {
+  ).action(async (
+    options: FilterFlagOptions & { json?: boolean; limit?: string; all?: boolean; sort?: Array<string> },
+  ) => {
     runtime.setJsonMode(options.json === true);
     // Refuse impossible flag combinations before any traffic or resolution.
     buildWpFilters(rawListFlags(options), new Date());
+    const sort = parseSort(options.sort ?? []);
     const profile = await runtime.resolve({
       profile: options.profile,
       project: parseProjectOverride(options.project),
     });
     const now = new Date();
     const limit = parsePageSize(options.limit);
-    const filters = buildWpFilters(await resolveListFlags(runtime, profile, options), now);
+    const resolved = await resolveListFlags(runtime, profile, options);
+    const filters = buildWpFilters(resolved, now);
     const getPage = (path: string): Promise<unknown> =>
       apiGet(profile.instanceUrl, profile.apiKey, path);
     // --all sizes pages by the instance's advertised maximum; --limit
     // only ever sizes the single non-all page.
     const startPath = withPageSize(
-      workPackagesPath(filters),
+      workPackagesPath(filters, sort, ownProjectOf(resolved)),
       options.all === true ? await allPageSize(getPage) : limit,
     );
 
@@ -2022,21 +2807,30 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     }
   });
 
-  addFilterFlags(wp.command("count").description("Count work packages matching the filters")).action(
-    async (options: FilterFlagOptions) => {
+  addFilterFlags(
+    wp.command("count")
+      .description("Count work packages matching the filters")
+      .addOption(new Option("--sort <field>").hideHelp()),
+  ).action(
+    async (options: FilterFlagOptions & { sort?: string }) => {
+      if (options.sort !== undefined) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "wp count does not take --sort.",
+          "a count has no order; use wp list --sort <field> instead.",
+        );
+      }
       buildWpFilters(rawListFlags(options), new Date());
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseProjectOverride(options.project),
       });
-      const filters = buildWpFilters(
-        await resolveListFlags(runtime, profile, options),
-        new Date(),
-      );
+      const resolved = await resolveListFlags(runtime, profile, options);
+      const filters = buildWpFilters(resolved, new Date());
       const body = (await apiGet(
         profile.instanceUrl,
         profile.apiKey,
-        `${workPackagesPath(filters)}&pageSize=1`,
+        `${workPackagesPath(filters, [], ownProjectOf(resolved))}&pageSize=1`,
       )) as WorkPackagePage;
       if (typeof body.total !== "number") {
         throw new OpCliError(
@@ -2100,10 +2894,34 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--status <name-or-id>", "initial status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
     .option("--assignee <name-or-id>", "assignee, by name, id, or me")
-    .option("--version <name-or-id>", "version of the project, by name or id")
+    .option(
+      "--accountable <name-or-id>",
+      "Accountable (API field responsible), by name, id, or me",
+    )
+    .option(
+      "--version <name-or-id>",
+      "version of the project, by name or id; repeat when the schema allows several",
+      collectOptional,
+    )
+    .option(
+      "--observed-in <name-or-id>",
+      "observed-in version, by name or id; repeat when the schema allows several",
+      collectOptional,
+    )
     .option("--category <name-or-id>", "category of the project, by name or id")
+    .option("--sprint <name-or-id>", "sprint of the project, by name or id; not with --bucket")
+    .option(
+      "--bucket <name-or-id>",
+      "backlog bucket of the project, by name or id; not with --sprint",
+    )
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
     .option("--description <text>", "markdown description of the work package")
+    .option("--start <date>", "start date, YYYY-MM-DD")
+    .option("--due <date>", "due date, YYYY-MM-DD")
+    .option("--estimate <duration>", "estimated time such as 4h, 1h30m, or PT4H")
+    .option("--remaining <duration>", "remaining work such as 2h, 1h30m, or PT2H")
+    .option("--done <percent>", "percent complete, 0-100")
+    .option("--story-points <n>", "story points, a whole number")
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -2138,6 +2956,8 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "give <subject> to create one, or pipe a JSON array with --stdin.",
         );
       }
+      refuseTwoPlacements(options);
+      refuseEmptyValues(options, "create");
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseProjectOverride(options.project),
@@ -2172,11 +2992,38 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .option("--type <name-or-id>", "work package type, by name or id")
     .option("--status <name-or-id>", "status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
-    .option("--assignee <name-or-id>", "assignee, by name, id, or me")
-    .option("--version <name-or-id>", "version of the project, by name or id")
-    .option("--category <name-or-id>", "category of the project, by name or id")
-    .option("--parent <id-or-subject>", "re-parent under this work package, by id or exact subject")
+    .option("--assignee <name-or-id>", 'assignee, by name, id, or me; "" clears')
+    .option(
+      "--accountable <name-or-id>",
+      'Accountable (API field responsible), by name, id, or me; "" clears',
+    )
+    .option(
+      "--version <name-or-id>",
+      'version of the project, by name or id; repeat when the schema allows several; "" clears',
+      collectOptional,
+    )
+    .option(
+      "--observed-in <name-or-id>",
+      'observed-in version, by name or id; repeat when the schema allows several; "" clears',
+      collectOptional,
+    )
+    .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
+    .option(
+      "--sprint <name-or-id>",
+      'sprint of the project, by name or id; "" clears; not with --bucket',
+    )
+    .option(
+      "--bucket <name-or-id>",
+      'backlog bucket of the project, by name or id; "" clears; not with --sprint',
+    )
+    .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
     .option("--description <text>", "new markdown description of the work package")
+    .option("--start <date>", 'start date, YYYY-MM-DD; "" clears')
+    .option("--due <date>", 'due date, YYYY-MM-DD; "" clears')
+    .option("--estimate <duration>", 'estimated time such as 4h, 1h30m, or PT4H; "" clears')
+    .option("--remaining <duration>", 'remaining work such as 2h, 1h30m, or PT2H; "" clears')
+    .option("--done <percent>", 'percent complete, 0-100; "" clears')
+    .option("--story-points <n>", 'story points, a whole number; "" clears')
     .option(
       "--field <pair>",
       'set a custom field by human name as "Name=Value"; repeat the flag '
@@ -2191,23 +3038,21 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .action(async (reference: string, options: UpdateOptions) => {
       runtime.setJsonMode(options.json === true);
       requireWpId(reference);
+      // A flag counts when it carries a value; --field defaults to [].
       const touchesSomething = options.subject !== undefined
-        || options.type !== undefined
-        || options.status !== undefined
-        || options.priority !== undefined
-        || options.parent !== undefined
-        || options.assignee !== undefined
-        || options.version !== undefined
-        || options.category !== undefined
-        || options.description !== undefined
-        || (options.field?.length ?? 0) > 0;
+        || (Object.keys(VALUE_OPTIONS) as Array<keyof CreateValueFlags>).some((option) =>
+          option === "field"
+            ? (options.field?.length ?? 0) > 0
+            : options[option] !== undefined);
       if (!touchesSomething) {
         throw new OpCliError(
           "USAGE_ERROR",
           "wp update needs at least one value to change.",
-          "pass --subject, an attribute flag like --status, or --field Name=Value.",
+          "pass --subject, an attribute flag like --status or --due, or --field Name=Value.",
         );
       }
+      refuseTwoPlacements(options);
+      refuseEmptyValues(options, "update");
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseProjectOverride(options.project),
@@ -2219,7 +3064,23 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // The read already names every column, so a bad --fields name is
       // refused while the work package is still untouched.
       selectedFields(options.fields, flattenHalRecord(before));
-      const { payload, refs } = await resolveNamedValues(runtime, profile, options);
+      const beforeLinks = (before as { _links?: Record<string, LinkValue> })._links;
+      const ownProject = typeIdOf(beforeLinks?.project);
+      // Names are looked up in --project, else the profile's default; with
+      // neither, the work package's own project is the one that can matter.
+      const scope = profile.project === undefined && ownProject !== undefined
+        ? { ...profile, project: ownProject }
+        : profile;
+      const { payload, refs } = await resolveNamedValues(
+        runtime,
+        scope,
+        options,
+        undefined,
+        {
+          typeId: typeIdOf(beforeLinks?.type),
+          projectId: ownProject,
+        },
+      );
       if (options.subject !== undefined) {
         payload.subject = options.subject;
       }
@@ -2243,7 +3104,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         } else {
           response = await retryWithFreshIds(
             runtime,
-            profile,
+            scope,
             response,
             payload,
             refs,
@@ -2435,7 +3296,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   wp.addCommand(defineCollectionCommand(
     {
       name: "comments",
-      description: "List comments of one work package",
+      description: "List comments of one work package (API v3 has no comment delete)",
       path: (id) => `/api/v3/work_packages/${id}/activities`,
       row: commentRow,
       columns: COMMENT_COLUMNS,
@@ -2456,6 +3317,15 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     collectionRuntime,
   ));
 
+  registerAttachmentCommands(wp, runtime, {
+    authorResolver,
+    selectedFields,
+    renderRecord,
+    openProfile,
+    requireWpId,
+    collectionRuntime,
+  });
+
   wp.addCommand(defineCollectionCommand(
     {
       name: "relations",
@@ -2463,6 +3333,17 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       path: involvedRelationsPath,
       row: relationRow,
       columns: RELATION_COLUMNS,
+    },
+    collectionRuntime,
+  ));
+
+  wp.addCommand(defineCollectionCommand(
+    {
+      name: "watchers",
+      description: "List the watchers of one work package",
+      path: (id) => `/api/v3/work_packages/${id}/watchers`,
+      row: watcherRow,
+      columns: WATCHER_COLUMNS,
     },
     collectionRuntime,
   ));
@@ -2478,11 +3359,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .description("Add a comment to one work package")
     .argument("<id>")
     .argument("<text>", "markdown body of the comment")
+    .option("--internal", "post an internal comment, visible only to users who may see internal comments")
     .option(recordOptions.json, "emit a flat JSON record")
     .option(recordOptions.fields, "comma-separated columns to show")
     .option(recordOptions.profile, "use this profile for this command only")
     .option(recordOptions.project, "override the profile default project")
     .action(async (reference: string, text: string, options: {
+      internal?: boolean;
       json?: boolean;
       fields?: string;
       profile?: string;
@@ -2493,16 +3376,252 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // a caller who fixes the flag and retries cannot post it twice.
       selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
       const profile = await openProfile(runtime, options);
-      const created = activityRow(await apiPost(
-        profile.instanceUrl,
-        profile.apiKey,
-        `/api/v3/work_packages/${reference}/activities`,
-        { comment: { raw: text } },
-      ));
+      // The key is sent only with the flag: an instance without the
+      // internal_comments feature then sees exactly the public request.
+      const body = options.internal === true
+        ? { comment: { raw: text }, internal: true }
+        : { comment: { raw: text } };
+      const response = await unknownIfUnfinished(
+        () => apiPostRaw(
+          profile.instanceUrl,
+          profile.apiKey,
+          `/api/v3/work_packages/${reference}/activities`,
+          body,
+        ),
+        COMMENT_WRITE(reference),
+      );
+      // The instance explains its own refusals (an internal comment with
+      // the feature off is a 422, not a 403), so the status goes through
+      // the shared write mapping instead of a bare API_ERROR.
+      if (response.status < 200 || response.status >= 300) {
+        throw writeFailure(response.status, response.body, COMMENT_WRITE(reference));
+      }
+      const created = activityRow(response.body);
+      // An instance without internal comments ignores the key and stores a
+      // public comment without any error. The POST itself succeeded, so
+      // this stays a warning (exit 0): a failing exit would break the
+      // outcome contract and read as "nothing was posted".
+      if (options.internal === true && created.internal !== true) {
+        runtime.writeErr(
+          "warning: the instance stored the comment as public; it may not support internal comments.\n",
+        );
+      }
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
       )(created);
       renderRecord(runtime, options, named);
+    });
+
+  // A separate command rather than `wp comment --edit`: the target is an
+  // activity id, not a work package id, so the `<id>` of `wp comment`
+  // would mean two different things. The API has no activity delete, so
+  // there is deliberately no `comment-delete`.
+  wp.command("comment-edit")
+    .description(
+      "Edit an existing comment by activity id (see `wp comments`); API v3 has no comment delete",
+    )
+    .argument("<activity-id>", "id of the comment, as listed by `wp comments`")
+    .argument("<text>", "new markdown body of the comment")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    // An activity id is global, so the project never matters here; the flag
+    // stays so a call copied from `wp comment` is not refused.
+    .option(recordOptions.project, "accepted and ignored: activity ids are global")
+    .action(async (activityId: string, text: string, options: {
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      if (!isIdForm(activityId)) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `activity "${activityId}" is not an id.`,
+          "comments are addressed by the numeric id `wp comments` lists.",
+        );
+      }
+      if (text.trim() === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "the new comment text is empty.",
+          "an edit cannot blank a comment; the API has no comment delete either.",
+        );
+      }
+      // Writing: --fields misuse is refused before the comment changes.
+      selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
+      const profile = await openProfile(runtime, options);
+      const path = `/api/v3/activities/${activityId}`;
+      const current = activityRow(
+        await apiGet(profile.instanceUrl, profile.apiKey, path),
+      );
+      if (current.kind !== "Comment" || current.comment === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `activity ${activityId} is a change journal, not a comment.`,
+          "only entries listed by `wp comments` can be edited.",
+        );
+      }
+      let updated: Record<string, unknown>;
+      try {
+        // PATCH takes the comment as a plain string; the {raw} object the
+        // POST takes is a 400 here.
+        const response = await unknownIfUnfinished(
+          () => apiPatchRaw(
+            profile.instanceUrl,
+            profile.apiKey,
+            path,
+            { comment: text },
+          ),
+          COMMENT_EDIT_WRITE(activityId),
+        );
+        if (response.status < 200 || response.status >= 300) {
+          throw writeFailure(response.status, response.body, COMMENT_EDIT_WRITE(activityId));
+        }
+        updated = activityRow(response.body);
+      } catch (error) {
+        // A 401 stays AUTH_FAILED as http.ts raised it; only a 403 is
+        // this key lacking the right to edit someone else's comment.
+        if (error instanceof OpCliError && error.code === "PERMISSION_DENIED") {
+          throw new OpCliError(
+            "PERMISSION_DENIED",
+            `this key may not edit comment ${activityId}.`,
+            "only your own comments, or any comment with the \"Edit notes\" permission, can be edited.",
+            error.details,
+          );
+        }
+        throw error;
+      }
+      const named = await authorResolver(
+        (lookup) => apiGet(profile.instanceUrl, profile.apiKey, lookup),
+      )(updated);
+      renderRecord(runtime, options, named);
+    });
+
+  // Both directions are idempotent on this surface. Watching posts straight
+  // away: the server answers 201 when it added the watcher and 200 when
+  // the user already watched, and adding oneself needs less permission
+  // than reading the watcher list. Unwatching reads the list first so a
+  // watcher that is not there is a reported state (exit 0) rather than
+  // whatever the API answers to a repeated remove.
+  interface WatchOptions {
+    user?: string;
+    json?: boolean;
+    profile?: string;
+    project?: string;
+  }
+  const watchTarget = async (reference: string, options: WatchOptions) => {
+    requireWpId(reference);
+    const profile = await openProfile(runtime, options);
+    const [userId] = await resolveUserValues(
+      runtime,
+      profile,
+      "user",
+      [options.user ?? "me"],
+    );
+    return {
+      profile,
+      userId: userId as string,
+      path: `/api/v3/work_packages/${reference}/watchers`,
+      myself: (options.user ?? "me").toLowerCase() === "me",
+    };
+  };
+  /** `changed` is null when the outcome of the write was not observed. */
+  const reportWatch = (
+    reference: string,
+    options: WatchOptions,
+    userId: string,
+    name: string | null,
+    watching: boolean,
+    changed: boolean | null,
+  ): void => {
+    if (options.json === true) {
+      runtime.write(`${JSON.stringify({
+        id: Number(reference),
+        user: Number(userId),
+        name,
+        watching,
+        changed,
+      })}\n`);
+      return;
+    }
+    const who = name === null ? `user ${userId}` : `${name} (${userId})`;
+    const verdict = watching
+      ? (changed === false ? "is already watching" : "now watches")
+      : (changed === false ? "was not watching" : "no longer watches");
+    runtime.write(`${who} ${verdict} work package ${reference}.\n`);
+  };
+  const watchOptions = (command: Command): Command => command
+    .argument("<id>")
+    .option("--user <name-or-id>", "user name, id, or me", "me")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project");
+
+  watchOptions(wp.command("watch")
+    .description("Add a watcher to one work package (default: me); no-op when already watching"))
+    .action(async (reference: string, options: WatchOptions) => {
+      const { profile, userId, path } = await watchTarget(reference, options);
+      const response = await unknownIfUnfinished(
+        () => apiPostRaw(
+          profile.instanceUrl,
+          profile.apiKey,
+          path,
+          { user: { href: `/api/v3/users/${userId}` } },
+        ),
+        WATCH_WRITE(reference),
+      );
+      if (response.status < 200 || response.status >= 300) {
+        throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
+      }
+      const watcher = watcherRow(response.body);
+      reportWatch(
+        reference,
+        options,
+        userId,
+        typeof watcher.name === "string" ? watcher.name : null,
+        true,
+        response.status === 201,
+      );
+    });
+
+  watchOptions(wp.command("unwatch")
+    .description("Remove a watcher from one work package (default: me); no-op when not watching"))
+    .action(async (reference: string, options: WatchOptions) => {
+      const { profile, userId, path, myself } = await watchTarget(reference, options);
+      const getPage = (lookup: string): Promise<unknown> =>
+        apiGet(profile.instanceUrl, profile.apiKey, lookup);
+      let name: string | null = null;
+      let present: boolean | null = false;
+      try {
+        for await (const element of halElements(getPage, withPageSize(path, DEFAULT_PAGE_SIZE))) {
+          const watcher = watcherRow(element);
+          if (String(watcher.id) === userId) {
+            present = true;
+            name = typeof watcher.name === "string" ? watcher.name : null;
+          }
+        }
+      } catch (error) {
+        // Reading the list needs a permission that removing oneself does
+        // not: for oneself the read is only a courtesy, so go on and
+        // report the outcome as unobserved.
+        if (!(myself && error instanceof OpCliError && error.code === "PERMISSION_DENIED")) {
+          throw error;
+        }
+        present = null;
+      }
+      if (present === false) {
+        reportWatch(reference, options, userId, name, false, false);
+        return;
+      }
+      const response = await unknownIfUnfinished(
+        () => apiDeleteRaw(profile.instanceUrl, profile.apiKey, `${path}/${userId}`),
+        WATCH_WRITE(reference),
+      );
+      if (response.status < 200 || response.status >= 300) {
+        throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
+      }
+      reportWatch(reference, options, userId, name, false, present === null ? null : true);
     });
 
   wp.command("relate")

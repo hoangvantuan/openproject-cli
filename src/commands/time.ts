@@ -41,6 +41,7 @@ import {
   loadProjectVocabulary,
   loadProjectVocabularyById,
   refreshStoredMetadata,
+  requireVocabulary,
   type StoredMember,
 } from "../context/metadata.js";
 import type { RunEnvironment } from "../run.js";
@@ -319,7 +320,10 @@ function activitiesSource(
   return {
     label: "activity",
     load: async () =>
-      (await loadProjectVocabularyById(env, profile, projectId)).activities.map(
+      requireVocabulary(
+        await loadProjectVocabularyById(env, profile, projectId),
+        "activities",
+      ).map(
         (activity) => ({ name: activity.name, owner: "activity", value: activity.id }),
       ),
     refresh: async () => {

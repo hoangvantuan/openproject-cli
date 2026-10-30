@@ -33,6 +33,7 @@ interface StubOptions {
   readonly root?: Reply | "unreachable";
   readonly me?: Reply;
   readonly projects?: Reply;
+  readonly configuration?: Reply;
 }
 
 async function makeRoom(withCredentials: boolean): Promise<{
@@ -77,6 +78,11 @@ function stubInstance(mockAgent: MockAgent, options: StubOptions): void {
       .replyWithError(new Error("connect ECONNREFUSED"));
   } else {
     pool.intercept({ path: "/api/v3/", method: "GET" }).reply(root.status, root.body ?? {});
+  }
+  if (options.configuration !== undefined) {
+    pool
+      .intercept({ path: "/api/v3/configuration", method: "GET" })
+      .reply(options.configuration.status, options.configuration.body ?? {});
   }
   const me = options.me ?? { status: 200, body: USER };
   pool.intercept({ path: "/api/v3/users/me", method: "GET" }).reply(me.status, me.body ?? {});
@@ -234,6 +240,59 @@ describe("op-cli doctor", () => {
     }
   });
 
+  test("a hidden core version is info with feature evidence, never a failure (#56)", async () => {
+    const room = await makeRoom(true);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    stubInstance(mockAgent, {
+      root: { status: 200, body: { _type: "Root" } },
+      configuration: {
+        status: 200,
+        body: { _type: "Configuration", availableFeatures: ["sprints", "backlogs"] },
+      },
+    });
+    try {
+      const result = await run(["doctor", "--json"], room.env, {});
+      expect(result.exitCode).toBe(0);
+      const body = JSON.parse(result.stdout) as {
+        ok: boolean;
+        checks: Array<{ check: string; status: string; detail: string }>;
+      };
+      const versions = body.checks.find((check) => check.check === "versions");
+      expect(versions?.status).toBe("info");
+      expect(versions?.detail).toContain("core version hidden");
+      expect(versions?.detail).toContain("sprints, backlogs");
+      expect(versions?.detail).not.toContain("reported neither");
+      expect(body.ok).toBe(true);
+      expect(result.stderr).toBe("");
+    } finally {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    }
+  });
+
+  test("an unreadable configuration still leaves the hidden version as info (#56)", async () => {
+    const room = await makeRoom(true);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    stubInstance(mockAgent, {
+      root: { status: 200, body: { _type: "Root", apiVersion: "3" } },
+      configuration: { status: 403, body: {} },
+    });
+    try {
+      const result = await run(["doctor"], room.env, {});
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("info");
+      expect(result.stdout).toContain("core version hidden");
+      expect(result.stderr).toBe("");
+    } finally {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    }
+  });
+
   test("a core-only root explains that the api version was not reported", async () => {
     const room = await makeRoom(true);
     const mockAgent = new MockAgent();
@@ -304,7 +363,7 @@ describe("op-cli doctor", () => {
     }
   });
 
-  test("a permissions failure maps to the auth exit code", async () => {
+  test("a permissions failure maps to the permission exit code", async () => {
     const room = await makeRoom(true);
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
@@ -312,8 +371,8 @@ describe("op-cli doctor", () => {
     stubInstance(mockAgent, { projects: { status: 403, body: { _type: "Error" } } });
     try {
       const result = await run(["doctor"], room.env, {});
-      expect(result.exitCode).toBe(3);
-      expect(result.stderr).toMatch(/^\[AUTH_FAILED\]/);
+      expect(result.exitCode).toBe(8);
+      expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
       expect(result.stdout).toContain("permissions");
       expect(result.stdout).toContain("fail");
     } finally {

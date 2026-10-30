@@ -39,7 +39,14 @@ points beyond the quickstart:
 
 ```sh
 op-cli wp create "Fix login bug" --type Bug --priority High
+op-cli wp update 123 --start 2026-09-01 --due 2026-09-30 --estimate 4h --done 40 --story-points 5
 op-cli wp list --search login          # server-side subject search
+op-cli wp list --sort updatedAt:desc   # repeatable; also --id <id>, --no-include-subprojects
+op-cli wp update 123 --sprint "Sprint 14"   # or --bucket <name>, never both
+op-cli wp list --backlog-inbox          # in neither a sprint nor a backlog bucket
+op-cli wp watchers <id>                # list watchers; also `wp watch` / `wp unwatch`, `wp list --watcher me`
+op-cli wp attach 42 ./trace.log        # upload; `wp attachments 42` lists, `wp attachment-download <id>` fetches
+op-cli wp comment 42 "Ask first" --internal   # internal comment, where the instance supports them
 op-cli time log 42 --hours 1h30m --activity Development
 op-cli time report --from 2026-08-01 --to 2026-08-31   # closed period
 op-cli project member add web alice Manager   # join members so assignment works
@@ -52,7 +59,7 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
 ## Things worth knowing
 
 - **Errors are a closed set.** Every failure prints a stable code on stderr,
-  such as `[CONFLICT]` or `[PROFILE_NOT_FOUND]`, with exit codes 0 through 7.
+  such as `[CONFLICT]` or `[PROFILE_NOT_FOUND]`, with exit codes 0 through 8.
   Run `op-cli doctor` when something does not work.
 - **A project in context narrows listings.** `--project`, or a profile's
   default project, scopes `wp list`, `wp count`, `time list`, and
@@ -60,8 +67,9 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
   four commands report instance-wide.
 - **Finding things needs no id.** `wp list --search <text>` matches
   subjects server-side, `--created-after` / `--updated-after` bound by
-  date, and `time list` / `time report` take `--from` and an inclusive
-  `--to`. Every name flag also accepts the human name or the id.
+  date, `--due-before` / `--due-after` / `--overdue` bound by due date
+  (`7d` counts back from today; only `YYYY-MM-DD` reaches the future), and
+  `time list` / `time report` take `--from` and an inclusive `--to`. Every name flag also accepts the human name or the id.
 - **Tables respect the terminal.** Read from a terminal, a table is
   bounded to its width and long cells are cut with an ellipsis; `--json`
   output is never truncated.
@@ -174,7 +182,12 @@ cleans up known created IDs even on failure. Existing-project mode skips
 project creation, project description writes, and favourites. A timed-out
 creation can leave an unknown ID: inspect the test project before retrying;
 cleanup never guesses records by name. It fails loudly at the first
-broken step. There are no automated integration tests by design; this
+broken step. On the disposable work package it also sets, clears (`""`),
+and reads back with `wp get --json` the accountable, dates, estimate and
+remaining work, percent complete, story points, version and observed-in,
+sprint and bucket (including the clear-then-set move), and edits a comment;
+optional steps print a `skip:` line when the project or schema lacks the
+field. There are no automated integration tests by design; this
 script is the regression net for real write paths before every publish.
 
 Releases after the first can ship from CI: once the package exists and its

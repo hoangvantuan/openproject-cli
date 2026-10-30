@@ -1,4 +1,4 @@
-import { OpCliError } from "./errors.js";
+import { OpCliError, refuseCombined } from "./errors.js";
 
 /**
  * One OpenProject APIv3 filter: a filter name, an operator symbol, and
@@ -24,20 +24,41 @@ export interface WpListFlags {
    * every clause beside it is read inside that project (#19).
    */
   readonly project?: string | undefined;
+  /**
+   * `false` keeps a project-scoped listing to the project's own work
+   * packages, read from the project's own collection; the default (and
+   * `true`) includes subprojects (#55).
+   */
+  readonly includeSubprojects?: boolean | undefined;
+  /** Work package ids, matched through `id =`. */
+  readonly ids?: ReadonlyArray<string> | undefined;
   readonly statuses?: ReadonlyArray<string> | undefined;
   readonly open?: boolean | undefined;
   readonly closed?: boolean | undefined;
   readonly types?: ReadonlyArray<string> | undefined;
   readonly assignees?: ReadonlyArray<string> | undefined;
+  readonly accountables?: ReadonlyArray<string> | undefined;
   readonly authors?: ReadonlyArray<string> | undefined;
+  readonly watchers?: ReadonlyArray<string> | undefined;
   readonly versions?: ReadonlyArray<string> | undefined;
+  readonly observedIn?: ReadonlyArray<string> | undefined;
   readonly categories?: ReadonlyArray<string> | undefined;
+  readonly sprints?: ReadonlyArray<string> | undefined;
+  readonly buckets?: ReadonlyArray<string> | undefined;
+  /** In neither a sprint nor a backlog bucket: the backlog inbox (#46). */
+  readonly backlogInbox?: boolean | undefined;
   readonly priorities?: ReadonlyArray<string> | undefined;
   readonly parents?: ReadonlyArray<string> | undefined;
   readonly updatedAfter?: string | undefined;
   /** Substring matched against subjects through the API's `~` operator. */
   readonly search?: string | undefined;
   readonly createdAfter?: string | undefined;
+  /** Due on or before this date; same grammar as the window dates. */
+  readonly dueBefore?: string | undefined;
+  /** Due on or after this date. */
+  readonly dueAfter?: string | undefined;
+  /** Open and due before today. */
+  readonly overdue?: boolean | undefined;
 }
 
 const DATE_FORMS = "today, yesterday, a number of days such as 7d, or an explicit YYYY-MM-DD date";
@@ -159,6 +180,13 @@ export function buildWpFilters(
     );
   }
   const statuses = unique(flags.statuses ?? []);
+  if (flags.overdue === true && flags.closed === true) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--overdue cannot be combined with --closed.",
+      "an overdue work package is an open one past its due date.",
+    );
+  }
   if ((flags.open === true || flags.closed === true) && statuses.length > 0) {
     throw new OpCliError(
       "USAGE_ERROR",
@@ -166,13 +194,42 @@ export function buildWpFilters(
       "list explicit statuses or use one shorthand, not both.",
     );
   }
+  // A work package sits in a sprint, in a backlog bucket, or in the
+  // backlog inbox, never in two, so any pair of these ANDs to nothing (#46).
+  refuseCombined(
+    [
+      (flags.sprints ?? []).length > 0 ? "--sprint" : undefined,
+      (flags.buckets ?? []).length > 0 ? "--bucket" : undefined,
+      flags.backlogInbox === true ? "--backlog-inbox" : undefined,
+    ],
+    "a work package sits in a sprint, in a backlog bucket, or in the backlog inbox; "
+      + "run one listing per placement.",
+  );
+
+  if (flags.includeSubprojects === false && flags.project === undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--no-include-subprojects needs a project in context.",
+      "pass --project <name-or-id> or set a default project on the profile.",
+    );
+  }
 
   const filters: Array<WpFilter> = [];
   // The project leads: it is the scope every other clause narrows, and it
   // is the same clause the project-scoped collection applies internally,
   // subprojects included.
-  if (flags.project !== undefined) {
+  if (flags.project !== undefined && flags.includeSubprojects !== false) {
     filters.push({ name: "project", operator: "=", values: [flags.project] });
+  }
+  if (flags.includeSubprojects === false) {
+    // The global project clause reaches subprojects. subprojectId "none"
+    // drops them, but the instance only evaluates it inside the
+    // project-scoped collection (see workPackagesPath in commands/wp.ts), so the project
+    // clause is left out here and the route carries the scope.
+    filters.push({ name: "subprojectId", operator: "!*", values: [] });
+  }
+  if ((flags.ids ?? []).length > 0) {
+    filters.push({ name: "id", operator: "=", values: unique(flags.ids!) });
   }
   if (flags.open === true) {
     filters.push({ name: "status", operator: "o", values: [] });
@@ -181,20 +238,46 @@ export function buildWpFilters(
   } else if (statuses.length > 0) {
     filters.push({ name: "status", operator: "=", values: statuses });
   }
+  if (flags.overdue === true && flags.open !== true && statuses.length === 0) {
+    filters.push({ name: "status", operator: "o", values: [] });
+  }
   if ((flags.types ?? []).length > 0) {
     filters.push({ name: "type", operator: "=", values: unique(flags.types!) });
   }
   if ((flags.assignees ?? []).length > 0) {
     filters.push({ name: "assigned_to", operator: "=", values: unique(flags.assignees!) });
   }
+  if ((flags.accountables ?? []).length > 0) {
+    filters.push({ name: "responsible", operator: "=", values: unique(flags.accountables!) });
+  }
   if ((flags.authors ?? []).length > 0) {
     filters.push({ name: "author", operator: "=", values: unique(flags.authors!) });
+  }
+  if ((flags.watchers ?? []).length > 0) {
+    filters.push({ name: "watcher", operator: "=", values: unique(flags.watchers!) });
   }
   if ((flags.versions ?? []).length > 0) {
     filters.push({ name: "version", operator: "=", values: unique(flags.versions!) });
   }
+  if ((flags.observedIn ?? []).length > 0) {
+    filters.push({
+      name: "observedInVersion",
+      operator: "=",
+      values: unique(flags.observedIn!),
+    });
+  }
   if ((flags.categories ?? []).length > 0) {
     filters.push({ name: "category", operator: "=", values: unique(flags.categories!) });
+  }
+  if ((flags.sprints ?? []).length > 0) {
+    filters.push({ name: "sprint", operator: "=", values: unique(flags.sprints!) });
+  }
+  if ((flags.buckets ?? []).length > 0) {
+    filters.push({ name: "backlogBucket", operator: "=", values: unique(flags.buckets!) });
+  }
+  if (flags.backlogInbox === true) {
+    // A boolean filter: the instance reads "t", and refuses "true".
+    filters.push({ name: "backlogInbox", operator: "=", values: ["t"] });
   }
   if ((flags.priorities ?? []).length > 0) {
     filters.push({ name: "priority", operator: "=", values: unique(flags.priorities!) });
@@ -223,6 +306,30 @@ export function buildWpFilters(
       values: [since, ""],
     });
   }
+  if (flags.dueAfter !== undefined || flags.dueBefore !== undefined || flags.overdue === true) {
+    // One clause carries the whole window: the API ANDs separate clauses
+    // on the same attribute only loosely, and an empty bound is open.
+    const lower = flags.dueAfter === undefined
+      ? ""
+      : untilDate(flags.dueAfter, now, "--due-after");
+    let upper = flags.dueBefore === undefined
+      ? ""
+      : untilDate(flags.dueBefore, now, "--due-before");
+    if (flags.overdue === true) {
+      const yesterday = isoDate(daysAgo(now, 1));
+      if (upper === "" || upper > yesterday) {
+        upper = yesterday;
+      }
+    }
+    if (lower !== "" && upper !== "" && lower > upper) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `the due window is empty: ${lower} is after ${upper}.`,
+        "--due-after must not be later than --due-before (or the day before today with --overdue).",
+      );
+    }
+    filters.push({ name: "dueDate", operator: "<>d", values: [lower, upper] });
+  }
   if (flags.updatedAfter !== undefined) {
     const since = sinceDate(flags.updatedAfter, now);
     filters.push({
@@ -245,4 +352,60 @@ export function filtersQuery(filters: ReadonlyArray<WpFilter>): string {
     [filter.name]: { operator: filter.operator, values: [...filter.values] },
   }));
   return encodeURIComponent(JSON.stringify(wire));
+}
+
+/**
+ * The sort fields `wp list --sort` accepts. The flattened record names
+ * users see are also the API's sortBy keys, so no mapping is needed.
+ */
+const SORT_FIELDS = [
+  "updatedAt",
+  "createdAt",
+  "dueDate",
+  "startDate",
+  "priority",
+  "status",
+  "id",
+  "subject",
+] as const;
+
+/** Parse repeated `field[:asc|desc]` values into the API's sortBy pairs. */
+export function parseSort(raw: ReadonlyArray<string>): Array<[string, "asc" | "desc"]> {
+  const allowed = SORT_FIELDS.join(", ");
+  const pairs: Array<[string, "asc" | "desc"]> = [];
+  for (const entry of raw) {
+    const [name = "", direction = "asc", ...rest] = entry.trim().split(":");
+    const field = SORT_FIELDS.find(
+      (candidate) => candidate.toLowerCase() === name.toLowerCase(),
+    );
+    if (field === undefined) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `cannot sort by "${name}".`,
+        `--sort accepts ${allowed}, each optionally followed by :asc or :desc.`,
+      );
+    }
+    const lowered = direction.toLowerCase();
+    if (rest.length > 0 || (lowered !== "asc" && lowered !== "desc")) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `"${entry}" is not a sort direction.`,
+        "--sort <field>:asc or <field>:desc; the direction defaults to asc.",
+      );
+    }
+    if (pairs.some(([existing]) => existing === field)) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `--sort lists ${field} twice.`,
+        "name each field once.",
+      );
+    }
+    pairs.push([field, lowered]);
+  }
+  return pairs;
+}
+
+/** The URL-encoded `sortBy` query parameter value. */
+export function sortByQuery(pairs: ReadonlyArray<[string, string]>): string {
+  return encodeURIComponent(JSON.stringify(pairs));
 }

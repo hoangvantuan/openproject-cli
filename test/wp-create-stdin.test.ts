@@ -403,6 +403,48 @@ describe("wp create --stdin bulk path", () => {
     }
   });
 
+  test("an accountable key resolves to _links.responsible, me included", async () => {
+    const { configDir, cacheDir } = await room();
+    await writeMetadataFile(cacheDir, baseMetadata());
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    cleanups.push(async () => {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    });
+    const pool = mockAgent.get(INSTANCE);
+    pool.intercept({ path: "/api/v3/users/me", method: "GET" }).reply(200, {
+      id: 7,
+      name: "Linh Nguyen",
+      login: "linh",
+    }).persist();
+    const postBodies: Array<Record<string, unknown>> = [];
+    for (const id of [101, 102]) {
+      pool.intercept({ path: "/api/v3/work_packages", method: "POST" }).reply(
+        (call) => {
+          postBodies.push(JSON.parse(String(call.body)) as Record<string, unknown>);
+          return { statusCode: 201, data: createdElement(id, String(id)) };
+        },
+      );
+    }
+    const result = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["--stdin"],
+      JSON.stringify([
+        { subject: "One", accountable: "me" },
+        { subject: "Two", accountable: "me" },
+      ]),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(postBodies).toHaveLength(2);
+    for (const body of postBodies) {
+      const links = body._links as Record<string, { href: string }>;
+      expect(links.responsible.href).toBe("/api/v3/users/7");
+    }
+  });
+
   test("the ADR-0002 retry rule repairs stale ids on the bulk path", async () => {
     const { configDir, cacheDir } = await room();
     await writeMetadataFile(cacheDir, baseMetadata());
@@ -500,6 +542,7 @@ describe("wp create --stdin bulk path", () => {
       JSON.stringify([
         "not an object",
         { subject: "", type: "Task" },
+        { subject: "Cleared", assignee: "" },
         { subject: "Mystery", surprise: true },
         { subject: "Good", type: "Task" },
       ]),
@@ -509,8 +552,9 @@ describe("wp create --stdin bulk path", () => {
     expect(lines[0]).toMatchObject({ index: 0, ok: false, code: "USAGE_ERROR" });
     expect(lines[1]).toMatchObject({ index: 1, ok: false, code: "USAGE_ERROR" });
     expect(lines[2]).toMatchObject({ index: 2, ok: false, code: "USAGE_ERROR" });
-    expect(String(lines[2].hint)).toContain("subject");
-    expect(lines[3]).toMatchObject({ index: 3, ok: true, status: "created", id: 102 });
+    expect(lines[3]).toMatchObject({ index: 3, ok: false, code: "USAGE_ERROR" });
+    expect(String(lines[3].hint)).toContain("subject");
+    expect(lines[4]).toMatchObject({ index: 4, ok: true, status: "created", id: 102 });
     expect(api.postCount()).toBe(1);
   });
 
@@ -575,4 +619,51 @@ describe("wp create --stdin bulk path", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("stdin");
   });
+
+describe("wp create --stdin scalar keys", () => {
+  test("scalar keys (camel and kebab) reach the payload", async () => {
+    const { configDir, cacheDir } = await room();
+    const api = installMockApi({
+      gets: refreshEndpoints(baseMetadata()),
+      posts: [
+        { status: 201, body: createdElement(101, "Plan A") },
+        { status: 201, body: createdElement(102, "Plan B") },
+      ],
+    });
+    const result = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["--stdin"],
+      JSON.stringify([
+        { subject: "Plan A", start: "2026-09-01", due: "2026-09-30", estimate: "4h", remaining: "1h", done: 25, storyPoints: 8 },
+        { subject: "Plan B", "story-points": 2 },
+      ]),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(api.postBodies[0]).toMatchObject({
+      startDate: "2026-09-01",
+      dueDate: "2026-09-30",
+      estimatedTime: "PT4H",
+      remainingTime: "PT1H",
+      percentageDone: 25,
+      storyPoints: 8,
+    });
+    expect(api.postBodies[1]).toMatchObject({ storyPoints: 2 });
+  });
+
+  test("a bad scalar fails its own item by index, without a request for it", async () => {
+    const { configDir, cacheDir } = await room();
+    const api = installMockApi({ gets: refreshEndpoints(baseMetadata()) });
+    const result = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["--stdin", "--dry-run"],
+      JSON.stringify([{ subject: "Bad", due: "2026-13-40" }]),
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout + result.stderr).toContain("input 0");
+    expect(api.postCount()).toBe(0);
+  });
+});
+
 });

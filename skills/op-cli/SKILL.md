@@ -26,13 +26,55 @@ numeric; use each command's help to distinguish them. Run any command below with
   - A project in context narrows what you read: `--project`, or the
     profile default, scopes `wp list`, `wp count`, `time list`, and
     `time report` to that project and its subprojects. Without one, those
-    four report instance-wide.
+    four report instance-wide. `wp update` looks names up (version,
+    category, assignee, sprint, bucket, `--field`) in `--project`, else the
+    profile default, else the work package's own project.
   - `--field "Estimate=5"` sets a custom field by human name;
-    `--field "Estimate="` clears it.
+    `--field "Estimate="` clears it. The same empty-value convention
+    clears links on `wp update`: `--assignee ""`, `--accountable ""`,
+    `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`,
+    `--sprint ""`, `--bucket ""`. `--type`, `--status`, `--priority`,
+    and `--subject` refuse an empty value, and so does every empty value
+    on `wp create`, all with `USAGE_ERROR` before any request.
+  - Scalar attributes: `--start`/`--due` (YYYY-MM-DD), `--estimate`/
+    `--remaining` (durations like `4h`, `1h30m`, `PT4H`, sent as ISO 8601),
+    `--done` (0-100), `--story-points` (whole number), on `wp create` and
+    `wp update`. `--due ""` and the others clear on update. Values are
+    validated locally with `USAGE_ERROR`; server refusals such as
+    `--done` in status-based progress mode show the server's message.
+    `wp create --stdin` items use the keys `start`, `due`, `estimate`,
+    `remaining`, `done`, `storyPoints` (or `story-points`); `observedIn`
+    also reads as `observed-in`.
+  - `--accountable <name|id|me>` sets the work package Accountable (API
+    field `responsible`) on `wp create`/`update`, resolved like
+    `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk
+    `--stdin` items take an `accountable` key.
+  - `--version` writes the work package schema's `targetVersions` when it
+    has one, else the single `version`; repeat it only where the schema
+    allows several (otherwise `USAGE_ERROR`). `--observed-in <version>`
+    (repeatable) writes `observedInVersions` on `wp create`/`update` and
+    filters `wp list`/`wp count`; it is a `USAGE_ERROR` where the schema
+    lacks the field. In `wp create --stdin`, `version` and `observedIn`
+    take a string or an array of strings.
+  - `--sprint <name|id>` or `--bucket <name|id>` (backlog bucket) places
+    a work package on `wp create`/`update`; bulk `--stdin` items take
+    `sprint`/`bucket` keys. A work package sits in one or the other, so
+    passing both in one command or item is a `USAGE_ERROR`. To move
+    between a sprint and a bucket, clear the current placement first
+    (`wp update <id> --sprint ""`), then set the other (`wp update <id>
+    --bucket <bucket>`); in between, the work package is in the backlog
+    inbox. Run them in that order: it is safe whatever the server does
+    with a second placement. `wp list`/`count` filter by
+    `--sprint`/`--bucket` (repeatable) or `--backlog-inbox` (the backlog
+    inbox: in neither a sprint nor a bucket, unrelated to the
+    notification inbox); combining any two of the three is a
+    `USAGE_ERROR`. Sprint
+    names repeat across projects but resolve inside the project in
+    context; a project without sprints or buckets fails naming it.
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
-    commands: `wp get`/`create`/`update`, `wp history`/`comments`/
-    `relations`, `time log`/`get`/`update`, `project get`/`create`/
+    commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
+    `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
     `update`/`copy`/`member`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
@@ -55,6 +97,8 @@ update notice that would otherwise pollute stderr. Errors render as
 JSON objects carrying a stable `code`. Do not check auth upfront: run
 the command you need directly. If it fails with `PROFILE_NOT_FOUND` or
 `AUTH_FAILED`, run `op-cli auth login` (interactive prompts) and retry.
+`PERMISSION_DENIED` means the key works but the account lacks a
+permission: logging in again will not help.
 
 ## Intent to command
 
@@ -62,8 +106,17 @@ the command you need directly. If it fails with `PROFILE_NOT_FOUND` or
 # find work packages; repeat a filter flag to OR values
 # --created-after and --updated-after take the same date forms
 op-cli wp list --open --type Task --assignee me --updated-after 7d
+# due dates: on or before / on or after; --overdue is open and due before today
+op-cli wp list --due-before 2026-09-30 --due-after 2026-09-01
+op-cli wp count --overdue
 # find by words in the subject, server-side
 op-cli wp list --search login
+# order the list: repeatable --sort field[:asc|desc] (asc by default; wp count refuses it);
+# fields are updatedAt, createdAt, dueDate, startDate, priority, status, id, subject
+op-cli wp list --sort updatedAt:desc --sort subject
+# by id (repeatable); a project listing includes subprojects unless excluded
+op-cli wp list --id 12 --id 34
+op-cli wp list --project web --no-include-subprojects
 # how many match, without paginating; fetch every page with --all
 op-cli wp count --priority High
 # inspect one work package, optionally narrowing columns
@@ -74,6 +127,33 @@ op-cli wp create Subject --type Bug --priority High
 op-cli wp update <id> --field Estimate=5
 # change status, assignee, version, category, priority
 op-cli wp update <id> --status Closed --assignee me
+# target versions and the versions a bug was observed in
+op-cli wp update <id> --version 1.0.0 --observed-in 0.9.0
+op-cli wp list --observed-in 0.9.0
+# plan into a sprint or a backlog bucket; list a sprint or the backlog inbox
+op-cli wp update <id> --sprint <sprint>
+op-cli wp update <id> --bucket <bucket>
+# move from a sprint to a bucket: clear first, then set (never both flags)
+op-cli wp update <id> --sprint ""
+op-cli wp update <id> --bucket <bucket>
+op-cli wp list --sprint <sprint>
+op-cli wp count --backlog-inbox
+# clear a link with an empty value
+op-cli wp update <id> --assignee ""
+# dates, effort, progress, points; an empty value clears on update
+op-cli wp update <id> --start 2026-09-01 --due 2026-09-30 --estimate 4h --done 40 --story-points 5
+op-cli wp update <id> --due ""
+# Accountable (API field responsible): set, clear, filter
+op-cli wp update <id> --accountable Linh
+op-cli wp update <id> --accountable ""
+op-cli wp list --accountable me
+# watchers: list, add, remove (default user me; already watching or not
+# watching is reported with exit 0, not an error; "changed" is null when
+# unwatch could not read the list and removed the watcher blind); filter by watcher
+op-cli wp watchers <id>
+op-cli wp watch <id> --user Linh
+op-cli wp unwatch <id>
+op-cli wp list --watcher me
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>
@@ -84,7 +164,19 @@ op-cli wp delete <id> --yes
 echo '[{"subject":"First"},{"subject":"Second"}]' | op-cli wp create --stdin
 # discuss and audit a work package
 op-cli wp comment <id> <text>
+# an internal comment, visible only to users who may see internal comments
+op-cli wp comment <id> <text> --internal
+# edit a comment by the activity id `wp comments` lists (no delete: API v3 has none);
+# the edit keeps a comment's internal flag as it is
+op-cli wp comment-edit <activity-id> <text>
 op-cli wp history <id>
+# attachments: list, upload (refused before sending when the file is missing
+# or over the instance maximum), download by the attachment id the list shows;
+# download refuses to overwrite without --force, `--output -` writes to stdout
+op-cli wp attachments <id>
+op-cli wp attach <id> <path> --description <text> --name <fileName>
+op-cli wp attachment-download <attachment-id> --output <path-or-dir> --force
+# --output - writes the bytes to stdout and cannot be combined with --json or --force
 # relations between work packages
 op-cli wp relations <id>
 op-cli wp relate <id> <to>
@@ -106,12 +198,26 @@ op-cli project member remove <project> <user>
 op-cli wp move <id> <project>
 # what a work package may use in a project
 op-cli project types <reference>
-# project vocabulary: members, versions, categories, activities, fields;
+op-cli project sprints <reference>
+op-cli project buckets <reference>
+# project vocabulary: members, versions, categories, activities, sprints,
+# buckets, fields;
 # a project context is required: pass --project <id> or set a default
-# project on the profile (meta types, statuses, priorities are instance-wide)
+# project on the profile (meta types, statuses, priorities are instance-wide).
+# Versions, categories, activities, sprints, or buckets the account may not
+# read (or a project without the backlogs module) are stored as
+# unavailable: only commands that need that one (time log --activity,
+# wp --sprint, wp --bucket) fail with PERMISSION_DENIED; meta show and
+# meta refresh list them
 op-cli meta members --project <id>
 op-cli meta fields
+op-cli meta sprints
+op-cli meta buckets
 # something does not work: diagnose connectivity, credentials, versions
+# (a hidden core version shows as `info`, never a failure; a write of a
+# schema-deprecated attribute, e.g. wp --version on a legacy type, prints one
+# `warning:` line to stderr and leaves stdout untouched; the check covers the
+# version attributes --version and --observed-in write, not every attribute)
 op-cli doctor
 # self-update (prints the right command for Volta and Homebrew installs)
 op-cli update
@@ -160,7 +266,7 @@ op-cli notification unread <id> --json
 ## Error contract
 
 Read `[CODE]` on stderr (or `code` in JSON); do not match English prose.
-Codes are a closed set with stable exit codes, 0 through 7.
+Codes are a closed set with stable exit codes, 0 through 8.
 
 | Code | Exit | Recovery action |
 |---|---|---|
@@ -168,8 +274,9 @@ Codes are a closed set with stable exit codes, 0 through 7.
 | PROFILE_NOT_FOUND | 1 | run `op-cli auth login`; env vars alone also work |
 | API_ERROR | 2 | read the message: a rejected write needs different values, a failed request may be worth retrying |
 | INTERNAL_ERROR | 2 | on reads, retry once; after writes, inspect outcomes and verify state first; report persistent failures |
-| AUTH_FAILED | 3 | credentials or permissions changed; run `op-cli auth login` |
+| AUTH_FAILED | 3 | the API key was rejected; run `op-cli auth login` |
 | NOT_FOUND | 4 | check the id; run `op-cli meta refresh` if names changed recently |
 | CONFLICT | 5 | someone edited the same work package; re-read, merge, retry |
 | NETWORK_ERROR | 6 | check URL and network; after a write, state is unknown, verify first |
 | UNSUPPORTED_VERSION | 7 | instance needs OpenProject v13+ (API v3); upgrade or report |
+| PERMISSION_DENIED | 8 | the account lacks a permission; logging in again will not help, ask an admin or skip that operation |

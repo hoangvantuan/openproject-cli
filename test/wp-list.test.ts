@@ -340,6 +340,46 @@ describe("wp list filters", () => {
     expect(result.stdout).toContain("My own task");
   });
 
+  test("--accountable maps to the responsible filter and resolves me", async () => {
+    const root = await makeTempRoom("wp-list-accountable-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        "/api/v3/users/me": { id: 5, name: "Tuan Ha", login: "tuan" },
+        [listPath([{ responsible: { operator: "=", values: ["5"] } }], 100)]: halCollection(
+          1,
+          [wpElement(1522, "Accountable task")],
+        ),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--accountable", "me"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Accountable task");
+  });
+
+  test("--watcher maps to the watcher filter and resolves me (#52)", async () => {
+    const root = await makeTempRoom("wp-list-watcher-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        "/api/v3/users/me": { id: 5, name: "Tuan Ha", login: "tuan" },
+        [listPath([{ watcher: { operator: "=", values: ["5", "9"] } }], 100)]: halCollection(
+          1,
+          [wpElement(1522, "Watched task")],
+        ),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "list",
+      "--watcher",
+      "me",
+      "--watcher",
+      "9",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Watched task");
+  });
+
   test("--open maps to the o operator without touching metadata", async () => {
     const root = await makeTempRoom("wp-list-open-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
@@ -414,6 +454,49 @@ describe("wp list filters", () => {
     const result = await runWp(configDir, cacheDir, ["list", "--updated-after", "7d"]);
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
+  });
+
+  test("--due-before and --due-after pin one dueDate window", async () => {
+    const root = await makeTempRoom("wp-list-due-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        [scopedPath([
+          { dueDate: { operator: "<>d", values: ["2026-09-01", "2026-09-30"] } },
+        ], 100)]: halCollection(1, [wpElement(41, "Due in September")]),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "list", "--due-after", "2026-09-01", "--due-before", "2026-09-30",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Due in September");
+  });
+
+  test("--overdue lists open work due up to yesterday", async () => {
+    const root = await makeTempRoom("wp-list-overdue-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    const now = new Date();
+    const yesterday = localIsoDate(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1),
+    );
+    installMockApi({
+      packages: {
+        [scopedPath([
+          { status: { operator: "o", values: [] } },
+          { dueDate: { operator: "<>d", values: ["", yesterday] } },
+        ], 100)]: halCollection(0, []),
+        [scopedPath([
+          { status: { operator: "o", values: [] } },
+          { dueDate: { operator: "<>d", values: ["", yesterday] } },
+        ], 1)]: halCollection(3, []),
+      },
+    });
+    const list = await runWp(configDir, cacheDir, ["list", "--overdue"]);
+    expect(list.exitCode).toBe(0);
+    const count = await runWp(configDir, cacheDir, ["count", "--overdue"]);
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout).toBe("3\n");
   });
 
   test("--search sends the substring to the API's contains operator", async () => {
@@ -648,6 +731,100 @@ describe("wp list pagination and shapes", () => {
     expect(lines).toHaveLength(3);
     const parsed = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(parsed.map((record) => record.id)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("wp list sorting and id/subproject filters", () => {
+  function sortedPath(filters: unknown[], sort: unknown, pageSize: number): string {
+    return (
+      `/api/v3/work_packages?filters=${filtersParam(filters)}`
+      + `&sortBy=${encodeURIComponent(JSON.stringify(sort))}&pageSize=${String(pageSize)}`
+    );
+  }
+
+  test("--sort is repeatable, defaults to asc, and maps to sortBy pairs (#55)", async () => {
+    const root = await makeTempRoom("wp-list-sort-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [sortedPath([], [["updatedAt", "desc"], ["subject", "asc"]], 100)]: halCollection(
+          1,
+          [wpElement(1, "Sorted")],
+        ),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "list", "--sort", "updatedAt:desc", "--sort", "subject",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Sorted");
+  });
+
+  test("an unknown sort field is a USAGE_ERROR listing the allowed ones (#55)", async () => {
+    const root = await makeTempRoom("wp-list-sort-bad-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const result = await runWp(configDir, cacheDir, ["list", "--sort", "colour"]);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain("updatedAt");
+    expect(result.stderr).toContain("subject");
+    const badDirection = await runWp(configDir, cacheDir, ["list", "--sort", "id:up"]);
+    expect(badDirection.stderr).toContain("[USAGE_ERROR]");
+  });
+
+  test("wp count refuses --sort (#55)", async () => {
+    const root = await makeTempRoom("wp-count-sort-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const result = await runWp(configDir, cacheDir, ["count", "--sort", "id"]);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain("--sort");
+  });
+
+  test("--id is repeatable and maps to an id = clause (#55)", async () => {
+    const root = await makeTempRoom("wp-list-id-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        [listPath([{ id: { operator: "=", values: ["12", "34"] } }], 100)]: halCollection(
+          1,
+          [wpElement(12, "By id")],
+        ),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--id", "12", "--id", "#34"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("By id");
+    const bad = await runWp(configDir, cacheDir, ["list", "--id", "abc"]);
+    expect(bad.stderr).toContain("[USAGE_ERROR]");
+  });
+
+  test("--no-include-subprojects adds a subprojectId none clause (#55)", async () => {
+    const root = await makeTempRoom("wp-list-nosub-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
+    installMockApi({
+      packages: {
+        // subprojectId only works on the project's own collection; the global
+        // endpoint answers 500, so there is no project clause either.
+        [`/api/v3/projects/13/work_packages?filters=${
+          filtersParam([{ subprojectId: { operator: "!*", values: [] } }])
+        }&pageSize=100`]: halCollection(1, [wpElement(1, "Own only")]),
+        [scopedPath([], 1)]: halCollection(9, []),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--no-include-subprojects"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Own only");
+    // --include-subprojects is the default and adds nothing.
+    const count = await runWp(configDir, cacheDir, ["count", "--include-subprojects"]);
+    expect(count.stdout).toBe("9\n");
+  });
+
+  test("--no-include-subprojects needs a project (#55)", async () => {
+    const root = await makeTempRoom("wp-list-nosub-bad-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const noProject = await runWp(configDir, cacheDir, ["list", "--no-include-subprojects"]);
+    expect(noProject.stderr).toContain("[USAGE_ERROR]");
   });
 });
 

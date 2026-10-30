@@ -26,5 +26,8 @@ exitOnBrokenPipe(process.stderr);
 
 const result = await run(process.argv.slice(2), process.env, createNodeIo());
 process.stdout.write(result.stdout);
+if (result.stdoutBytes !== undefined) {
+  process.stdout.write(result.stdoutBytes);
+}
 process.stderr.write(result.stderr);
 process.exitCode = result.exitCode;

@@ -1,4 +1,4 @@
-import { OpCliError } from "./errors.js";
+import { explanationOf, OpCliError, writeRefusal } from "./errors.js";
 import type { RunEnvironment } from "../run.js";
 
 export interface AuthenticatedUser {
@@ -63,7 +63,11 @@ async function attempt(
   path: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
+  accept = "application/hal+json",
 ): Promise<Response> {
+  // A multipart upload carries its own boundary-bearing content type;
+  // fetch only writes it when the caller leaves the header alone.
+  const multipart = body instanceof FormData;
   // AbortSignal.timeout aborts with a TimeoutError reason. A budget
   // problem (too impatient) and a reachability problem (wrong URL)
   // share the NETWORK_ERROR code and exit 6 by contract; only the
@@ -72,17 +76,17 @@ async function attempt(
   try {
     return await fetch(`${instanceUrl}${path}`, {
       headers: {
-        accept: "application/hal+json",
+        accept,
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
         // The API rejects non-JSON bodies with 415; without this header
         // fetch would label the body text/plain.
-        ...(method === "POST" || method === "PATCH"
+        ...((method === "POST" || method === "PATCH") && !multipart
           ? { "content-type": "application/json" }
           : {}),
       },
       signal,
       ...(method === "POST" || method === "PATCH"
-        ? { method, body: JSON.stringify(body) }
+        ? { method, body: multipart ? body : JSON.stringify(body) }
         : { method }),
     });
   } catch {
@@ -104,18 +108,39 @@ async function request(
   path: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
+  accept?: string,
 ): Promise<Response> {
-  let response = await attempt(instanceUrl, apiKey, path, method, body);
+  let response = await attempt(instanceUrl, apiKey, path, method, body, accept);
   if (method === "GET" && (response.status === 429 || response.status >= 500)) {
     // Promise.withResolvers needs ES2024 lib; the executor form stays.
     await new Promise<void>((resolve) => setTimeout(resolve, READ_RETRY_DELAY_MS));
-    response = await attempt(instanceUrl, apiKey, path, method, body);
+    response = await attempt(instanceUrl, apiKey, path, method, body, accept);
   }
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw new OpCliError("AUTH_FAILED");
   }
+  if (response.status === 403) {
+    throw permissionDenied(path, await bodyOf(response));
+  }
   return response;
+}
+
+/**
+ * A 403 names what was refused: the credentials work, the account lacks
+ * a permission on this path. The query string is left out; it repeats
+ * filters the caller already knows and buries the path.
+ */
+function permissionDenied(path: string, body: unknown): OpCliError {
+  const bare = path.split("?")[0] ?? path;
+  const explanation = explanationOf(body);
+  return new OpCliError(
+    "PERMISSION_DENIED",
+    `OpenProject denied access to ${bare}`
+      + (explanation === undefined ? "." : `: ${explanation}`),
+    undefined,
+    { status: 403, path: bare },
+  );
 }
 
 async function send(
@@ -132,6 +157,11 @@ async function send(
   if (response.status === 404) {
     throw new OpCliError("NOT_FOUND");
   }
+  if (response.status < 500 && !response.ok) {
+    // A client error carries OpenProject's own explanation, and waiting
+    // will not change the answer: quote it instead of "try again later".
+    throw writeRefusal("request", response.status, await bodyOf(response));
+  }
   if (!response.ok) {
     throw new OpCliError("API_ERROR");
   }
@@ -141,8 +171,9 @@ async function send(
 /**
  * A write response left unmapped so the proof-carrying retry of ADR-0002
  * can inspect the status and body before the catalogue mapping happens.
- * The caller owns that mapping; only network failures (including timeouts)
- * and authentication errors throw here, because no refresh can repair them.
+ * The caller owns that mapping; only network failures (including timeouts),
+ * authentication errors, and permission refusals throw here, because no
+ * refresh can repair them.
  */
 export interface RawWriteResponse {
   readonly status: number;
@@ -188,6 +219,15 @@ export async function apiDelete(
   return send(instanceUrl, apiKey, path, "DELETE");
 }
 
+export async function apiDeleteRaw(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<RawWriteResponse> {
+  const response = await request(instanceUrl, apiKey, path, "DELETE");
+  return { status: response.status, body: await bodyOf(response) };
+}
+
 export async function apiGet(
   instanceUrl: string,
   apiKey: string,
@@ -203,4 +243,47 @@ export async function apiPost(
   body: unknown,
 ): Promise<unknown> {
   return send(instanceUrl, apiKey, path, "POST", body);
+}
+
+export async function apiPatch(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  body: unknown,
+): Promise<unknown> {
+  return send(instanceUrl, apiKey, path, "PATCH", body);
+}
+
+/**
+ * The raw bytes of a file download. Redirects (external storage) are
+ * followed by fetch; it drops the credentials on a cross-origin hop.
+ */
+export async function apiGetBytes(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<Uint8Array> {
+  const response = await request(instanceUrl, apiKey, path, "GET", undefined, "*/*");
+  if (response.status === 404) {
+    throw new OpCliError("NOT_FOUND");
+  }
+  if (!response.ok) {
+    throw new OpCliError("API_ERROR");
+  }
+  try {
+    return new Uint8Array(await response.arrayBuffer());
+  } catch {
+    throw new OpCliError("NETWORK_ERROR");
+  }
+}
+
+/** A multipart/form-data POST; like every write it is never retried. */
+export async function apiPostMultipartRaw(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  form: FormData,
+): Promise<RawWriteResponse> {
+  const response = await request(instanceUrl, apiKey, path, "POST", form);
+  return { status: response.status, body: await bodyOf(response) };
 }

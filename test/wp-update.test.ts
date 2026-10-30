@@ -722,3 +722,184 @@ describe("wp update --description", () => {
     expect(patchBodies[0]?.description).toEqual({ raw: "" });
   });
 });
+
+describe("wp update --accountable", () => {
+  test("resolves a member name into _links.responsible", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "update", "675", "--accountable", "Linh Nguyen",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(patchBodies).toEqual([
+      { lockVersion: 1, _links: { responsible: { href: "/api/v3/users/7" } } },
+    ]);
+  });
+
+  test("a numeric id goes straight in", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const { patchBodies } = installUpdateApi({
+      gets: [wpRecord(1, "open")],
+      patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+    });
+    await runWp(configDir, cacheDir, ["update", "675", "--accountable", "9"]);
+    const links = patchBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.responsible.href).toBe("/api/v3/users/9");
+  });
+});
+
+describe("wp update clearing a link with an empty value", () => {
+  const CLEARS: ReadonlyArray<readonly [string, string]> = [
+    ["--assignee", "assignee"],
+    ["--accountable", "responsible"],
+    ["--version", "version"],
+    ["--category", "category"],
+    ["--parent", "parent"],
+  ];
+
+  for (const [flag, attribute] of CLEARS) {
+    test(`${flag} "" patches ${attribute} with a null href`, async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      const { patchBodies } = installUpdateApi({
+        gets: [wpRecord(1, "open")],
+        patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+      });
+      const result = await runWp(configDir, cacheDir, ["update", "675", flag, ""]);
+      expect(result.exitCode).toBe(0);
+      expect(patchBodies).toEqual([
+        { lockVersion: 1, _links: { [attribute]: { href: null } } },
+      ]);
+    });
+  }
+
+  for (const flag of ["--type", "--status", "--priority", "--subject"]) {
+    test(`${flag} "" is a usage error before any request`, async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      const { patchCalls } = installUpdateApi({ gets: [] });
+      const result = await runWp(configDir, cacheDir, ["update", "675", flag, ""]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("USAGE_ERROR");
+      expect(patchCalls()).toBe(0);
+    });
+  }
+
+  test("a cleared link somebody else changed is a conflict like any touched attribute", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata());
+    const assigned = (id: number): Record<string, unknown> => {
+      const record = wpRecord(1, "open");
+      (record._links as Record<string, unknown>).assignee = {
+        href: `/api/v3/users/${String(id)}`,
+      };
+      return record;
+    };
+    const { patchBodies } = installUpdateApi({
+      gets: [assigned(7), assigned(8)],
+      patchReplies: [{ status: 409, body: {} }],
+    });
+    const result = await runWp(configDir, cacheDir, ["update", "675", "--assignee", ""]);
+    expect(result.exitCode).toBe(5);
+    expect(result.stderr).toContain("assignee");
+    expect(patchBodies).toHaveLength(1);
+  });
+
+  describe("scalar attributes", () => {
+    async function patchWith(args: ReadonlyArray<string>): Promise<{
+      body: Record<string, unknown> | undefined;
+      result: { stdout: string; stderr: string; exitCode: number };
+    }> {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      const { patchBodies } = installUpdateApi({
+        gets: [wpRecord(1, "open")],
+        patchReplies: [{ status: 200, body: wpRecord(2, "open") }],
+      });
+      const result = await runWp(configDir, cacheDir, ["update", "675", ...args]);
+      return { body: patchBodies[0], result };
+    }
+
+    test("every scalar flag lands in the payload in wire form", async () => {
+      const { body, result } = await patchWith([
+        "--start", "2026-09-01",
+        "--due", "2026-09-30",
+        "--estimate", "4h",
+        "--remaining", "1h30m",
+        "--done", "40",
+        "--story-points", "5",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(body?.startDate).toBe("2026-09-01");
+      expect(body?.dueDate).toBe("2026-09-30");
+      expect(body?.estimatedTime).toBe("PT4H");
+      expect(body?.remainingTime).toBe("PT1H30M");
+      expect(body?.percentageDone).toBe(40);
+      expect(body?.storyPoints).toBe(5);
+    });
+
+    test("a zero estimate and zero percent are legal", async () => {
+      const { body } = await patchWith(["--estimate", "0", "--done", "0"]);
+      expect(body?.estimatedTime).toBe("PT0S");
+      expect(body?.percentageDone).toBe(0);
+    });
+
+    test('"" clears each scalar with null', async () => {
+      const { body, result } = await patchWith([
+        "--start", "", "--due", "", "--estimate", "", "--remaining", "",
+        "--done", "", "--story-points", "",
+      ]);
+      expect(result.exitCode).toBe(0);
+      for (const key of [
+        "startDate", "dueDate", "estimatedTime", "remainingTime",
+        "percentageDone", "storyPoints",
+      ]) {
+        expect(body).toHaveProperty(key, null);
+      }
+    });
+
+    test.each([
+      [["--due", "2026-02-30"], "--due"],
+      [["--start", "tomorrow"], "--start"],
+      [["--estimate", "soon"], "--estimate"],
+      [["--remaining", "-1h"], "--remaining"],
+      [["--done", "101"], "--done"],
+      [["--done", "12.5"], "--done"],
+      [["--story-points", "-3"], "--story-points"],
+      [["--story-points", "2.5"], "--story-points"],
+    ])("%j is a usage error before any request", async (args, flag) => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      const { patchCalls } = installUpdateApi({ gets: [] });
+      const result = await runWp(configDir, cacheDir, ["update", "675", ...args]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(flag);
+      expect(patchCalls()).toBe(0);
+    });
+
+    test("a server rejection surfaces the server message", async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata());
+      installUpdateApi({
+        gets: [wpRecord(1, "open")],
+        patchReplies: [{
+          status: 422,
+          body: {
+            _type: "Error",
+            errorIdentifier: "urn:openproject-org:api:v3:errors:PropertyConstraintViolation",
+            message: "% Complete can't be set when Progress calculation is status-based.",
+          },
+        }],
+      });
+      const result = await runWp(configDir, cacheDir, ["update", "675", "--done", "50"]);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("status-based");
+    });
+  });
+
+});

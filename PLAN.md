@@ -230,11 +230,12 @@ Mã thoát:
 | 0 | Thành công |
 | 1 | Dùng sai: thiếu tham số, resolve thất bại, xác nhận bị từ chối |
 | 2 | Lỗi API 4xx/5xx ngoài các nhóm dưới |
-| 3 | Xác thực hoặc thiếu quyền (401, 403) |
+| 3 | Xác thực thất bại (401) |
 | 4 | Không tìm thấy (404) |
 | 5 | Xung đột (409, lockVersion) |
 | 6 | Lỗi mạng, quá thời gian, hoặc trạng thái không xác định sau lệnh ghi |
 | 7 | Phiên bản instance không hỗ trợ (mở rộng hợp đồng từ issue #6, trước khi có consumer; 4 đã dành cho not found) |
+| 8 | Thiếu quyền (403): thông tin đăng nhập đúng nhưng tài khoản thiếu quyền, đăng nhập lại không giúp được |
 
 Lỗi in ra stderr, theo chế độ output, nhưng chế độ text vẫn nhét code máy đọc được:
 

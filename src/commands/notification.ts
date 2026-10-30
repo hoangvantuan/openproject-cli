@@ -306,7 +306,8 @@ Successful IDs are not rolled back. Inspect per-ID results, not just stderr.
             results.push({ id, readIAN: target, outcome: "changed" });
           } catch (cause) {
             let error = cause instanceof OpCliError ? cause : new OpCliError("INTERNAL_ERROR");
-            const unknown = writing && error.code !== "AUTH_FAILED";
+            const unknown = writing && error.code !== "AUTH_FAILED"
+              && error.code !== "PERMISSION_DENIED";
             if (unknown) {
               error = new OpCliError(error.code,
                 `The write result for notification ${id} is unknown.`,
