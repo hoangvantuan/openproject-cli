@@ -178,7 +178,12 @@ cleans up known created IDs even on failure. Existing-project mode skips
 project creation, project description writes, and favourites. A timed-out
 creation can leave an unknown ID: inspect the test project before retrying;
 cleanup never guesses records by name. It fails loudly at the first
-broken step. There are no automated integration tests by design; this
+broken step. On the disposable work package it also sets, clears (`""`),
+and reads back with `wp get --json` the accountable, dates, estimate and
+remaining work, percent complete, story points, version and observed-in,
+sprint and bucket (including the clear-then-set move), and edits a comment;
+optional steps print a `skip:` line when the project or schema lacks the
+field. There are no automated integration tests by design; this
 script is the regression net for real write paths before every publish.
 
 Releases after the first can ship from CI: once the package exists and its
