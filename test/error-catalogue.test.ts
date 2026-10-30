@@ -41,6 +41,9 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
     .intercept({ path: "/api/v3/users/me", method: "GET" })
     .replyWithError(new Error("connect ECONNREFUSED"));
   pool
+    .intercept({ path: "/api/v3/users/me", method: "GET" })
+    .reply(403, { _type: "Error", message: "You are not authorized." });
+  pool
     .intercept({ path: "/api/v3/", method: "GET" })
     .reply(200, { _type: "Root", apiVersion: "2" });
   pool
@@ -78,6 +81,7 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
       await run(["auth", "status"], env, {}),
       await run(["auth", "status"], env, {}),
       await run(["auth", "status"], env, {}),
+      await run(["auth", "status"], env, {}),
       await run(["doctor"], env, {}),
     ];
     const closedCatalogue: Record<string, true> = {
@@ -86,6 +90,7 @@ test("every surfaced error belongs to the closed error catalogue", async () => {
       API_ERROR: true,
       INTERNAL_ERROR: true,
       AUTH_FAILED: true,
+      PERMISSION_DENIED: true,
       UNSUPPORTED_VERSION: true,
       NETWORK_ERROR: true,
     };

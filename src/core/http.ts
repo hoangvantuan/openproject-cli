@@ -1,4 +1,4 @@
-import { OpCliError } from "./errors.js";
+import { explanationOf, OpCliError } from "./errors.js";
 import type { RunEnvironment } from "../run.js";
 
 export interface AuthenticatedUser {
@@ -112,10 +112,30 @@ async function request(
     response = await attempt(instanceUrl, apiKey, path, method, body);
   }
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw new OpCliError("AUTH_FAILED");
   }
+  if (response.status === 403) {
+    throw permissionDenied(path, await bodyOf(response));
+  }
   return response;
+}
+
+/**
+ * A 403 names what was refused: the credentials work, the account lacks
+ * a permission on this path. The query string is left out; it repeats
+ * filters the caller already knows and buries the path.
+ */
+function permissionDenied(path: string, body: unknown): OpCliError {
+  const bare = path.split("?")[0] ?? path;
+  const explanation = explanationOf(body);
+  return new OpCliError(
+    "PERMISSION_DENIED",
+    `OpenProject denied access to ${bare}`
+      + (explanation === undefined ? "." : `: ${explanation}`),
+    undefined,
+    { status: 403, path: bare },
+  );
 }
 
 async function send(
@@ -141,8 +161,9 @@ async function send(
 /**
  * A write response left unmapped so the proof-carrying retry of ADR-0002
  * can inspect the status and body before the catalogue mapping happens.
- * The caller owns that mapping; only network failures (including timeouts)
- * and authentication errors throw here, because no refresh can repair them.
+ * The caller owns that mapping; only network failures (including timeouts),
+ * authentication errors, and permission refusals throw here, because no
+ * refresh can repair them.
  */
 export interface RawWriteResponse {
   readonly status: number;

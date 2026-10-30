@@ -29,6 +29,13 @@ export const ERROR_CATALOGUE = {
     message: "Authentication failed.",
     hint: "run op-cli auth login.",
   },
+  // A 403: the credentials are fine, the account lacks a permission, so
+  // logging in again cannot help.
+  PERMISSION_DENIED: {
+    exitCode: 8,
+    message: "Permission denied.",
+    hint: "ask an administrator for the missing permission, or use an account that has it.",
+  },
   UNSUPPORTED_VERSION: {
     exitCode: 7,
     message: "The instance version is not supported.",
@@ -70,7 +77,7 @@ export class OpCliError extends Error {
 }
 
 /** OpenProject's own explanation of a refusal, when the body carries one. */
-function explanationOf(body: unknown): string | undefined {
+export function explanationOf(body: unknown): string | undefined {
   const message = typeof body === "object" && body !== null
     ? (body as Record<string, unknown>).message
     : undefined;

@@ -160,7 +160,7 @@ op-cli notification unread <id> --json
 ## Error contract
 
 Read `[CODE]` on stderr (or `code` in JSON); do not match English prose.
-Codes are a closed set with stable exit codes, 0 through 7.
+Codes are a closed set with stable exit codes, 0 through 8.
 
 | Code | Exit | Recovery action |
 |---|---|---|
@@ -168,8 +168,9 @@ Codes are a closed set with stable exit codes, 0 through 7.
 | PROFILE_NOT_FOUND | 1 | run `op-cli auth login`; env vars alone also work |
 | API_ERROR | 2 | read the message: a rejected write needs different values, a failed request may be worth retrying |
 | INTERNAL_ERROR | 2 | on reads, retry once; after writes, inspect outcomes and verify state first; report persistent failures |
-| AUTH_FAILED | 3 | credentials or permissions changed; run `op-cli auth login` |
+| AUTH_FAILED | 3 | the API key was rejected; run `op-cli auth login` |
 | NOT_FOUND | 4 | check the id; run `op-cli meta refresh` if names changed recently |
 | CONFLICT | 5 | someone edited the same work package; re-read, merge, retry |
 | NETWORK_ERROR | 6 | check URL and network; after a write, state is unknown, verify first |
 | UNSUPPORTED_VERSION | 7 | instance needs OpenProject v13+ (API v3); upgrade or report |
+| PERMISSION_DENIED | 8 | the account lacks a permission; logging in again will not help, ask an admin or skip that operation |

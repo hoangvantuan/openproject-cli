@@ -1874,7 +1874,9 @@ async function principalName(
   } catch (error) {
     if (
       error instanceof OpCliError
-      && (error.code === "AUTH_FAILED" || error.code === "NOT_FOUND")
+      && (error.code === "AUTH_FAILED"
+        || error.code === "PERMISSION_DENIED"
+        || error.code === "NOT_FOUND")
     ) {
       return null;
     }

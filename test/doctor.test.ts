@@ -304,7 +304,7 @@ describe("op-cli doctor", () => {
     }
   });
 
-  test("a permissions failure maps to the auth exit code", async () => {
+  test("a permissions failure maps to the permission exit code", async () => {
     const room = await makeRoom(true);
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
@@ -312,8 +312,8 @@ describe("op-cli doctor", () => {
     stubInstance(mockAgent, { projects: { status: 403, body: { _type: "Error" } } });
     try {
       const result = await run(["doctor"], room.env, {});
-      expect(result.exitCode).toBe(3);
-      expect(result.stderr).toMatch(/^\[AUTH_FAILED\]/);
+      expect(result.exitCode).toBe(8);
+      expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
       expect(result.stdout).toContain("permissions");
       expect(result.stdout).toContain("fail");
     } finally {

@@ -52,7 +52,7 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
 ## Things worth knowing
 
 - **Errors are a closed set.** Every failure prints a stable code on stderr,
-  such as `[CONFLICT]` or `[PROFILE_NOT_FOUND]`, with exit codes 0 through 7.
+  such as `[CONFLICT]` or `[PROFILE_NOT_FOUND]`, with exit codes 0 through 8.
   Run `op-cli doctor` when something does not work.
 - **A project in context narrows listings.** `--project`, or a profile's
   default project, scopes `wp list`, `wp count`, `time list`, and

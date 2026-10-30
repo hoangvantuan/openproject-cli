@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { expect, test } from "vitest";
 
+import { ERROR_CATALOGUE } from "../src/core/errors.js";
 import { run } from "../src/run.js";
 
 const SKILL_PATH = join("skills", "op-cli", "SKILL.md");
@@ -174,4 +175,21 @@ test("the checker catches a fabricated command and flag", async () => {
   expect(details).toContain("unexpected argument lst for wp");
   expect(details).toContain("unknown command: bogus");
   expect(details).toContain("unknown flag --nonexistent for wp list");
+});
+
+test("the SKILL.md error table matches the error catalogue", async () => {
+  const content = await readFile(SKILL_PATH, "utf8");
+  const rows = new Map<string, number>();
+  for (const line of content.split("\n")) {
+    const match = /^\| ([A-Z_]+) \| (\d+) \|/.exec(line);
+    if (match !== null) {
+      rows.set(match[1] as string, Number(match[2]));
+    }
+  }
+  const catalogue = new Map(
+    Object.entries(ERROR_CATALOGUE).map(([code, entry]) => [code, entry.exitCode]),
+  );
+  expect(rows).toEqual(catalogue);
+  const highest = Math.max(...catalogue.values());
+  expect(content).toContain(`exit codes, 0 through ${String(highest)}.`);
 });
