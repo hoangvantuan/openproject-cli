@@ -39,6 +39,7 @@ import {
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
+import { sprintStatusKey, type HalElement } from "../context/metadata.js";
 import { PROJECTS_COLLECTION, resolveProjectRef } from "../context/projectref.js";
 
 export interface ProjectRuntime {
@@ -711,6 +712,11 @@ export function registerProjectCommands(
     description: string,
     endpoint: (projectId: number) => string,
     columns: ReadonlyArray<CollectionColumn>,
+    /**
+     * Table-only cell overrides for one element. JSON keeps the flattened
+     * record untouched (ADR-0003); only the rendered table differs.
+     */
+    tableCells?: (element: unknown) => Record<string, unknown>,
   ): Command =>
     project
       .command(name)
@@ -728,10 +734,13 @@ export function registerProjectCommands(
           DEFAULT_PAGE_SIZE,
         );
         const rows: Array<Record<string, unknown>> = [];
+        const shown: Array<Record<string, unknown>> = [];
         for await (const element of halElements<unknown>(getPage, startPath)) {
-          rows.push(flattenHalRecord(element));
+          const row = flattenHalRecord(element);
+          rows.push(row);
+          shown.push({ ...row, ...tableCells?.(element) });
         }
-        emitRows(vocabularyRuntime, columns, rows, options);
+        emitRows(vocabularyRuntime, columns, options.json === true ? rows : shown, options);
       });
 
   registerVocabulary(
@@ -751,6 +760,12 @@ export function registerProjectCommands(
     "List the sprints a work package in this project may use",
     (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/sprints`,
     SPRINT_COLUMNS,
+    // The link's title is localized; the table shows the urn tail, like
+    // `meta sprints`.
+    (element) => {
+      const status = sprintStatusKey(element as HalElement);
+      return status === "" ? {} : { status };
+    },
   );
   registerVocabulary(
     "buckets",

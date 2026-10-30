@@ -226,7 +226,7 @@ export interface MetadataChange {
   readonly detail: string;
 }
 
-interface HalElement {
+export interface HalElement {
   readonly [key: string]: unknown;
 }
 
@@ -363,15 +363,25 @@ function toStoredCategory(element: HalElement): StoredCategory {
   };
 }
 
-function toStoredSprint(element: HalElement): StoredSprint {
+/**
+ * The stable status of a sprint resource: the tail of its status urn
+ * ("in_planning"), never the title, which the instance localizes. Shared
+ * by the stored vocabulary and the `project sprints` table so both show
+ * the same value. An element without a status link yields "".
+ */
+export function sprintStatusKey(element: HalElement): string {
   const links = (element._links ?? {}) as HalElement;
   const status = asString((links.status as HalElement | undefined)?.href);
+  return status.slice(status.lastIndexOf(":") + 1);
+}
+
+function toStoredSprint(element: HalElement): StoredSprint {
   return {
     id: Number(element.id),
     name: asString(element.name),
     start_date: typeof element.startDate === "string" ? element.startDate : null,
     finish_date: typeof element.finishDate === "string" ? element.finishDate : null,
-    status: status.slice(status.lastIndexOf(":") + 1),
+    status: sprintStatusKey(element),
   };
 }
 

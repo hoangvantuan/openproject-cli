@@ -706,7 +706,16 @@ describe("project vocabulary listings", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toMatch(/ID\s+NAME\s+START\s+FINISH\s+STATUS/);
-    expect(result.stdout).toMatch(/58\s+Sprint 14\s+2026-10-26\s+2026-10-30\s+In planning/);
+    // The table shows the stable urn tail, as `meta sprints` does; the
+    // localized title would read differently per instance language.
+    expect(result.stdout).toMatch(/58\s+Sprint 14\s+2026-10-26\s+2026-10-30\s+in_planning/);
+    expect(result.stdout).not.toContain("In planning");
+
+    // JSON keeps the API's flattening of the link (ADR-0003).
+    const json = await runProject(configDir, cacheDir, ["sprints", "demo-site", "--json"]);
+    expect(json.exitCode).toBe(0);
+    const parsed = JSON.parse(json.stdout.trim()) as Array<Record<string, unknown>>;
+    expect(parsed[0]?.status).toEqual({ id: null, name: "In planning" });
   });
 
   test("buckets lists the backlog buckets as flat records (#46)", async () => {
