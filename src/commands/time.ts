@@ -263,7 +263,7 @@ function membersSource(
         throw new OpCliError(
           "USAGE_ERROR",
           "--user needs a project to look member names up in.",
-          "pass --project <name-or-id> or set a default project on the profile.",
+          "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
         );
       }
       const select = (

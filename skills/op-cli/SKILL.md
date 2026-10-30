@@ -23,6 +23,10 @@ numeric; use each command's help to distinguish them. Run any command below with
   its refusal and its confirmation. There is no `user delete`; report
   that gap instead of improvising.
 - Conventions that are easy to guess wrong:
+  - OpenProject 17 calls projects workspaces. `--workspace` is an alias of
+    `--project` on every command that takes it (both may name the same project,
+    different projects are a USAGE_ERROR), and `op-cli workspace` is an alias
+    of `op-cli project`. Output still says project.
   - A project in context narrows what you read: `--project`, or the
     profile default, scopes `wp list`, `wp count`, `time list`, and
     `time report` to that project and its subprojects. Without one, those
@@ -189,6 +193,8 @@ op-cli time list --wp <id> --from today
 op-cli time report --from 7d --to yesterday --user me
 # projects: search, inspect, create with explicit identifier, copy
 op-cli project list --search web
+# workspace is the same group and flag under another name
+op-cli workspace list --search web
 op-cli project create Web --identifier web
 op-cli project copy <reference> Copy --identifier web-copy
 # add or remove project members; without membership, assignment is refused

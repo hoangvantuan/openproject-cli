@@ -60,11 +60,12 @@ import {
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
-import { resolveProjectRef } from "../context/projectref.js";
+import { resolveProjectRef, withMovedRetry } from "../context/projectref.js";
 import {
   loadProjectVocabulary,
   loadProjectVocabularyById,
   loadStoredMetadata,
+  readStoredMetadata,
   refreshProjectVocabulary,
   refreshStoredMetadata,
   requireVocabulary,
@@ -413,7 +414,7 @@ function projectSource<V>(
         throw new OpCliError(
           "USAGE_ERROR",
           `--${flag} needs a project to look names up in.`,
-          "pass --project <name-or-id> or set a default project on the profile.",
+          "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
         );
       }
       return select(await (memo === undefined
@@ -943,7 +944,7 @@ async function runBulkCreate(
     throw new OpCliError(
       "USAGE_ERROR",
       "wp create needs a project to create the work package in.",
-      "pass --project <name-or-id> or set a default project on the profile.",
+      "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
     );
   }
 
@@ -1081,7 +1082,7 @@ async function resolveFieldDefinition(
     throw new OpCliError(
       "USAGE_ERROR",
       "--field needs a project to look field names up in.",
-      "pass --project <name-or-id> or set a default project on the profile.",
+      "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
     );
   }
   const metadata = memo === undefined
@@ -1948,22 +1949,70 @@ async function resolveListFlags(
 /**
  * `subprojectId` is only valid on the project's own collection: the global
  * endpoint answers 500, so --no-include-subprojects reads from there.
+ * `ownCollection` is that collection's path, see ownCollectionOf.
  */
 function workPackagesPath(
   filters: ReadonlyArray<WpFilter>,
   sort: ReadonlyArray<[string, string]> = [],
-  ownProject?: string,
+  ownCollection?: string,
 ): string {
   const sortBy = sort.length > 0 ? `&sortBy=${sortByQuery(sort)}` : "";
-  const collection = ownProject === undefined
-    ? "/api/v3/work_packages"
-    : `/api/v3/projects/${encodeURIComponent(ownProject)}/work_packages`;
+  const collection = ownCollection ?? "/api/v3/work_packages";
   return `${collection}?filters=${filtersQuery(filters)}${sortBy}`;
 }
 
-/** The project whose own collection serves the listing, when subprojects are excluded. */
-function ownProjectOf(flags: WpListFlags): string | undefined {
-  return flags.includeSubprojects === false ? flags.project : undefined;
+/** The project's own work package collection: where to read, and where to fall back. */
+interface OwnCollection {
+  readonly path: string;
+  /** Set when `path` came from a stored link, which may have gone stale. */
+  readonly fallback?: string;
+}
+
+/**
+ * The project's own work package collection, when subprojects are
+ * excluded: the stored `workPackages` link of that project (#57), else the
+ * projects path. Reads the local store only; no request is made to find a
+ * link. A stored link can go stale, so it carries the projects path as the
+ * fallback for readOwnPages.
+ */
+async function ownCollectionOf(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  flags: WpListFlags,
+): Promise<OwnCollection | undefined> {
+  if (flags.includeSubprojects !== false || flags.project === undefined) {
+    return undefined;
+  }
+  const stored = await readStoredMetadata(runtime.env, profile);
+  const id = Number(flags.project);
+  const linked = stored?.projectScoped?.[flags.project]?.links?.work_packages
+    ?? (stored?.project?.id === id ? stored.project.links?.work_packages : undefined);
+  const projectsPath = `/api/v3/projects/${encodeURIComponent(flags.project)}/work_packages`;
+  // The collection takes the filters as its query, so a link that already
+  // carries one cannot be extended.
+  return linked !== undefined && !linked.includes("?")
+    ? { path: linked, fallback: projectsPath }
+    : { path: projectsPath };
+}
+
+/**
+ * A page reader for a listing that starts on a stored link: when that
+ * first page answers NOT_FOUND the link is stale, and the same listing is
+ * read once from the projects path instead. Later pages follow whichever
+ * collection answered.
+ */
+function readOwnPages(
+  getPage: (path: string) => Promise<unknown>,
+  startPath: string,
+  fallbackStartPath: string | undefined,
+): (path: string) => Promise<unknown> {
+  if (fallbackStartPath === undefined) {
+    return getPage;
+  }
+  return (path) =>
+    path === startPath
+      ? withMovedRetry(() => getPage(path), () => getPage(fallbackStartPath))
+      : getPage(path);
 }
 
 function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): string {
@@ -2768,14 +2817,20 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       apiGet(profile.instanceUrl, profile.apiKey, path);
     // --all sizes pages by the instance's advertised maximum; --limit
     // only ever sizes the single non-all page.
-    const startPath = withPageSize(
-      workPackagesPath(filters, sort, ownProjectOf(resolved)),
-      options.all === true ? await allPageSize(getPage) : limit,
+    const own = await ownCollectionOf(runtime, profile, resolved);
+    const pageSize = options.all === true ? await allPageSize(getPage) : limit;
+    const startPath = withPageSize(workPackagesPath(filters, sort, own?.path), pageSize);
+    const readPage = readOwnPages(
+      getPage,
+      startPath,
+      own?.fallback === undefined
+        ? undefined
+        : withPageSize(workPackagesPath(filters, sort, own.fallback), pageSize),
     );
 
     if (options.all === true) {
       const rows: Array<Record<string, unknown>> = [];
-      for await (const element of halElements<unknown>(getPage, startPath)) {
+      for await (const element of halElements<unknown>(readPage, startPath)) {
         const record = flattenHalRecord(element);
         if (options.json === true) {
           runtime.write(`${JSON.stringify(record)}\n`);
@@ -2789,7 +2844,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       return;
     }
 
-    const page = (await getPage(startPath)) as WorkPackagePage;
+    const page = (await readPage(startPath)) as WorkPackagePage;
     const records = (page._embedded?.elements ?? []).map((element) =>
       flattenHalRecord(element),
     );
@@ -2827,11 +2882,15 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       });
       const resolved = await resolveListFlags(runtime, profile, options);
       const filters = buildWpFilters(resolved, new Date());
-      const body = (await apiGet(
-        profile.instanceUrl,
-        profile.apiKey,
-        `${workPackagesPath(filters, [], ownProjectOf(resolved))}&pageSize=1`,
-      )) as WorkPackagePage;
+      const own = await ownCollectionOf(runtime, profile, resolved);
+      const countPath = `${workPackagesPath(filters, [], own?.path)}&pageSize=1`;
+      const body = (await readOwnPages(
+        (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
+        countPath,
+        own?.fallback === undefined
+          ? undefined
+          : `${workPackagesPath(filters, [], own.fallback)}&pageSize=1`,
+      )(countPath)) as WorkPackagePage;
       if (typeof body.total !== "number") {
         throw new OpCliError(
           "API_ERROR",
@@ -2966,7 +3025,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         throw new OpCliError(
           "USAGE_ERROR",
           "wp create needs a project to create the work package in.",
-          "pass --project <name-or-id> or set a default project on the profile.",
+          "pass --project <name-or-id> (or --workspace) or set a default project on the profile.",
         );
       }
       const { payload, refs } = await prepareCreatePayload(

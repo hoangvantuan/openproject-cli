@@ -40,7 +40,13 @@ import {
   type ContextOverrides,
 } from "../context/profile.js";
 import { sprintStatusKey, type HalElement } from "../context/metadata.js";
-import { PROJECTS_COLLECTION, resolveProjectRef } from "../context/projectref.js";
+import {
+  PROJECTS_COLLECTION,
+  resolveProjectRef,
+  type ProjectHit,
+  withMovedRetry,
+  WORKSPACES_COLLECTION,
+} from "../context/projectref.js";
 
 export interface ProjectRuntime {
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
@@ -710,13 +716,21 @@ export function registerProjectCommands(
   const registerVocabulary = (
     name: string,
     description: string,
-    endpoint: (projectId: number) => string,
+    endpoint: (hit: ProjectHit) => string,
     columns: ReadonlyArray<CollectionColumn>,
-    /**
-     * Table-only cell overrides for one element. JSON keeps the flattened
-     * record untouched (ADR-0003); only the rendered table differs.
-     */
-    tableCells?: (element: unknown) => Record<string, unknown>,
+    extras: {
+      /**
+       * Table-only cell overrides for one element. JSON keeps the flattened
+       * record untouched (ADR-0003); only the rendered table differs.
+       */
+      readonly tableCells?: (element: unknown) => Record<string, unknown>;
+      /**
+       * Where the collection may have moved to: tried once when the
+       * endpoint answers 404 (#57). Collections the project resource links
+       * to need none.
+       */
+      readonly moved?: (projectId: number) => string;
+    } = {},
   ): Command =>
     project
       .command(name)
@@ -727,56 +741,77 @@ export function registerProjectCommands(
       .option("--profile <name>", "use this profile for this command only")
       .option("--project <name-or-id>", "override the profile default project")
       .action(async (reference: string, options: ScopeOptions) => {
+        const { tableCells, moved } = extras;
         const { getPage } = await connect(runtime, options);
         const hit = await resolveProjectRef(getPage, reference);
-        const startPath = withPageSize(
-          endpoint(hit.id),
-          DEFAULT_PAGE_SIZE,
+        const collect = async (path: string): Promise<{
+          rows: Array<Record<string, unknown>>;
+          shown: Array<Record<string, unknown>>;
+        }> => {
+          const rows: Array<Record<string, unknown>> = [];
+          const shown: Array<Record<string, unknown>> = [];
+          for await (const element of halElements<unknown>(
+            getPage,
+            withPageSize(path, DEFAULT_PAGE_SIZE),
+          )) {
+            const row = flattenHalRecord(element);
+            rows.push(row);
+            shown.push({ ...row, ...tableCells?.(element) });
+          }
+          return { rows, shown };
+        };
+        const collected = moved === undefined
+          ? await collect(endpoint(hit))
+          : await withMovedRetry(
+            () => collect(endpoint(hit)),
+            () => collect(moved(hit.id)),
+          );
+        emitRows(
+          vocabularyRuntime,
+          columns,
+          options.json === true ? collected.rows : collected.shown,
+          options,
         );
-        const rows: Array<Record<string, unknown>> = [];
-        const shown: Array<Record<string, unknown>> = [];
-        for await (const element of halElements<unknown>(getPage, startPath)) {
-          const row = flattenHalRecord(element);
-          rows.push(row);
-          shown.push({ ...row, ...tableCells?.(element) });
-        }
-        emitRows(vocabularyRuntime, columns, options.json === true ? rows : shown, options);
       });
 
   registerVocabulary(
     "versions",
     "List the versions a work package in this project may use",
-    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/versions`,
+    (hit) => hit.links?.versions ?? `${PROJECTS_COLLECTION}/${String(hit.id)}/versions`,
     VERSION_COLUMNS,
   );
   registerVocabulary(
     "categories",
     "List the categories a work package in this project may use",
-    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/categories`,
+    (hit) => hit.links?.categories ?? `${PROJECTS_COLLECTION}/${String(hit.id)}/categories`,
     CATEGORY_COLUMNS,
   );
   registerVocabulary(
     "sprints",
     "List the sprints a work package in this project may use",
-    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/sprints`,
+    (hit) => `${PROJECTS_COLLECTION}/${String(hit.id)}/sprints`,
     SPRINT_COLUMNS,
-    // The link's title is localized; the table shows the urn tail, like
-    // `meta sprints`.
-    (element) => {
-      const status = sprintStatusKey(element as HalElement);
-      return status === "" ? {} : { status };
+    {
+      // The link's title is localized; the table shows the urn tail, like
+      // `meta sprints`.
+      tableCells: (element) => {
+        const status = sprintStatusKey(element as HalElement);
+        return status === "" ? {} : { status };
+      },
+      moved: (projectId) => `${WORKSPACES_COLLECTION}/${String(projectId)}/sprints`,
     },
   );
   registerVocabulary(
     "buckets",
     "List the backlog buckets a work package in this project may use",
-    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/backlog_buckets`,
+    (hit) => `${PROJECTS_COLLECTION}/${String(hit.id)}/backlog_buckets`,
     BUCKET_COLUMNS,
+    { moved: (projectId) => `${WORKSPACES_COLLECTION}/${String(projectId)}/backlog_buckets` },
   );
   registerVocabulary(
     "types",
     "List the work package types usable in this project",
-    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/types`,
+    (hit) => hit.links?.types ?? `${PROJECTS_COLLECTION}/${String(hit.id)}/types`,
     TYPE_COLUMNS,
   );
 

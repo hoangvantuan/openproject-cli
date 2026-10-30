@@ -3,11 +3,66 @@ import { OpCliError } from "../core/errors.js";
 import {
   DEFAULT_PAGE_SIZE,
   halElements,
+  halNextPath,
   withPageSize,
 } from "../core/paginate.js";
 import { isIdForm, rankByCloseness } from "./resolve.js";
 
 type GetPage = (path: string) => Promise<unknown>;
+
+/**
+ * The collection paths a project resource links to (#57). Instances that
+ * renamed projects to workspaces serve them under /api/v3/workspaces/, so
+ * the linked path is followed instead of a hardcoded one. A key is absent
+ * when the resource did not carry that link; callers then build the path.
+ */
+export interface ProjectLinks {
+  readonly versions?: string;
+  readonly categories?: string;
+  readonly types?: string;
+  readonly work_packages?: string;
+  readonly create_work_package?: string;
+  readonly memberships?: string;
+}
+
+/** Link name on the project resource to the key kept for it. */
+const PROJECT_LINK_KEYS: ReadonlyArray<readonly [string, keyof ProjectLinks]> = [
+  ["versions", "versions"],
+  ["categories", "categories"],
+  ["types", "types"],
+  ["workPackages", "work_packages"],
+  ["createWorkPackage", "create_work_package"],
+  ["memberships", "memberships"],
+];
+
+const API_ROOT = "/api/v3/";
+
+/**
+ * The path of a link relative to the instance URL. A link on an instance
+ * hosted under a subpath (https://host/openproject) carries that subpath,
+ * which the client prepends again from the instance URL, so everything
+ * before the API root is dropped.
+ */
+function instancePathOf(href: string): string | undefined {
+  const path = halNextPath(href);
+  const root = path?.indexOf(API_ROOT) ?? -1;
+  return path === undefined || root <= 0 ? path : path.slice(root);
+}
+
+/** The collection paths a project resource links to; undefined when it links none. */
+export function projectLinksOf(project: unknown): ProjectLinks | undefined {
+  const rawLinks = ((project as { readonly _links?: unknown })._links ?? {}) as
+    Record<string, { readonly href?: unknown } | undefined>;
+  const found: { -readonly [K in keyof ProjectLinks]?: string } = {};
+  for (const [name, key] of PROJECT_LINK_KEYS) {
+    const href = rawLinks[name]?.href;
+    const path = typeof href === "string" ? instancePathOf(href) : undefined;
+    if (path !== undefined) {
+      found[key] = path;
+    }
+  }
+  return Object.keys(found).length === 0 ? undefined : found;
+}
 
 /**
  * One project a reference can resolve to. Every resolution goes through
@@ -17,6 +72,13 @@ export interface ProjectHit {
   readonly id: number;
   readonly identifier: string;
   readonly name: string;
+  /** The collection paths the resource linked, when it linked any. */
+  readonly links?: ProjectLinks;
+}
+
+function linksField(element: unknown): { links?: ProjectLinks } {
+  const links = projectLinksOf(element);
+  return links === undefined ? {} : { links };
 }
 
 export function hitOf(element: unknown): ProjectHit | undefined {
@@ -28,11 +90,41 @@ export function hitOf(element: unknown): ProjectHit | undefined {
   return typeof candidate.id === "number"
     && typeof candidate.identifier === "string"
     && typeof candidate.name === "string"
-    ? { id: candidate.id, identifier: candidate.identifier, name: candidate.name }
+    ? {
+      id: candidate.id,
+      identifier: candidate.identifier,
+      name: candidate.name,
+      ...linksField(element),
+    }
     : undefined;
 }
 
 export const PROJECTS_COLLECTION = "/api/v3/projects";
+/** Where instances that renamed projects to workspaces serve them (#57). */
+export const WORKSPACES_COLLECTION = "/api/v3/workspaces";
+
+/**
+ * Try `first`; when it answers NOT_FOUND the route may have moved, so
+ * `moved` is tried once (#57). Any other failure stands. When both routes
+ * are missing the first answer is the one reported.
+ */
+export async function withMovedRetry<T>(
+  first: () => Promise<T>,
+  moved: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await first();
+  } catch (error) {
+    if (!(error instanceof OpCliError && error.code === "NOT_FOUND")) {
+      throw error;
+    }
+    try {
+      return await moved();
+    } catch (retry) {
+      throw retry instanceof OpCliError && retry.code === "NOT_FOUND" ? error : retry;
+    }
+  }
+}
 
 /**
  * Every visible project, page by page in server order. Resolution walks

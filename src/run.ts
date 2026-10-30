@@ -17,6 +17,7 @@ import { registerMetaCommands } from "./commands/meta.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerWpCommands } from "./commands/wp.js";
 import { registerProjectCommands } from "./commands/project.js";
+import { installWorkspaceAlias } from "./core/workspace-alias.js";
 import { registerTimeCommands } from "./commands/time.js";
 import { registerNotificationCommands } from "./commands/notification.js";
 import { buildVersionOutput } from "./commands/version.js";
@@ -260,21 +261,26 @@ export async function run(
     ...(io.readStdin === undefined ? {} : { readStdin: io.readStdin }),
   });
 
-  const project = program
-    .command("project")
-    .description("Inspect and manage projects");
-  registerProjectCommands(project, {
-    resolve: (overrides) => resolveProfile(env, overrides),
-    write: (text) => {
-      stdout += text;
-    },
-    writeErr: (text) => {
-      stderr += text;
-    },
-    setJsonMode: (on) => {
-      jsonOutput = on;
-    },
-  });
+  // "workspace" is the same group under OpenProject 17's name for a
+  // project (#57): one registration per name, so the two cannot drift.
+  for (const name of ["project", "workspace"]) {
+    const group = program.command(name);
+    registerProjectCommands(group, {
+      resolve: (overrides) => resolveProfile(env, overrides),
+      write: (text) => {
+        stdout += text;
+      },
+      writeErr: (text) => {
+        stderr += text;
+      },
+      setJsonMode: (on) => {
+        jsonOutput = on;
+      },
+    });
+    if (name === "workspace") {
+      group.description("Alias of project: inspect and manage projects");
+    }
+  }
 
   const time = program
     .command("time")
@@ -346,6 +352,20 @@ export async function run(
   program.addHelpText(
     "after",
     "\nRun op-cli --version for version information.",
+  );
+
+  installWorkspaceAlias(
+    program,
+    (on) => {
+      jsonOutput = on;
+    },
+    // Both spellings go through the same resolution as --project itself;
+    // numeric ids pass through without traffic.
+    async (profile, first, second) => {
+      const firstId = (await resolveProfile(env, { profile, project: parseProjectOverride(first) })).project;
+      const secondId = (await resolveProfile(env, { profile, project: parseProjectOverride(second) })).project;
+      return firstId !== undefined && firstId === secondId;
+    },
   );
 
   // Commands built declaratively start as standalone Command objects, so

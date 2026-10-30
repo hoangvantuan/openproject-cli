@@ -65,6 +65,11 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
   default project, scopes `wp list`, `wp count`, `time list`, and
   `time report` to that project and its subprojects. Without one, those
   four commands report instance-wide.
+- **Workspace is another word for project.** OpenProject 17 renamed projects
+  to workspaces in its API. `--workspace` is accepted wherever `--project` is
+  (both may name the same project; different projects are refused), and
+  `op-cli workspace <subcommand>` is `op-cli project <subcommand>`. Output
+  keeps saying project.
 - **Finding things needs no id.** `wp list --search <text>` matches
   subjects server-side, `--created-after` / `--updated-after` bound by
   date, `--due-before` / `--due-after` / `--overdue` bound by due date

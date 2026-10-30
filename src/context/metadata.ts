@@ -8,6 +8,12 @@ import { halElements } from "../core/paginate.js";
 import { OpCliError } from "../core/errors.js";
 
 import { ENV_PROFILE_NAME, type ActiveProfile } from "./profile.js";
+import {
+  projectLinksOf,
+  type ProjectLinks,
+  withMovedRetry,
+  WORKSPACES_COLLECTION,
+} from "./projectref.js";
 import type { RunEnvironment } from "../run.js";
 
 export interface StoredType {
@@ -33,6 +39,7 @@ export interface StoredProjectRef {
   readonly id: number;
   readonly identifier: string;
   readonly name: string;
+  readonly links?: ProjectLinks;
 }
 
 export interface StoredInstanceInfo {
@@ -177,6 +184,11 @@ export interface StoredVersionFields {
 export interface ProjectVocabulary {
   readonly project_id: number;
   readonly fetched_at: string;
+  /**
+   * Absent when the project resource carried none of the links, which is
+   * also how a vocabulary stored before they were captured reads.
+   */
+  readonly links?: ProjectLinks;
   readonly members: ReadonlyArray<StoredMember>;
   readonly versions: ReadonlyArray<StoredVersion>;
   readonly categories: ReadonlyArray<StoredCategory>;
@@ -495,13 +507,14 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
 async function fetchMembers(
   profile: ActiveProfile,
   projectId: number,
+  links: ProjectLinks | undefined,
 ): Promise<ReadonlyArray<StoredMember>> {
   const filters = encodeURIComponent(
     JSON.stringify([{ project: { operator: "=", values: [String(projectId)] } }]),
   );
   const members = await fetchVocabulary(
     profile,
-    `/api/v3/memberships?filters=${filters}`,
+    links?.memberships ?? `/api/v3/memberships?filters=${filters}`,
     toStoredMember,
   );
   return sortByName(members);
@@ -510,18 +523,44 @@ async function fetchMembers(
 /**
  * One name-sorted project collection: the shape every optional source
  * except activities shares, so a new source is a path and a converter.
+ * `linked` is the path the project resource gave for it, when it did.
  */
 async function fetchProjectCollection<T extends { readonly name: string }>(
   profile: ActiveProfile,
   projectId: number,
   collection: string,
   convert: (element: HalElement) => T,
+  linked?: string,
 ): Promise<ReadonlyArray<T>> {
   return sortByName(await fetchVocabulary(
     profile,
-    `/api/v3/projects/${String(projectId)}/${collection}`,
+    linked ?? `/api/v3/projects/${String(projectId)}/${collection}`,
     convert,
   ));
+}
+
+/**
+ * A collection the project resource has no link for (sprints, backlog
+ * buckets). The projects path is tried first; on a 404 the instance may
+ * have moved the route under /workspaces/, so that path is tried once
+ * before the source counts as unavailable (#57). Any other refusal stands.
+ */
+async function fetchUnlinkedCollection<T extends { readonly name: string }>(
+  profile: ActiveProfile,
+  projectId: number,
+  collection: string,
+  convert: (element: HalElement) => T,
+): Promise<ReadonlyArray<T>> {
+  return withMovedRetry(
+    () => fetchProjectCollection(profile, projectId, collection, convert),
+    () => fetchProjectCollection(
+      profile,
+      projectId,
+      collection,
+      convert,
+      `${WORKSPACES_COLLECTION}/${String(projectId)}/${collection}`,
+    ),
+  );
 }
 
 // The bare schema endpoint builds its values from TimeEntry.new, so its
@@ -565,12 +604,14 @@ async function fetchTypeSchema(
   profile: ActiveProfile,
   projectId: number,
   typeId: number,
+  links: ProjectLinks | undefined,
 ): Promise<HalElement> {
   try {
     const form = (await apiPost(
       profile.instanceUrl,
       profile.apiKey,
-      `/api/v3/projects/${String(projectId)}/work_packages/form`,
+      links?.create_work_package
+        ?? `/api/v3/projects/${String(projectId)}/work_packages/form`,
       { _links: { type: { href: `/api/v3/types/${String(typeId)}` } } },
     )) as HalElement;
     const embedded = (form._embedded ?? {}) as HalElement;
@@ -616,16 +657,17 @@ function versionFieldsOf(schema: HalElement): StoredVersionFields {
 async function fetchTypeSchemas(
   profile: ActiveProfile,
   projectId: number,
+  links: ProjectLinks | undefined,
 ): Promise<Pick<ProjectVocabulary, "custom_fields" | "version_fields">> {
   const typeIds = await fetchVocabulary(
     profile,
-    `/api/v3/projects/${String(projectId)}/types`,
+    links?.types ?? `/api/v3/projects/${String(projectId)}/types`,
     (element) => Number(element.id),
   );
   const byType: Record<string, ReadonlyArray<StoredCustomField>> = {};
   const versionFields: Record<string, StoredVersionFields> = {};
   for (const typeId of typeIds) {
-    const schema = await fetchTypeSchema(profile, projectId, typeId);
+    const schema = await fetchTypeSchema(profile, projectId, typeId, links);
     byType[String(typeId)] = sortByName(customFieldEntries(schema));
     versionFields[String(typeId)] = versionFieldsOf(schema);
   }
@@ -666,19 +708,28 @@ async function fetchInstanceInfo(profile: ActiveProfile): Promise<StoredInstance
   };
 }
 
-async function fetchProjectRef(
+async function fetchProjectResource(
   profile: ActiveProfile,
   projectId: number,
-): Promise<StoredProjectRef> {
-  const project = (await apiGet(
+): Promise<HalElement> {
+  return (await apiGet(
     profile.instanceUrl,
     profile.apiKey,
     `/api/v3/projects/${String(projectId)}`,
   )) as HalElement;
+}
+
+async function fetchProjectRef(
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<StoredProjectRef> {
+  const project = await fetchProjectResource(profile, projectId);
+  const links = projectLinksOf(project);
   return {
     id: Number(project.id),
     identifier: asString(project.identifier),
     name: asString(project.name),
+    ...(links === undefined ? {} : { links }),
   };
 }
 
@@ -731,7 +782,11 @@ export async function refreshStoredMetadata(
   const dropped: Array<MetadataChange> = [];
   for (const projectId of Object.keys(previousScoped)) {
     try {
-      projectScoped[projectId] = await fetchProjectVocabulary(profile, Number(projectId));
+      projectScoped[projectId] = await fetchProjectVocabulary(
+        profile,
+        Number(projectId),
+        next.project?.id === Number(projectId) ? next.project.links : undefined,
+      );
     } catch (error) {
       // A project deleted on the instance must not wedge the refresh for
       // good: drop its stored vocabulary, report it, and keep refreshing
@@ -796,35 +851,59 @@ async function fetchOptional<T>(
   }
 }
 
+/**
+ * The links of one project resource, read once with its vocabulary. They
+ * only steer the paths that follow, so a failed read means "no links" and
+ * the fixed paths run; a real refusal surfaces from those requests.
+ */
+async function fetchProjectLinks(
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<ProjectLinks | undefined> {
+  try {
+    return projectLinksOf(await fetchProjectResource(profile, projectId));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `knownLinks` are links the caller read from this very project resource a
+ * moment ago (a refresh has just fetched the default project), which spares
+ * a second GET of it.
+ */
 export async function fetchProjectVocabulary(
   profile: ActiveProfile,
   projectId: number,
+  knownLinks?: ProjectLinks,
 ): Promise<ProjectVocabulary> {
   const unavailable: Partial<Record<OptionalVocabularySource, UnavailableSource>> = {};
+  const links = knownLinks ?? await fetchProjectLinks(profile, projectId);
   // Members come first and stay required: a deleted project answers 404
   // there, which the refresh reads as "drop this project".
-  const members = await fetchMembers(profile, projectId);
+  const members = await fetchMembers(profile, projectId, links);
   const versions = await fetchOptional("versions", unavailable,
-    () => fetchProjectCollection(profile, projectId, "versions", toStoredVersion));
+    () => fetchProjectCollection(profile, projectId, "versions", toStoredVersion, links?.versions));
   const categories = await fetchOptional("categories", unavailable,
-    () => fetchProjectCollection(profile, projectId, "categories", toStoredCategory));
+    () => fetchProjectCollection(profile, projectId, "categories", toStoredCategory, links?.categories));
   const activities = await fetchOptional("activities", unavailable,
     () => fetchActivities(profile, projectId));
   // A project without the backlogs module answers 404 on both.
   const sprints = await fetchOptional("sprints", unavailable,
-    () => fetchProjectCollection(profile, projectId, "sprints", toStoredSprint));
+    () => fetchUnlinkedCollection(profile, projectId, "sprints", toStoredSprint));
   const buckets = await fetchOptional("buckets", unavailable,
-    () => fetchProjectCollection(profile, projectId, "backlog_buckets", toStoredBucket));
+    () => fetchUnlinkedCollection(profile, projectId, "backlog_buckets", toStoredBucket));
   return {
     project_id: projectId,
     fetched_at: new Date().toISOString(),
+    ...(links === undefined ? {} : { links }),
     members,
     versions,
     categories,
     activities,
     sprints,
     buckets,
-    ...(await fetchTypeSchemas(profile, projectId)),
+    ...(await fetchTypeSchemas(profile, projectId, links)),
     ...(Object.keys(unavailable).length > 0 ? { unavailable } : {}),
   };
 }
@@ -892,7 +971,7 @@ export async function loadProjectVocabulary(
     throw new OpCliError(
       "USAGE_ERROR",
       "the lookup needs a project to read its vocabulary from.",
-      "pass --project <id> or set a default project on the profile.",
+      "pass --project <id> (or --workspace) or set a default project on the profile.",
     );
   }
   const vocabulary = await loadProjectVocabularyById(env, profile, profile.project);
@@ -1048,7 +1127,10 @@ function diffProject(
   if (before === undefined || after === undefined) {
     return [];
   }
-  const diffs = fieldDiffs(before, after);
+  // The links are routing, not identity: a refresh that only moved them is
+  // not a change of the project.
+  const identity = ({ id, identifier, name }: StoredProjectRef) => ({ id, identifier, name });
+  const diffs = fieldDiffs(identity(before), identity(after));
   return diffs.length === 0
     ? []
     : [{ section: "project", kind: "changed", id: after.id, detail: diffs.join("; ") }];

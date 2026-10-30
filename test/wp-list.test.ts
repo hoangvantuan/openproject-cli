@@ -95,6 +95,8 @@ interface InstallOptions {
   readonly packages?: Record<string, unknown>;
   /** Intercepted exactly once each; a second hit fails the run. */
   readonly oneShots?: Record<string, unknown>;
+  /** Paths that answer 404. */
+  readonly gone?: ReadonlyArray<string>;
 }
 
 /**
@@ -116,6 +118,13 @@ function installMockApi(options: InstallOptions): MockAgent {
   }
   for (const [path, body] of Object.entries(options.oneShots ?? {})) {
     pool.intercept({ path, method: "GET" }).reply(200, body);
+  }
+  for (const path of options.gone ?? []) {
+    pool.intercept({ path, method: "GET" }).reply(404, {
+      _type: "Error",
+      errorIdentifier: "urn:openproject-org:api:v3:errors:NotFound",
+      message: "not found",
+    }).persist();
   }
   return mockAgent;
 }
@@ -818,6 +827,73 @@ describe("wp list sorting and id/subproject filters", () => {
     // --include-subprojects is the default and adds nothing.
     const count = await runWp(configDir, cacheDir, ["count", "--include-subprojects"]);
     expect(count.stdout).toBe("9\n");
+  });
+
+  describe("with the project's stored work package link (#57)", () => {
+    const own = (collection: string): string =>
+      `${collection}?filters=${
+        filtersParam([{ subprojectId: { operator: "!*", values: [] } }])
+      }&pageSize=100`;
+
+    async function seed(): Promise<{ configDir: string; cacheDir: string }> {
+      const root = await makeTempRoom("wp-list-link-");
+      const rooms = await writeSingleProfile(root, INSTANCE, 13);
+      await writeMetadataFile(rooms.cacheDir, {
+        ...baseMetadata(),
+        project: {
+          id: 13,
+          identifier: "ops",
+          name: "Operations",
+          links: { work_packages: "/api/v3/workspaces/13/work_packages" },
+        },
+      });
+      return rooms;
+    }
+
+    test("--no-include-subprojects reads the linked collection", async () => {
+      const { configDir, cacheDir } = await seed();
+      installMockApi({
+        packages: {
+          [own("/api/v3/workspaces/13/work_packages")]: halCollection(1, [wpElement(1, "Linked")]),
+        },
+      });
+      const result = await runWp(configDir, cacheDir, ["list", "--no-include-subprojects"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("Linked");
+    });
+
+    test("a stale link that answers 404 falls back to the projects path once", async () => {
+      const { configDir, cacheDir } = await seed();
+      installMockApi({
+        gone: [
+          own("/api/v3/workspaces/13/work_packages"),
+          own("/api/v3/workspaces/13/work_packages").replace("pageSize=100", "pageSize=1"),
+        ],
+        packages: {
+          [own("/api/v3/projects/13/work_packages")]: halCollection(1, [wpElement(1, "Fallback")]),
+          [own("/api/v3/projects/13/work_packages").replace("pageSize=100", "pageSize=1")]:
+            halCollection(4, []),
+        },
+      });
+      const list = await runWp(configDir, cacheDir, ["list", "--no-include-subprojects"]);
+      expect(list.exitCode).toBe(0);
+      expect(list.stdout).toContain("Fallback");
+      const count = await runWp(configDir, cacheDir, ["count", "--no-include-subprojects"]);
+      expect(count.stdout).toBe("4\n");
+    });
+
+    test("when both the link and the projects path are 404 the run fails with NOT_FOUND", async () => {
+      const { configDir, cacheDir } = await seed();
+      installMockApi({
+        gone: [
+          own("/api/v3/workspaces/13/work_packages"),
+          own("/api/v3/projects/13/work_packages"),
+        ],
+      });
+      const list = await runWp(configDir, cacheDir, ["list", "--no-include-subprojects"]);
+      expect(list.exitCode).toBe(4);
+      expect(list.stderr).toContain("[NOT_FOUND]");
+    });
   });
 
   test("--no-include-subprojects needs a project (#55)", async () => {
