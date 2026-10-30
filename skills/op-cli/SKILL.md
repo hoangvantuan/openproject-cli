@@ -30,7 +30,8 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it. The same empty-value convention
     clears links on `wp update`: `--assignee ""`, `--accountable ""`,
-    `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`. `--type`, `--status`, `--priority`,
+    `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`,
+    `--sprint ""`, `--bucket ""`. `--type`, `--status`, `--priority`,
     and `--subject` refuse an empty value, and so does every empty value
     on `wp create`, all with `USAGE_ERROR` before any request.
   - Scalar attributes: `--start`/`--due` (YYYY-MM-DD), `--estimate`/
@@ -52,6 +53,15 @@ numeric; use each command's help to distinguish them. Run any command below with
     filters `wp list`/`wp count`; it is a `USAGE_ERROR` where the schema
     lacks the field. In `wp create --stdin`, `version` and `observedIn`
     take a string or an array of strings.
+  - `--sprint <name|id>` or `--bucket <name|id>` (backlog bucket) places
+    a work package on `wp create`/`update`; bulk `--stdin` items take
+    `sprint`/`bucket` keys. A work package sits in one or the other, so
+    passing both in one command or item is a `USAGE_ERROR`; to move from
+    a sprint to a bucket, run one update per flag. `wp list`/`count`
+    filter by `--sprint`/`--bucket` (repeatable) or `--inbox` (in
+    neither); combining any two of the three is a `USAGE_ERROR`. Sprint
+    names repeat across projects but resolve inside the project in
+    context; a project without sprints or buckets fails naming it.
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`, `wp history`/`comments`/
@@ -105,6 +115,11 @@ op-cli wp update <id> --status Closed --assignee me
 # target versions and the versions a bug was observed in
 op-cli wp update <id> --version 1.0.0 --observed-in 0.9.0
 op-cli wp list --observed-in 0.9.0
+# plan into a sprint or a backlog bucket; list a sprint or the backlog inbox
+op-cli wp update <id> --sprint <sprint>
+op-cli wp update <id> --bucket <bucket>
+op-cli wp list --sprint <sprint>
+op-cli wp count --inbox
 # clear a link with an empty value
 op-cli wp update <id> --assignee ""
 # dates, effort, progress, points; an empty value clears on update
@@ -148,14 +163,19 @@ op-cli project member remove <project> <user>
 op-cli wp move <id> <project>
 # what a work package may use in a project
 op-cli project types <reference>
-# project vocabulary: members, versions, categories, activities, fields;
+op-cli project sprints <reference>
+op-cli project buckets <reference>
+# project vocabulary: members, versions, categories, activities, sprints,
+# buckets, fields;
 # a project context is required: pass --project <id> or set a default
 # project on the profile (meta types, statuses, priorities are instance-wide).
-# Versions, categories, or activities the account may not read are stored
-# as unavailable: only commands that need that one (time log --activity)
+# Versions, categories, activities, sprints, or buckets the account may not
+# read (or a project without the backlogs module) are stored as
+# unavailable: only commands that need that one (time log --activity)
 # fail with PERMISSION_DENIED; meta show and meta refresh list them
 op-cli meta members --project <id>
 op-cli meta fields
+op-cli meta sprints
 # something does not work: diagnose connectivity, credentials, versions
 op-cli doctor
 # self-update (prints the right command for Volta and Homebrew installs)

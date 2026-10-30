@@ -13,7 +13,7 @@ A named triple of instance URL, API key, and default project. The unit of contex
 _Avoid_: account, environment, config, context
 
 **Metadata**:
-An instance's configurable vocabulary: types, statuses, priorities, custom fields, versions, categories, activities, and members. What resolution reads. Stored on disk per profile as an implementation detail, refreshable and safe to delete, never something the user has to manage. A project's versions, categories, and activities are each optional: one the account may not read is stored as **unavailable**, and only resolution that needs it fails.
+An instance's configurable vocabulary: types, statuses, priorities, custom fields, versions, categories, activities, sprints, backlog buckets, and members. What resolution reads. Stored on disk per profile as an implementation detail, refreshable and safe to delete, never something the user has to manage. A project's versions, categories, activities, sprints, and backlog buckets are each optional: one the account may not read is stored as **unavailable**, and only resolution that needs it fails.
 _Avoid_: cache, schema, config
 
 **Resolution**:
