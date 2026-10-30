@@ -68,12 +68,15 @@ import {
 } from "../context/metadata.js";
 import type { RunEnvironment } from "../run.js";
 import { formatCell, renderTable } from "../output/table.js";
+import { registerAttachmentCommands } from "./attachments.js";
 
 export interface WpRuntime {
   readonly env: RunEnvironment;
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
   readonly write: (text: string) => void;
   readonly writeErr: (text: string) => void;
+  /** Raw bytes for stdout: a downloaded file is not text. */
+  readonly writeBytes: (bytes: Uint8Array) => void;
   readonly setJsonMode: (on: boolean) => void;
   /** Present only when the host can hand over stdin (bin.ts can). */
   readonly readStdin?: () => Promise<string>;
@@ -3214,6 +3217,8 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     },
     collectionRuntime,
   ));
+
+  registerAttachmentCommands(wp, runtime, authorResolver);
 
   wp.addCommand(defineCollectionCommand(
     {
