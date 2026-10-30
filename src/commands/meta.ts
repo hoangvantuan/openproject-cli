@@ -413,15 +413,10 @@ function projectLoad(runtime: MetaRuntime): MetaLoader<ProjectVocabulary> {
  * listing nothing.
  */
 function backlogLoad(runtime: MetaRuntime): MetaLoader<ProjectVocabulary> {
-  return async (options) => {
-    const profile = await projectProfile(runtime, options);
-    const vocabulary = await loadProjectVocabulary(runtime.env, profile);
-    if (vocabulary.sprints !== undefined && vocabulary.buckets !== undefined) {
-      return vocabulary;
-    }
-    await refreshStoredMetadata(runtime.env, profile);
-    return loadProjectVocabulary(runtime.env, profile);
-  };
+  return async (options) =>
+    loadProjectVocabulary(runtime.env, await projectProfile(runtime, options), {
+      require: ["sprints", "buckets"],
+    });
 }
 
 /**

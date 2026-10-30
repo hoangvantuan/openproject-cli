@@ -76,6 +76,22 @@ export class OpCliError extends Error {
   }
 }
 
+/**
+ * Refuse flags that exclude one another: each entry is the flag's spelling
+ * when it was given and undefined when it was not. More than one given is
+ * a USAGE_ERROR naming them, so a mutual-exclusion rule is one call and
+ * one wording wherever it applies.
+ */
+export function refuseCombined(
+  given: ReadonlyArray<string | undefined>,
+  hint: string,
+): void {
+  const flags = given.filter((flag): flag is string => flag !== undefined);
+  if (flags.length > 1) {
+    throw new OpCliError("USAGE_ERROR", `${flags.join(" and ")} cannot be combined.`, hint);
+  }
+}
+
 /** OpenProject's own explanation of a refusal, when the body carries one. */
 export function explanationOf(body: unknown): string | undefined {
   const message = typeof body === "object" && body !== null

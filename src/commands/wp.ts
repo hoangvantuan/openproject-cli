@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 
-import { OpCliError, writeRefusal } from "../core/errors.js";
+import { OpCliError, refuseCombined, writeRefusal } from "../core/errors.js";
 import {
   applyScalars,
   SCALAR_OPTIONS,
@@ -233,7 +233,7 @@ interface FilterFlagOptions {
   readonly category?: Array<string>;
   readonly sprint?: Array<string>;
   readonly bucket?: Array<string>;
-  readonly inbox?: boolean;
+  readonly backlogInbox?: boolean;
   readonly priority?: Array<string>;
   readonly parent?: Array<string>;
   readonly updatedAfter?: string;
@@ -274,7 +274,10 @@ function addFilterFlags(command: Command): Command {
     .option("--category <name>", "category name or id; repeat to OR values", collectValue, [])
     .option("--sprint <name>", "sprint name or id; repeat to OR values", collectValue, [])
     .option("--bucket <name>", "backlog bucket name or id; repeat to OR values", collectValue, [])
-    .option("--inbox", "only work packages in neither a sprint nor a backlog bucket")
+    .option(
+      "--backlog-inbox",
+      "only work packages in the backlog inbox: in neither a sprint nor a backlog bucket",
+    )
     .option("--priority <name>", "priority name or id; repeat to OR values", collectValue, [])
     .option("--parent <reference>", "parent work package id or exact subject", collectValue, [])
     .option(
@@ -311,7 +314,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     categories: options.category,
     sprints: options.sprint,
     buckets: options.bucket,
-    inbox: options.inbox,
+    backlogInbox: options.backlogInbox,
     priorities: options.priority,
     parents: options.parent,
     updatedAfter: options.updatedAfter,
@@ -385,10 +388,13 @@ const BACKLOG_SOURCES = {
 } as const;
 
 /**
- * The sprints or backlog buckets of the profile's project. A store from
- * before #46 lacks them and an empty list may simply be stale, so either
- * re-reads once; a project that still has none fails naming the project
- * instead of matching against nothing.
+ * The sprints or backlog buckets of the profile's project, on the same
+ * footing as the other project sources. A store from before #46 lacks
+ * them and an empty list may simply be stale, so an empty read re-reads
+ * this project once; a project that still has none fails naming the
+ * project instead of matching against nothing. Only this project is
+ * refreshed: the failure path would otherwise re-fetch every cached
+ * project on each call.
  */
 function backlogSource(
   runtime: WpRuntime,
@@ -397,41 +403,29 @@ function backlogSource(
   memo?: ResolutionMemo,
 ): LookupSource<number> {
   const { source, owner, plural } = BACKLOG_SOURCES[flag];
-  let refreshed = false;
+  const project = projectSource<number>(
+    runtime,
+    profile,
+    flag,
+    flag,
+    (vocabulary) => {
+      const entries: ReadonlyArray<{ readonly id: number; readonly name: string }> =
+        requireVocabulary(vocabulary, source);
+      return entries.map((entry) => ({ name: entry.name, owner, value: entry.id }));
+    },
+    memo,
+  );
   const refresh = async (): Promise<void> => {
-    // The vocabulary this source read is already fresh; a second refresh
-    // in the same lookup would only repeat the fetch.
-    if (refreshed) {
-      return;
-    }
-    refreshed = true;
     memo?.invalidate();
-    await refreshStoredMetadata(runtime.env, profile);
-  };
-  const read = async (): Promise<ProjectVocabulary> => {
-    if (profile.project === undefined) {
-      throw new OpCliError(
-        "USAGE_ERROR",
-        `--${flag} needs a project to look names up in.`,
-        "pass --project <name-or-id> or set a default project on the profile.",
-      );
-    }
-    return memo === undefined
-      ? loadProjectVocabulary(runtime.env, profile)
-      : memo.vocabulary();
+    await refreshProjectVocabulary(runtime.env, profile, Number(profile.project));
   };
   return {
-    label: flag,
+    label: project.label,
     load: async () => {
-      let vocabulary = await read();
-      if (vocabulary[source] === undefined) {
+      let entries = await project.load();
+      if (entries.length === 0) {
         await refresh();
-        vocabulary = await read();
-      }
-      let entries = requireVocabulary(vocabulary, source);
-      if (entries.length === 0 && !refreshed) {
-        await refresh();
-        entries = requireVocabulary(await read(), source);
+        entries = await project.load();
       }
       if (entries.length === 0) {
         throw new OpCliError(
@@ -441,7 +435,7 @@ function backlogSource(
             + `or leave --${flag} out.`,
         );
       }
-      return entries.map((entry) => ({ name: entry.name, owner, value: entry.id }));
+      return entries;
     },
     refresh,
   };
@@ -1140,13 +1134,13 @@ const CLEARABLE_LINK_FLAGS: ReadonlyArray<
  * between the two is one command per placement.
  */
 function refuseTwoPlacements(options: Pick<CreateValueFlags, "sprint" | "bucket">): void {
-  if (options.sprint !== undefined && options.bucket !== undefined) {
-    throw new OpCliError(
-      "USAGE_ERROR",
-      "--sprint and --bucket cannot be combined.",
-      "a work package sits in a sprint or in a backlog bucket; pass one of the two.",
-    );
-  }
+  refuseCombined(
+    [
+      options.sprint === undefined ? undefined : "--sprint",
+      options.bucket === undefined ? undefined : "--bucket",
+    ],
+    "a work package sits in a sprint or in a backlog bucket; pass one of the two.",
+  );
 }
 
 /** The repeatable version flags; their empty value is `[""]`. */
@@ -1165,7 +1159,6 @@ function refuseEmptyValues(
   options: CreateValueFlags & { readonly subject?: string },
   mode: "create" | "update",
 ): void {
-  refuseTwoPlacements(options);
   if (mode === "update" && options.subject === "") {
     throw new OpCliError(
       "USAGE_ERROR",
@@ -1886,7 +1879,7 @@ async function resolveListFlags(
     open: options.open,
     closed: options.closed,
     overdue: options.overdue,
-    inbox: options.inbox,
+    backlogInbox: options.backlogInbox,
   };
 }
 
@@ -2826,6 +2819,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "give <subject> to create one, or pipe a JSON array with --stdin.",
         );
       }
+      refuseTwoPlacements(options);
       refuseEmptyValues(options, "create");
       const profile = await runtime.resolve({
         profile: options.profile,
@@ -2920,6 +2914,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           "pass --subject, an attribute flag like --status or --due, or --field Name=Value.",
         );
       }
+      refuseTwoPlacements(options);
       refuseEmptyValues(options, "update");
       const profile = await runtime.resolve({
         profile: options.profile,

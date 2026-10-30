@@ -890,9 +890,17 @@ export function unavailableSources(metadata: StoredMetadata): Array<UnavailableE
     a.project_id - b.project_id || a.source.localeCompare(b.source));
 }
 
+/**
+ * The vocabulary of the profile's project. A command that cannot work
+ * without some optional sources names them in `require`: a store written
+ * before a source was captured lacks it (the key is absent, which is not
+ * the same as empty), and that one project is re-read once instead of
+ * the source reading as "none". Other cached projects are left alone.
+ */
 export async function loadProjectVocabulary(
   env: RunEnvironment,
   profile: ActiveProfile,
+  options: { readonly require?: ReadonlyArray<OptionalVocabularySource> } = {},
 ): Promise<ProjectVocabulary> {
   if (profile.project === undefined) {
     throw new OpCliError(
@@ -901,7 +909,11 @@ export async function loadProjectVocabulary(
       "pass --project <id> or set a default project on the profile.",
     );
   }
-  return loadProjectVocabularyById(env, profile, profile.project);
+  const vocabulary = await loadProjectVocabularyById(env, profile, profile.project);
+  const stale = (options.require ?? []).some((source) => vocabulary[source] === undefined);
+  return stale
+    ? refreshProjectVocabulary(env, profile, profile.project)
+    : vocabulary;
 }
 
 /**

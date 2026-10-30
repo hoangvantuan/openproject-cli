@@ -1,4 +1,4 @@
-import { OpCliError } from "./errors.js";
+import { OpCliError, refuseCombined } from "./errors.js";
 
 /**
  * One OpenProject APIv3 filter: a filter name, an operator symbol, and
@@ -36,8 +36,8 @@ export interface WpListFlags {
   readonly categories?: ReadonlyArray<string> | undefined;
   readonly sprints?: ReadonlyArray<string> | undefined;
   readonly buckets?: ReadonlyArray<string> | undefined;
-  /** In neither a sprint nor a backlog bucket (#46). */
-  readonly inbox?: boolean | undefined;
+  /** In neither a sprint nor a backlog bucket: the backlog inbox (#46). */
+  readonly backlogInbox?: boolean | undefined;
   readonly priorities?: ReadonlyArray<string> | undefined;
   readonly parents?: ReadonlyArray<string> | undefined;
   readonly updatedAfter?: string | undefined;
@@ -186,20 +186,16 @@ export function buildWpFilters(
     );
   }
   // A work package sits in a sprint, in a backlog bucket, or in the
-  // inbox, never in two, so any pair of these ANDs to nothing (#46).
-  const placements = [
-    (flags.sprints ?? []).length > 0 ? "--sprint" : undefined,
-    (flags.buckets ?? []).length > 0 ? "--bucket" : undefined,
-    flags.inbox === true ? "--inbox" : undefined,
-  ].filter((flag): flag is string => flag !== undefined);
-  if (placements.length > 1) {
-    throw new OpCliError(
-      "USAGE_ERROR",
-      `${placements.join(" and ")} cannot be combined.`,
-      "a work package sits in a sprint, in a backlog bucket, or in the inbox; "
-        + "run one listing per placement.",
-    );
-  }
+  // backlog inbox, never in two, so any pair of these ANDs to nothing (#46).
+  refuseCombined(
+    [
+      (flags.sprints ?? []).length > 0 ? "--sprint" : undefined,
+      (flags.buckets ?? []).length > 0 ? "--bucket" : undefined,
+      flags.backlogInbox === true ? "--backlog-inbox" : undefined,
+    ],
+    "a work package sits in a sprint, in a backlog bucket, or in the backlog inbox; "
+      + "run one listing per placement.",
+  );
 
   const filters: Array<WpFilter> = [];
   // The project leads: it is the scope every other clause narrows, and it
@@ -249,7 +245,7 @@ export function buildWpFilters(
   if ((flags.buckets ?? []).length > 0) {
     filters.push({ name: "backlogBucket", operator: "=", values: unique(flags.buckets!) });
   }
-  if (flags.inbox === true) {
+  if (flags.backlogInbox === true) {
     // A boolean filter: the instance reads "t", and refuses "true".
     filters.push({ name: "backlogInbox", operator: "=", values: ["t"] });
   }

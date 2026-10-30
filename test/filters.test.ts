@@ -116,7 +116,7 @@ describe("buildWpFilters", () => {
   });
 
   test("inbox is the backlogInbox boolean, spelled t on the wire (#46)", () => {
-    const filters = buildWpFilters({ project: "16", inbox: true }, NOW);
+    const filters = buildWpFilters({ project: "16", backlogInbox: true }, NOW);
     expect(filters).toEqual([
       { name: "project", operator: "=", values: ["16"] },
       { name: "backlogInbox", operator: "=", values: ["t"] },
@@ -130,8 +130,8 @@ describe("buildWpFilters", () => {
   test("a work package sits in one of sprint, bucket, or inbox, so mixing them is refused (#46)", () => {
     for (const flags of [
       { sprints: ["58"], buckets: ["2"] },
-      { sprints: ["58"], inbox: true },
-      { buckets: ["2"], inbox: true },
+      { sprints: ["58"], backlogInbox: true },
+      { buckets: ["2"], backlogInbox: true },
     ] satisfies ReadonlyArray<WpListFlags>) {
       const error = catchUsage(() => buildWpFilters(flags, NOW));
       expect(error?.code).toBe("USAGE_ERROR");

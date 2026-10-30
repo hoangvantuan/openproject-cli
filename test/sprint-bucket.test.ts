@@ -351,7 +351,7 @@ test("wp list --sprint resolves names and ids into one sprint clause", async () 
   ]);
 });
 
-test("wp count --bucket and --inbox build their clauses", async () => {
+test("wp count --bucket and --backlog-inbox build their clauses", async () => {
   install();
 
   const bucketed = await run(["wp", "count", "--bucket", "PoC"], env, {});
@@ -362,7 +362,7 @@ test("wp count --bucket and --inbox build their clauses", async () => {
     { backlogBucket: { operator: "=", values: ["4"] } },
   ]);
 
-  const inbox = await run(["wp", "count", "--inbox"], env, {});
+  const inbox = await run(["wp", "count", "--backlog-inbox"], env, {});
   expect(inbox.exitCode).toBe(0);
   expect(listedFilters()).toEqual([
     PROJECT_CLAUSE,
@@ -370,13 +370,25 @@ test("wp count --bucket and --inbox build their clauses", async () => {
   ]);
 });
 
-test("wp list refuses --sprint with --inbox before any traffic", async () => {
+test("the backlog inbox flag is --backlog-inbox, apart from the notification inbox", async () => {
   install();
 
-  const result = await run(["wp", "list", "--sprint", "58", "--inbox"], env, {});
+  const help = await run(["wp", "list", "--help"], env, {});
+  expect(help.stdout).toContain("--backlog-inbox");
+  expect(help.stdout).not.toMatch(/--inbox\b/);
+
+  const old = await run(["wp", "list", "--inbox"], env, {});
+  expect(old.exitCode).not.toBe(0);
+  expect(requests).toEqual([]);
+});
+
+test("wp list refuses --sprint with --backlog-inbox before any traffic", async () => {
+  install();
+
+  const result = await run(["wp", "list", "--sprint", "58", "--backlog-inbox"], env, {});
 
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] --sprint and --inbox cannot be combined/);
+  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] --sprint and --backlog-inbox cannot be combined/);
   expect(requests).toEqual([]);
 });
 
@@ -436,6 +448,88 @@ test("a vocabulary stored before #46 is refreshed once for --sprint", async () =
     { sprint: { operator: "=", values: ["58"] } },
   ]);
   expect((await storedVocabulary()).sprints).toHaveLength(2);
+  // Only this project's vocabulary is re-read, not the instance-wide lists.
+  expect(requests.map((entry) => entry.key)).not.toContain("GET /api/v3/types");
+});
+
+test("meta sprints refreshes a vocabulary stored before #46 for that project only", async () => {
+  install();
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  const stored = JSON.parse(await readFile(storePath(), "utf8")) as {
+    projectScoped: Record<string, Record<string, unknown>>;
+  };
+  delete (stored.projectScoped[String(PROJECT)] as Record<string, unknown>).sprints;
+  await writeFile(storePath(), JSON.stringify(stored));
+  requests = [];
+
+  const result = await run(["meta", "sprints"], env, {});
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("Sprint 14");
+  expect(requests.map((entry) => entry.key)).not.toContain("GET /api/v3/types");
+});
+
+test("a project that has no sprints does not re-read the instance-wide lists", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 200, body: collection([]) },
+  });
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  requests = [];
+
+  const result = await run(["wp", "list", "--sprint", "Sprint 14"], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toMatch(/project 16 has no sprints/);
+  const keys = requests.map((entry) => entry.key);
+  expect(keys).not.toContain("GET /api/v3/types");
+  expect(keys).not.toContain("GET /api/v3/statuses");
+  expect(keys.filter((key) => key.endsWith("/sprints"))).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------
+// Ambiguity: the same sprint name from two defining workspaces
+
+const SHARED_SPRINTS = [
+  sprint(58, "Sprint 14", "in_planning", "2026-10-26", "2026-10-30"),
+  sprint(61, "Sprint 14", "active", "2026-10-26", "2026-10-30"),
+];
+
+test("wp update --sprint refuses a name two sprints share, listing both ids", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: {
+      status: 200,
+      body: collection(SHARED_SPRINTS),
+    },
+  });
+
+  const result = await run(["wp", "update", "42", "--sprint", "Sprint 14"], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] sprint "Sprint 14" is ambiguous\./);
+  expect(result.stderr).toContain("58");
+  expect(result.stderr).toContain("61");
+  expect(requests.map((entry) => entry.key)).not.toContain("PATCH /api/v3/work_packages/42");
+});
+
+test("wp list --sprint refuses a name two sprints share, listing both ids", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: {
+      status: 200,
+      body: collection(SHARED_SPRINTS),
+    },
+  });
+
+  const result = await run(["wp", "list", "--sprint", "Sprint 14"], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] sprint "Sprint 14" is ambiguous\./);
+  expect(result.stderr).toContain("58");
+  expect(result.stderr).toContain("61");
+
+  // The id form is the way out.
+  requests = [];
+  const byId = await run(["wp", "list", "--sprint", "61", "--json"], env, {});
+  expect(byId.exitCode).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
