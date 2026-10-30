@@ -204,3 +204,12 @@ export async function apiPost(
 ): Promise<unknown> {
   return send(instanceUrl, apiKey, path, "POST", body);
 }
+
+export async function apiPatch(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  body: unknown,
+): Promise<unknown> {
+  return send(instanceUrl, apiKey, path, "PATCH", body);
+}

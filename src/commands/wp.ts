@@ -17,6 +17,7 @@ import { flattenHalRecord, isFlatLink, toFormattable } from "../core/hal.js";
 import {
   apiDelete,
   apiGet,
+  apiPatch,
   apiPost,
   apiPatchRaw,
   apiPostRaw,
@@ -2619,6 +2620,76 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
       )(created);
+      renderRecord(runtime, options, named);
+    });
+
+  // A separate command rather than `wp comment --edit`: the target is an
+  // activity id, not a work package id, so the `<id>` of `wp comment`
+  // would mean two different things. The API has no activity delete, so
+  // there is deliberately no `comment-delete`.
+  wp.command("comment-edit")
+    .description("Edit an existing comment by activity id (see `wp comments`)")
+    .argument("<activity-id>", "id of the comment, as listed by `wp comments`")
+    .argument("<text>", "new markdown body of the comment")
+    .option(recordOptions.json, "emit a flat JSON record")
+    .option(recordOptions.fields, "comma-separated columns to show")
+    .option(recordOptions.profile, "use this profile for this command only")
+    .option(recordOptions.project, "override the profile default project")
+    .action(async (activityId: string, text: string, options: {
+      json?: boolean;
+      fields?: string;
+      profile?: string;
+      project?: string;
+    }) => {
+      if (!isIdForm(activityId)) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `activity "${activityId}" is not an id.`,
+          "comments are addressed by the numeric id `wp comments` lists.",
+        );
+      }
+      if (text.trim() === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "the new comment text is empty.",
+          "an edit cannot blank a comment; the API has no comment delete either.",
+        );
+      }
+      // Writing: --fields misuse is refused before the comment changes.
+      selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
+      const profile = await openProfile(runtime, options);
+      const path = `/api/v3/activities/${activityId}`;
+      const current = activityRow(
+        await apiGet(profile.instanceUrl, profile.apiKey, path),
+      );
+      if (current.kind !== "Comment" || current.comment === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `activity ${activityId} is a change journal, not a comment.`,
+          "only entries listed by `wp comments` can be edited.",
+        );
+      }
+      let updated: Record<string, unknown>;
+      try {
+        updated = activityRow(await apiPatch(
+          profile.instanceUrl,
+          profile.apiKey,
+          path,
+          { comment: { raw: text } },
+        ));
+      } catch (error) {
+        if (error instanceof OpCliError && error.code === "AUTH_FAILED") {
+          throw new OpCliError(
+            "AUTH_FAILED",
+            `this key may not edit comment ${activityId}.`,
+            "only your own comments, or any comment with the \"Edit notes\" permission, can be edited.",
+          );
+        }
+        throw error;
+      }
+      const named = await authorResolver(
+        (lookup) => apiGet(profile.instanceUrl, profile.apiKey, lookup),
+      )(updated);
       renderRecord(runtime, options, named);
     });
 
