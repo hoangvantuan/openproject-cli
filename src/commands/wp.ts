@@ -3004,7 +3004,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   wp.addCommand(defineCollectionCommand(
     {
       name: "comments",
-      description: "List comments of one work package",
+      description: "List comments of one work package (API v3 has no comment delete)",
       path: (id) => `/api/v3/work_packages/${id}/activities`,
       row: commentRow,
       columns: COMMENT_COLUMNS,
@@ -3079,13 +3079,17 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
   // would mean two different things. The API has no activity delete, so
   // there is deliberately no `comment-delete`.
   wp.command("comment-edit")
-    .description("Edit an existing comment by activity id (see `wp comments`)")
+    .description(
+      "Edit an existing comment by activity id (see `wp comments`); API v3 has no comment delete",
+    )
     .argument("<activity-id>", "id of the comment, as listed by `wp comments`")
     .argument("<text>", "new markdown body of the comment")
     .option(recordOptions.json, "emit a flat JSON record")
     .option(recordOptions.fields, "comma-separated columns to show")
     .option(recordOptions.profile, "use this profile for this command only")
-    .option(recordOptions.project, "override the profile default project")
+    // An activity id is global, so the project never matters here; the flag
+    // stays so a call copied from `wp comment` is not refused.
+    .option(recordOptions.project, "accepted and ignored: activity ids are global")
     .action(async (activityId: string, text: string, options: {
       json?: boolean;
       fields?: string;

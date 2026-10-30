@@ -207,3 +207,19 @@ describe("wp comment-edit", () => {
     expect(result.stderr).toContain("auth login");
   });
 });
+
+describe("wp comments help says there is no delete (#43)", () => {
+  for (const command of ["comments", "comment-edit"]) {
+    test(`wp ${command} --help states that API v3 has no comment delete`, async () => {
+      const { configDir, cacheDir } = await makeRoom();
+      const result = await run(
+        ["wp", command, "--help"],
+        { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir },
+        {},
+      );
+      expect(result.exitCode).toBe(0);
+      // Commander wraps long descriptions; compare the text, not the layout.
+      expect(result.stdout.replace(/\s+/g, " ")).toContain("API v3 has no comment delete");
+    });
+  }
+});
