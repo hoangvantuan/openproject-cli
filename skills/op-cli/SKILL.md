@@ -189,6 +189,9 @@ op-cli meta fields
 op-cli meta sprints
 op-cli meta buckets
 # something does not work: diagnose connectivity, credentials, versions
+# (a hidden core version shows as `info`, never a failure; a write of a
+# schema-deprecated attribute, e.g. wp --version on a legacy type, prints one
+# `warning:` line to stderr and leaves stdout untouched)
 op-cli doctor
 # self-update (prints the right command for Volta and Homebrew installs)
 op-cli update
