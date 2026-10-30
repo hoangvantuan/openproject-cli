@@ -2379,6 +2379,7 @@ export const COMMENT_COLUMNS = [
   { title: "ID", field: "id" },
   { title: "AUTHOR", field: "user" },
   { title: "COMMENT", field: "comment" },
+  { title: "INTERNAL", field: "internal" },
   { title: "CREATED", field: "createdAt" },
 ] as const;
 
@@ -2458,6 +2459,10 @@ function linkIdOf(link: unknown): number | null {
  * behind a system activity, one instance-spelled sentence per attribute
  * ("Status changed from New to In progress"). A comment activity changed
  * nothing, so its details render empty rather than absent.
+ *
+ * `internal` is the visibility flag of a comment: true when only users with
+ * the internal-comment permission may read it. An activity the instance
+ * does not flag reads as false.
  */
 export function activityRow(element: unknown): Record<string, unknown> {
   const resource = element as { readonly _type?: unknown };
@@ -2471,6 +2476,7 @@ export function activityRow(element: unknown): Record<string, unknown> {
     kind,
     user: record.user,
     comment: typeof comment?.raw === "string" ? comment.raw : "",
+    internal: record.internal === true,
     details: activityDetails(record.details),
     createdAt: record.createdAt,
   };
