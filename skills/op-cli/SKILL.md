@@ -29,10 +29,14 @@ numeric; use each command's help to distinguish them. Run any command below with
     four report instance-wide.
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it. The same empty-value convention
-    clears links on `wp update`: `--assignee ""`, `--version ""`,
-    `--category ""`, `--parent ""`, `--observed-in ""`. `--type`, `--status`, `--priority`,
+    clears links on `wp update`: `--assignee ""`, `--accountable ""`,
+    `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`. `--type`, `--status`, `--priority`,
     and `--subject` refuse an empty value, and so does every empty value
     on `wp create`, all with `USAGE_ERROR` before any request.
+  - `--accountable <name|id|me>` sets the work package Accountable (API
+    field `responsible`) on `wp create`/`update`, resolved like
+    `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk
+    `--stdin` items take an `accountable` key.
   - `--version` writes the work package schema's `targetVersions` when it
     has one, else the single `version`; repeat it only where the schema
     allows several (otherwise `USAGE_ERROR`). `--observed-in <version>`
@@ -90,6 +94,10 @@ op-cli wp update <id> --version 1.0.0 --observed-in 0.9.0
 op-cli wp list --observed-in 0.9.0
 # clear a link with an empty value
 op-cli wp update <id> --assignee ""
+# Accountable (API field responsible): set, clear, filter
+op-cli wp update <id> --accountable Linh
+op-cli wp update <id> --accountable ""
+op-cli wp list --accountable me
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>
