@@ -4,10 +4,11 @@ import { dirname, join } from "node:path";
 
 import { halRefId } from "../core/hal.js";
 import { apiGet, apiPost } from "../core/http.js";
-import { halElements, halNextPath } from "../core/paginate.js";
+import { halElements } from "../core/paginate.js";
 import { OpCliError } from "../core/errors.js";
 
 import { ENV_PROFILE_NAME, type ActiveProfile } from "./profile.js";
+import { projectLinksOf, type ProjectLinks } from "./projectref.js";
 import type { RunEnvironment } from "../run.js";
 
 export interface StoredType {
@@ -29,20 +30,8 @@ export interface StoredPriority {
   readonly is_default: boolean;
 }
 
-/**
- * The collection paths a project resource links to (#57). Instances that
- * renamed projects to workspaces serve them under /api/v3/workspaces/, so
- * the stored path is followed instead of a hardcoded one. A key is absent
- * when the resource did not carry that link; callers then build the path.
- */
-export interface StoredProjectLinks {
-  readonly versions?: string;
-  readonly categories?: string;
-  readonly types?: string;
-  readonly work_packages?: string;
-  readonly create_work_package?: string;
-  readonly memberships?: string;
-}
+/** The collection paths of a project resource (#57); see ProjectLinks. */
+export type StoredProjectLinks = ProjectLinks;
 
 export interface StoredProjectRef {
   readonly id: number;
@@ -739,30 +728,6 @@ async function fetchProjectResource(
     profile.apiKey,
     `/api/v3/projects/${String(projectId)}`,
   )) as HalElement;
-}
-
-/** Link name on the project resource to the key the store keeps it under. */
-const PROJECT_LINK_KEYS: ReadonlyArray<readonly [string, keyof StoredProjectLinks]> = [
-  ["versions", "versions"],
-  ["categories", "categories"],
-  ["types", "types"],
-  ["workPackages", "work_packages"],
-  ["createWorkPackage", "create_work_package"],
-  ["memberships", "memberships"],
-];
-
-/** The collection paths a project resource links to; undefined when it links none. */
-function projectLinksOf(project: HalElement): StoredProjectLinks | undefined {
-  const rawLinks = (project._links ?? {}) as HalElement;
-  const found: { -readonly [K in keyof StoredProjectLinks]?: string } = {};
-  for (const [name, key] of PROJECT_LINK_KEYS) {
-    const href = (rawLinks[name] as HalElement | undefined)?.href;
-    const path = typeof href === "string" ? halNextPath(href) : undefined;
-    if (path !== undefined) {
-      found[key] = path;
-    }
-  }
-  return Object.keys(found).length === 0 ? undefined : found;
 }
 
 async function fetchProjectRef(

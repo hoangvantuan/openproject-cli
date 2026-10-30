@@ -633,6 +633,77 @@ describe("project star and unstar", () => {
 });
 
 describe("project vocabulary listings", () => {
+  test("versions and types follow the links of the project resource (#57)", async () => {
+    const root = await makeTempRoom("project-links-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      gets: {
+        [PROJECTS_PAGE]: halCollection(2, ALL_PROJECTS),
+        "/api/v3/projects/21": {
+          ...projectElement(21, "demo-site", "Demo Site"),
+          _links: {
+            versions: { href: "/api/v3/workspaces/21/versions" },
+            types: { href: "/api/v3/workspaces/21/types" },
+          },
+        },
+        "/api/v3/workspaces/21/versions?pageSize=100": halCollection(1, [
+          { _type: "Version", id: 5, name: "0.1.0", status: "open" },
+        ]),
+        "/api/v3/workspaces/21/types?pageSize=100": halCollection(1, [
+          { _type: "Type", id: 2, name: "Task" },
+        ]),
+      },
+    });
+    const versions = await runProject(configDir, cacheDir, ["versions", "21"]);
+    expect(versions.stdout).toContain("0.1.0");
+    const types = await runProject(configDir, cacheDir, ["types", "21"]);
+    expect(types.stdout).toContain("Task");
+  });
+
+  test("sprints retry once under /workspaces/ when the projects path is 404 (#57)", async () => {
+    const root = await makeTempRoom("project-sprints-moved-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    cleanups.push(async () => {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    });
+    const pool = mockAgent.get(INSTANCE);
+    pool.intercept({ path: "/api/v3/projects/21", method: "GET" })
+      .reply(200, projectElement(21, "demo-site", "Demo Site"));
+    pool.intercept({ path: "/api/v3/projects/21/sprints?pageSize=100", method: "GET" })
+      .reply(404, { _type: "Error", errorIdentifier: "urn:openproject-org:api:v3:errors:NotFound", message: "gone" });
+    pool.intercept({ path: "/api/v3/workspaces/21/sprints?pageSize=100", method: "GET" })
+      .reply(200, halCollection(1, [
+        { _type: "Sprint", id: 58, name: "Sprint 14", startDate: "2026-10-26", finishDate: "2026-10-30" },
+      ]));
+    const result = await runProject(configDir, cacheDir, ["sprints", "21"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Sprint 14");
+  });
+
+  test("sprints with both paths 404 report the not-found of the projects path (#57)", async () => {
+    const root = await makeTempRoom("project-sprints-gone-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    cleanups.push(async () => {
+      await mockAgent.close();
+      setGlobalDispatcher(new Agent());
+    });
+    const pool = mockAgent.get(INSTANCE);
+    const gone = { _type: "Error", errorIdentifier: "urn:openproject-org:api:v3:errors:NotFound", message: "gone" };
+    pool.intercept({ path: "/api/v3/projects/21", method: "GET" })
+      .reply(200, projectElement(21, "demo-site", "Demo Site"));
+    pool.intercept({ path: "/api/v3/projects/21/sprints?pageSize=100", method: "GET" }).reply(404, gone);
+    pool.intercept({ path: "/api/v3/workspaces/21/sprints?pageSize=100", method: "GET" }).reply(404, gone);
+    const result = await runProject(configDir, cacheDir, ["sprints", "21"]);
+    expect(result.exitCode).toBe(4);
+  });
+
   test("versions lists id, name, and status of the project's versions", async () => {
     const root = await makeTempRoom("project-versions-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
