@@ -72,7 +72,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--all` streams NDJSON: one JSON record per line, not an array.
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`, `wp history`/`comments`/
-    `relations`, `time log`/`get`/`update`, `project get`/`create`/
+    `relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
     `update`/`copy`/`member`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
@@ -145,6 +145,12 @@ op-cli wp update <id> --due ""
 op-cli wp update <id> --accountable Linh
 op-cli wp update <id> --accountable ""
 op-cli wp list --accountable me
+# watchers: list, add, remove (default user me; already watching or not
+# watching is reported with exit 0, not an error); filter by watcher
+op-cli wp watchers <id>
+op-cli wp watch <id> --user Linh
+op-cli wp unwatch <id>
+op-cli wp list --watcher me
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>
@@ -195,6 +201,9 @@ op-cli meta fields
 op-cli meta sprints
 op-cli meta buckets
 # something does not work: diagnose connectivity, credentials, versions
+# (a hidden core version shows as `info`, never a failure; a write of a
+# schema-deprecated attribute, e.g. wp --version on a legacy type, prints one
+# `warning:` line to stderr and leaves stdout untouched)
 op-cli doctor
 # self-update (prints the right command for Volta and Homebrew installs)
 op-cli update

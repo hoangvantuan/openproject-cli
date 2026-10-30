@@ -230,6 +230,7 @@ interface FilterFlagOptions {
   readonly assignee?: Array<string>;
   readonly accountable?: Array<string>;
   readonly author?: Array<string>;
+  readonly watcher?: Array<string>;
   readonly version?: Array<string>;
   readonly observedIn?: Array<string>;
   readonly category?: Array<string>;
@@ -268,6 +269,12 @@ function addFilterFlags(command: Command): Command {
       [],
     )
     .option("--author <name>", "user name, id, or me; repeat to OR values", collectValue, [])
+    .option(
+      "--watcher <name>",
+      "user name, id, or me, watching the work package; repeat to OR values",
+      collectValue,
+      [],
+    )
     .option("--version <name>", "version name or id; repeat to OR values", collectValue, [])
     .option(
       "--observed-in <name>",
@@ -337,6 +344,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     assignees: options.assignee,
     accountables: options.accountable,
     authors: options.author,
+    watchers: options.watcher,
     versions: options.version,
     observedIn: options.observedIn,
     categories: options.category,
@@ -1774,6 +1782,7 @@ async function resolveListFlags(
     assignees?: Array<string>;
     accountables?: Array<string>;
     authors?: Array<string>;
+    watchers?: Array<string>;
     versions?: Array<string>;
     observedIn?: Array<string>;
     categories?: Array<string>;
@@ -1830,6 +1839,10 @@ async function resolveListFlags(
   const author = options.author ?? [];
   if (author.length > 0) {
     flags.authors = await resolveUserValues(runtime, profile, "author", author);
+  }
+  const watcher = options.watcher ?? [];
+  if (watcher.length > 0) {
+    flags.watchers = await resolveUserValues(runtime, profile, "watcher", watcher);
   }
   const version = options.version ?? [];
   if (version.length > 0) {
@@ -2008,6 +2021,9 @@ async function versionFieldsFor(
     return own;
   }
   const fields = Object.values(byType);
+  // Only what every type marks deprecated is safe to warn about untyped.
+  const deprecated = (fields[0]?.deprecated ?? []).filter((name) =>
+    fields.every((entry) => entry.deprecated?.includes(name) === true));
   const agreed = (name: "targetVersions" | "observedInVersions"): StoredVersionFields => {
     const found = fields.map((entry) => entry[name]);
     const present = found.filter((entry): entry is StoredVersionField => entry !== undefined);
@@ -2027,7 +2043,10 @@ async function versionFieldsFor(
     }
     return { [name]: { multiple: present[0]?.multiple === true } };
   };
-  return Object.assign({}, ...needs.map(agreed)) as StoredVersionFields;
+  return {
+    ...(Object.assign({}, ...needs.map(agreed)) as StoredVersionFields),
+    ...(deprecated.length === 0 ? {} : { deprecated }),
+  };
 }
 
 function categorySource(
@@ -2118,6 +2137,11 @@ async function resolveVersionLinks(
           "USAGE_ERROR",
           "--version holds one value on this work package.",
           "its schema has no targetVersions, only the single version field.",
+        );
+      }
+      if (fields.deprecated?.includes("version") === true) {
+        runtime.writeErr(
+          "warning: the version attribute is deprecated in this instance's schema; the write still goes through.\n",
         );
       }
       await resolveLinkOption(
@@ -2448,6 +2472,11 @@ export const RELATION_COLUMNS = [
   { title: "DESCRIPTION", field: "description" },
 ] as const;
 
+export const WATCHER_COLUMNS = [
+  { title: "ID", field: "id" },
+  { title: "NAME", field: "name" },
+] as const;
+
 export const SCHEMA_COLUMNS = [
   { title: "FIELD", field: "field" },
   { title: "NAME", field: "name" },
@@ -2615,6 +2644,12 @@ function authorResolver(
 export function commentRow(element: unknown): Record<string, unknown> | undefined {
   const row = activityRow(element);
   return row.kind === "Comment" ? row : undefined;
+}
+
+/** A watcher is a plain user resource: id and name are all there is to show. */
+export function watcherRow(element: unknown): Record<string, unknown> {
+  const record = flattenHalRecord(element);
+  return { id: record.id, name: record.name };
 }
 
 /** Only the typed fields and both ends; the action links carry no data. */
@@ -3253,6 +3288,17 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     collectionRuntime,
   ));
 
+  wp.addCommand(defineCollectionCommand(
+    {
+      name: "watchers",
+      description: "List the watchers of one work package",
+      path: (id) => `/api/v3/work_packages/${id}/watchers`,
+      row: watcherRow,
+      columns: WATCHER_COLUMNS,
+    },
+    collectionRuntime,
+  ));
+
   const recordOptions = {
     json: "--json",
     fields: "--fields <list>",
@@ -3367,6 +3413,77 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       )(updated);
       renderRecord(runtime, options, named);
     });
+
+  // Watching is idempotent on this surface: the watcher list is read first,
+  // so "already watching" and "not watching" are reported states (exit 0)
+  // instead of whatever the API answers to a repeated add or remove.
+  for (const watching of [true, false]) {
+    wp.command(watching ? "watch" : "unwatch")
+      .description(
+        watching
+          ? "Add a watcher to one work package (default: me); no-op when already watching"
+          : "Remove a watcher from one work package (default: me); no-op when not watching",
+      )
+      .argument("<id>")
+      .option("--user <name-or-id>", "user name, id, or me", "me")
+      .option(recordOptions.json, "emit a flat JSON record")
+      .option(recordOptions.profile, "use this profile for this command only")
+      .option(recordOptions.project, "override the profile default project")
+      .action(async (reference: string, options: {
+        user?: string;
+        json?: boolean;
+        profile?: string;
+        project?: string;
+      }) => {
+        requireWpId(reference);
+        const profile = await openProfile(runtime, options);
+        const [userId] = await resolveUserValues(
+          runtime,
+          profile,
+          "user",
+          [options.user ?? "me"],
+        );
+        const path = `/api/v3/work_packages/${reference}/watchers`;
+        const getPage = (lookup: string): Promise<unknown> =>
+          apiGet(profile.instanceUrl, profile.apiKey, lookup);
+        let name: string | null = null;
+        let present = false;
+        for await (const element of halElements(getPage, withPageSize(path, DEFAULT_PAGE_SIZE))) {
+          const watcher = watcherRow(element);
+          if (String(watcher.id) === userId) {
+            present = true;
+            name = typeof watcher.name === "string" ? watcher.name : null;
+          }
+        }
+        const changed = present !== watching;
+        if (changed && watching) {
+          const created = watcherRow(await apiPost(
+            profile.instanceUrl,
+            profile.apiKey,
+            path,
+            { user: { href: `/api/v3/users/${userId}` } },
+          ));
+          name = typeof created.name === "string" ? created.name : null;
+        } else if (changed) {
+          await apiDelete(profile.instanceUrl, profile.apiKey, `${path}/${userId}`);
+        }
+        if (options.json === true) {
+          runtime.write(`${JSON.stringify({
+            id: Number(reference),
+            user: Number(userId),
+            name,
+            watching,
+            changed,
+          })}\n`);
+          return;
+        }
+        const who = name === null ? `user ${userId}` : `${name} (${userId})`;
+        const verdict = watching
+          ? (changed ? "now watches" : "is already watching")
+          : (changed ? "no longer watches" : "was not watching");
+        runtime.write(`${who} ${verdict} work package ${reference}.\n`);
+      });
+  }
 
   wp.command("relate")
     .description("Relate one work package to another")
