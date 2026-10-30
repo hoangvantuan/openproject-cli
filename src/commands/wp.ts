@@ -1,4 +1,4 @@
-import type { Command } from "commander";
+import { Option, type Command } from "commander";
 
 import { OpCliError, refuseCombined, writeRefusal } from "../core/errors.js";
 import {
@@ -11,6 +11,8 @@ import {
 import {
   buildWpFilters,
   filtersQuery,
+  parseSort,
+  sortByQuery,
   type WpFilter,
   type WpListFlags,
 } from "../core/filters.js";
@@ -242,6 +244,8 @@ interface FilterFlagOptions {
   readonly dueAfter?: string;
   readonly overdue?: boolean;
   readonly search?: string;
+  readonly id?: Array<string>;
+  readonly includeSubprojects?: boolean;
   readonly open?: boolean;
   readonly closed?: boolean;
   readonly profile?: string;
@@ -296,10 +300,34 @@ function addFilterFlags(command: Command): Command {
     .option("--due-after <date>", "due on or after this date; same date forms as --due-before")
     .option("--overdue", "open work packages whose due date is before today")
     .option("--search <text>", "substring matched against work package subjects")
+    .option("--id <id>", "work package id; repeat to OR values", collectValue, [])
+    .option(
+      "--include-subprojects",
+      "include subprojects in a --project listing (the default)",
+    )
+    .option(
+      "--no-include-subprojects",
+      "only the project's own work packages, not its subprojects' (needs a project)",
+    )
     .option("--open", "shorthand for every open status")
     .option("--closed", "shorthand for every closed status")
     .option("--profile <name>", "use this profile for this command only")
     .option("--project <name-or-id>", "override the profile default project");
+}
+
+/** Normalise --id values ("12" or "#12") to digit strings. */
+function parseIdValues(raw: ReadonlyArray<string>): Array<string> {
+  return raw.map((value) => {
+    const id = value.trim().replace(/^#/, "");
+    if (!/^[1-9]\d*$/.test(id)) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `"${value}" is not a work package id.`,
+        "--id takes a positive number such as 1234 or #1234.",
+      );
+    }
+    return id;
+  });
 }
 
 function rawListFlags(options: FilterFlagOptions): WpListFlags {
@@ -323,6 +351,7 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     dueAfter: options.dueAfter,
     overdue: options.overdue,
     search: options.search,
+    ids: parseIdValues(options.id ?? []),
     open: options.open,
     closed: options.closed,
   };
@@ -1876,6 +1905,8 @@ async function resolveListFlags(
   }
   return {
     ...flags,
+    ids: parseIdValues(options.id ?? []),
+    includeSubprojects: options.includeSubprojects,
     open: options.open,
     closed: options.closed,
     overdue: options.overdue,
@@ -1883,8 +1914,25 @@ async function resolveListFlags(
   };
 }
 
-function workPackagesPath(filters: ReadonlyArray<WpFilter>): string {
-  return `/api/v3/work_packages?filters=${filtersQuery(filters)}`;
+/**
+ * `subprojectId` is only valid on the project's own collection: the global
+ * endpoint answers 500, so --no-include-subprojects reads from there.
+ */
+function workPackagesPath(
+  filters: ReadonlyArray<WpFilter>,
+  sort: ReadonlyArray<[string, string]> = [],
+  ownProject?: string,
+): string {
+  const sortBy = sort.length > 0 ? `&sortBy=${sortByQuery(sort)}` : "";
+  const collection = ownProject === undefined
+    ? "/api/v3/work_packages"
+    : `/api/v3/projects/${encodeURIComponent(ownProject)}/work_packages`;
+  return `${collection}?filters=${filtersQuery(filters)}${sortBy}`;
+}
+
+/** The project whose own collection serves the listing, when subprojects are excluded. */
+function ownProjectOf(flags: WpListFlags): string | undefined {
+  return flags.includeSubprojects === false ? flags.project : undefined;
 }
 
 function renderWorkPackages(records: ReadonlyArray<Record<string, unknown>>): string {
@@ -2623,25 +2671,36 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     wp.command("list")
       .description("List work packages by name-resolved filters")
       .option("--json", PAGED_JSON_HELP)
+      .option(
+        "--sort <field[:asc|desc]>",
+        "sort by updatedAt, createdAt, dueDate, startDate, priority, status, id or subject; "
+          + "repeat for tie-breakers; the direction defaults to asc",
+        collectValue,
+        [],
+      )
       .option("--limit <n>", "maximum number of results to show")
       .option("--all", "fetch every page instead of one limited page"),
-  ).action(async (options: FilterFlagOptions & { json?: boolean; limit?: string; all?: boolean }) => {
+  ).action(async (
+    options: FilterFlagOptions & { json?: boolean; limit?: string; all?: boolean; sort?: Array<string> },
+  ) => {
     runtime.setJsonMode(options.json === true);
     // Refuse impossible flag combinations before any traffic or resolution.
     buildWpFilters(rawListFlags(options), new Date());
+    const sort = parseSort(options.sort ?? []);
     const profile = await runtime.resolve({
       profile: options.profile,
       project: parseProjectOverride(options.project),
     });
     const now = new Date();
     const limit = parsePageSize(options.limit);
-    const filters = buildWpFilters(await resolveListFlags(runtime, profile, options), now);
+    const resolved = await resolveListFlags(runtime, profile, options);
+    const filters = buildWpFilters(resolved, now);
     const getPage = (path: string): Promise<unknown> =>
       apiGet(profile.instanceUrl, profile.apiKey, path);
     // --all sizes pages by the instance's advertised maximum; --limit
     // only ever sizes the single non-all page.
     const startPath = withPageSize(
-      workPackagesPath(filters),
+      workPackagesPath(filters, sort, ownProjectOf(resolved)),
       options.all === true ? await allPageSize(getPage) : limit,
     );
 
@@ -2679,21 +2738,30 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     }
   });
 
-  addFilterFlags(wp.command("count").description("Count work packages matching the filters")).action(
-    async (options: FilterFlagOptions) => {
+  addFilterFlags(
+    wp.command("count")
+      .description("Count work packages matching the filters")
+      .addOption(new Option("--sort <field>").hideHelp()),
+  ).action(
+    async (options: FilterFlagOptions & { sort?: string }) => {
+      if (options.sort !== undefined) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "wp count does not take --sort.",
+          "a count has no order; use wp list --sort <field> instead.",
+        );
+      }
       buildWpFilters(rawListFlags(options), new Date());
       const profile = await runtime.resolve({
         profile: options.profile,
         project: parseProjectOverride(options.project),
       });
-      const filters = buildWpFilters(
-        await resolveListFlags(runtime, profile, options),
-        new Date(),
-      );
+      const resolved = await resolveListFlags(runtime, profile, options);
+      const filters = buildWpFilters(resolved, new Date());
       const body = (await apiGet(
         profile.instanceUrl,
         profile.apiKey,
-        `${workPackagesPath(filters)}&pageSize=1`,
+        `${workPackagesPath(filters, [], ownProjectOf(resolved))}&pageSize=1`,
       )) as WorkPackagePage;
       if (typeof body.total !== "number") {
         throw new OpCliError(
