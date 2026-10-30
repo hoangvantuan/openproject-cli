@@ -193,6 +193,8 @@ describe("project group registration", () => {
       "unstar",
       "versions",
       "categories",
+      "sprints",
+      "buckets",
       "types",
       "delete",
     ]) {
@@ -672,6 +674,71 @@ describe("project vocabulary listings", () => {
     expect(result.exitCode).toBe(0);
     const parsed = JSON.parse(result.stdout.trim()) as Array<Record<string, unknown>>;
     expect(parsed).toEqual([{ name: "Backend" }, { name: "Frontend" }]);
+  });
+
+  test("sprints lists id, name, start, finish, and status (#46)", async () => {
+    const root = await makeTempRoom("project-sprints-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      gets: {
+        [PROJECTS_PAGE]: halCollection(2, ALL_PROJECTS),
+        "/api/v3/projects/21": projectElement(21, "demo-site", "Demo Site"),
+        "/api/v3/projects/21/sprints?pageSize=100": halCollection(1, [
+          {
+            _type: "Sprint",
+            id: 58,
+            name: "Sprint 14",
+            startDate: "2026-10-26",
+            finishDate: "2026-10-30",
+            _links: {
+              self: { href: "/api/v3/sprints/58", title: "Sprint 14" },
+              status: {
+                href: "urn:openproject-org:api:v3:sprints:status:in_planning",
+                title: "In planning",
+              },
+              definingWorkspace: { href: "/api/v3/projects/21", title: "Demo Site" },
+            },
+          },
+        ]),
+      },
+    });
+    const result = await runProject(configDir, cacheDir, ["sprints", "demo-site"]);
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toMatch(/ID\s+NAME\s+START\s+FINISH\s+STATUS/);
+    expect(result.stdout).toMatch(/58\s+Sprint 14\s+2026-10-26\s+2026-10-30\s+In planning/);
+  });
+
+  test("buckets lists the backlog buckets as flat records (#46)", async () => {
+    const root = await makeTempRoom("project-buckets-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      gets: {
+        [PROJECTS_PAGE]: halCollection(2, ALL_PROJECTS),
+        "/api/v3/projects/21": projectElement(21, "demo-site", "Demo Site"),
+        "/api/v3/projects/21/backlog_buckets?pageSize=100": halCollection(1, [
+          {
+            _type: "BacklogBucket",
+            id: 2,
+            name: "Managements",
+            _links: {
+              self: { href: "/api/v3/backlog_buckets/2", title: "Managements" },
+              definingWorkspace: { href: "/api/v3/projects/21", title: "Demo Site" },
+            },
+          },
+        ]),
+      },
+    });
+    const result = await runProject(configDir, cacheDir, [
+      "buckets",
+      "demo-site",
+      "--json",
+    ]);
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual([
+      expect.objectContaining({ id: 2, name: "Managements" }),
+    ]);
   });
 
   test("types lists the work package types usable in the project", async () => {
