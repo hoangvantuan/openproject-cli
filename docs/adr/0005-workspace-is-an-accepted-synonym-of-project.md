@@ -6,7 +6,7 @@ OpenProject 17 renamed projects to workspaces in API v3: project resources link 
 
 **Both words are accepted; "project" stays canonical.** CONTEXT.md, command output, JSON keys, and error messages keep saying project (records mirror the API, ADR-0003, and the profile's stored default-project key is unchanged). "Workspace" is input vocabulary only:
 
-- `--workspace <name-or-id>` is accepted on every command that accepts `--project`, with identical resolution. It is folded into `--project` before the action runs, so no command reads two options. Giving both with different values is a `USAGE_ERROR`; the same value on both is fine.
+- `--workspace <name-or-id>` is accepted on every command that accepts `--project`, with identical resolution. It is folded into `--project` before the action runs, so no command reads two options. Giving both is fine when they name the same project (an id and its name count as the same; both are resolved only when the strings differ); naming different projects, or a spelling that does not resolve, is a `USAGE_ERROR`.
 - `op-cli workspace <subcommand>` is registered from the same code as `op-cli project`, so the two groups cannot drift.
 - Hints that name the flag mention `--workspace` as well.
 

@@ -13,7 +13,10 @@ const WORKSPACE_FLAG = "--workspace";
 /**
  * Give every command that declares --project a --workspace twin and fold
  * the twin into --project before the action runs, so no command reads
- * `options.workspace`. Passing both is fine when they agree.
+ * `options.workspace`. Passing both is fine when they name the same
+ * project: equal strings, or different spellings (an id and a name) that
+ * `sameProject` resolves to one project. Only a resolved difference, or a
+ * spelling that cannot be resolved, is refused.
  *
  * Walks the finished tree rather than each declaration so a new command
  * with --project gets the alias without remembering it.
@@ -21,6 +24,7 @@ const WORKSPACE_FLAG = "--workspace";
 export function installWorkspaceAlias(
   program: Command,
   onJsonMode: (on: boolean) => void,
+  sameProject: (profile: string | undefined, first: string, second: string) => Promise<boolean>,
 ): void {
   const declare = (command: Command): void => {
     for (const child of command.commands) {
@@ -31,16 +35,21 @@ export function installWorkspaceAlias(
     }
   };
   declare(program);
-  program.hook("preAction", (_root, actionCommand) => {
+  program.hook("preAction", async (_root, actionCommand) => {
     const options = actionCommand.opts<{
       project?: string;
       workspace?: string;
       json?: boolean;
+      profile?: string;
     }>();
     if (options.workspace === undefined) {
       return;
     }
-    if (options.project !== undefined && options.project !== options.workspace) {
+    if (
+      options.project !== undefined
+      && options.project !== options.workspace
+      && !(await sameProject(options.profile, options.project, options.workspace).catch(() => false))
+    ) {
       // The action has not run yet, so it could not tell the error
       // renderer whether the caller asked for JSON.
       onJsonMode(options.json === true);

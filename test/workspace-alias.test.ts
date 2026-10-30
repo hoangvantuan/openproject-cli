@@ -74,8 +74,16 @@ const GETS: Record<string, unknown> = {
     name: "Operations",
     _links: {},
   },
+  "/api/v3/projects/14": {
+    _type: "Project",
+    id: 14,
+    identifier: "finance",
+    name: "Finance",
+    _links: {},
+  },
   "/api/v3/projects?pageSize=100": collection([
     { _type: "Project", id: 13, identifier: "operations", name: "Operations" },
+    { _type: "Project", id: 14, identifier: "finance", name: "Finance" },
   ]),
 };
 
@@ -197,6 +205,34 @@ describe("--workspace is an alias of --project (#57)", () => {
     const one = await invoke(["wp", "list", "--project", "13"]);
     expect(both).toEqual(one);
     expect(both.exitCode).toBe(0);
+  });
+
+  test("an id and a name of the same project are not a conflict", async () => {
+    const mixed = await invoke(["wp", "list", "--project", "13", "--workspace", "Operations"]);
+    const reversed = await invoke(["wp", "list", "--project", "Operations", "--workspace", "13"]);
+    const identifier = await invoke(["wp", "list", "--project", "operations", "--workspace", "Operations"]);
+    for (const result of [mixed, reversed, identifier]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.requests).toContain(`GET ${scopedListing("13")}`);
+    }
+  });
+
+  test("a name of another project than the id is still a USAGE_ERROR", async () => {
+    const result = await invoke(["wp", "list", "--project", "13", "--workspace", "Finance"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.requests.some((request) => request.includes("work_packages"))).toBe(false);
+  });
+
+  test("a name that does not resolve is a USAGE_ERROR, not a crash", async () => {
+    const result = await invoke(["wp", "list", "--project", "13", "--workspace", "Nowhere"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+  });
+
+  test("wp count accepts an id and an identifier of one project", async () => {
+    const result = await invoke(["wp", "count", "--project", "13", "--workspace", "operations"]);
+    expect(result.exitCode).toBe(0);
   });
 
   test("different values are a USAGE_ERROR before any traffic", async () => {

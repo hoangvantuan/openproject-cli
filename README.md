@@ -67,7 +67,7 @@ op-cli update            # self-update; prints the right command for Volta/Homeb
   four commands report instance-wide.
 - **Workspace is another word for project.** OpenProject 17 renamed projects
   to workspaces in its API. `--workspace` is accepted wherever `--project` is
-  (the same value on both is fine; different values are refused), and
+  (both may name the same project; different projects are refused), and
   `op-cli workspace <subcommand>` is `op-cli project <subcommand>`. Output
   keeps saying project.
 - **Finding things needs no id.** `wp list --search <text>` matches

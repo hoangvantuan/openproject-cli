@@ -354,9 +354,19 @@ export async function run(
     "\nRun op-cli --version for version information.",
   );
 
-  installWorkspaceAlias(program, (on) => {
-    jsonOutput = on;
-  });
+  installWorkspaceAlias(
+    program,
+    (on) => {
+      jsonOutput = on;
+    },
+    // Both spellings go through the same resolution as --project itself;
+    // numeric ids pass through without traffic.
+    async (profile, first, second) => {
+      const firstId = (await resolveProfile(env, { profile, project: parseProjectOverride(first) })).project;
+      const secondId = (await resolveProfile(env, { profile, project: parseProjectOverride(second) })).project;
+      return firstId !== undefined && firstId === secondId;
+    },
+  );
 
   // Commands built declaratively start as standalone Command objects, so
   // they miss the root's exitOverride and output capture; without this

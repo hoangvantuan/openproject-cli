@@ -24,8 +24,8 @@ numeric; use each command's help to distinguish them. Run any command below with
   that gap instead of improvising.
 - Conventions that are easy to guess wrong:
   - OpenProject 17 calls projects workspaces. `--workspace` is an alias of
-    `--project` on every command that takes it (same value on both is fine,
-    different values are a USAGE_ERROR), and `op-cli workspace` is an alias
+    `--project` on every command that takes it (both may name the same project,
+    different projects are a USAGE_ERROR), and `op-cli workspace` is an alias
     of `op-cli project`. Output still says project.
   - A project in context narrows what you read: `--project`, or the
     profile default, scopes `wp list`, `wp count`, `time list`, and
