@@ -873,6 +873,56 @@ describe("wp comment", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ id: 1482, internal: true });
   });
 
+  // An instance that predates internal comments ignores the key and
+  // stores a public comment: say so, but the POST succeeded (exit 0) and
+  // the record still reports what was stored (roundup review S2).
+  test("--internal warns when the instance stored the comment as public", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-public-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 200,
+          body: commentActivity(1484, "Ping the client first.", 9, "Linh Nguyen"),
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, [
+      "comment",
+      "1520",
+      "Ping the client first.",
+      "--internal",
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toMatch(/^warning: .*stored the comment as public/);
+    expect(JSON.parse(result.stdout)).toMatchObject({ id: 1484, internal: false });
+  });
+
+  test("--internal stored as internal prints no warning", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-quiet-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 201,
+          body: { ...commentActivity(1485, "Quiet.", 9, "Linh Nguyen"), internal: true },
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, ["comment", "1520", "Quiet.", "--internal"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+  });
+
   test("without --internal the payload carries no internal key", async () => {
     const root = await makeTempRoom("op-cli-wp-comment-public-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);

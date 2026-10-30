@@ -3368,6 +3368,15 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         throw writeFailure(response.status, response.body, COMMENT_WRITE(reference));
       }
       const created = activityRow(response.body);
+      // An instance without internal comments ignores the key and stores a
+      // public comment without any error. The POST itself succeeded, so
+      // this stays a warning (exit 0): a failing exit would break the
+      // outcome contract and read as "nothing was posted".
+      if (options.internal === true && created.internal !== true) {
+        runtime.writeErr(
+          "warning: the instance stored the comment as public; it may not support internal comments.\n",
+        );
+      }
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),
       )(created);
