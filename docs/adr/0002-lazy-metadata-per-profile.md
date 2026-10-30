@@ -1,6 +1,6 @@
 # Metadata is a per-profile lazy cache, and retries must prove they are safe
 
-Resolution reads an instance's metadata (types, statuses, priorities, custom fields, versions, categories, activities, members). We store it as a true cache: fetched lazily on first need, refreshable, safe to delete at any time, never something the user initialises or manages. It is keyed by profile (`~/.cache/op-cli/<profile>/`), or by `env-<sha1(url)>` when the CLI is driven by environment variables alone, and `OP_CLI_CACHE_DIR` can relocate it.
+Resolution reads an instance's metadata (types, statuses, priorities, custom fields, versions, categories, activities, sprints, backlog buckets, members; the list is illustrative, a new vocabulary joins the cache without a new decision). We store it as a true cache: fetched lazily on first need, refreshable, safe to delete at any time, never something the user initialises or manages. It is keyed by profile (`~/.cache/op-cli/<profile>/`), or by `env-<sha1(url)>` when the CLI is driven by environment variables alone, and `OP_CLI_CACHE_DIR` can relocate it.
 
 ## Considered options
 

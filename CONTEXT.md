@@ -24,6 +24,10 @@ _Avoid_: lookup, mapping, translation
 OpenProject's unit of work, of some type (Task, Bug, User Story, or any instance-defined type). Abbreviated `wp` on the command line.
 _Avoid_: task, issue, ticket, card
 
+**Backlog inbox**:
+The work packages of a project that sit in neither a sprint nor a backlog bucket. A placement state of the backlogs module, listed with `wp list --backlog-inbox`.
+_Avoid_: inbox on its own, notification inbox (the unrelated read/unread feed behind `op-cli notification`)
+
 **Escape hatch**:
 Any route to an endpoint the CLI does not cover: a raw request command, a printed `curl` line, an exposed auth header. Deliberately absent. Bypassing resolution defeats the CLI's purpose, so the answer to an uncovered endpoint is to cover it with a command.
 _Avoid_: passthrough, raw mode, proxy
