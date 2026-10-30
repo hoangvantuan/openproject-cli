@@ -35,14 +35,11 @@ export interface StoredPriority {
   readonly is_default: boolean;
 }
 
-/** The collection paths of a project resource (#57); see ProjectLinks. */
-export type StoredProjectLinks = ProjectLinks;
-
 export interface StoredProjectRef {
   readonly id: number;
   readonly identifier: string;
   readonly name: string;
-  readonly links?: StoredProjectLinks;
+  readonly links?: ProjectLinks;
 }
 
 export interface StoredInstanceInfo {
@@ -191,7 +188,7 @@ export interface ProjectVocabulary {
    * Absent when the project resource carried none of the links, which is
    * also how a vocabulary stored before they were captured reads.
    */
-  readonly links?: StoredProjectLinks;
+  readonly links?: ProjectLinks;
   readonly members: ReadonlyArray<StoredMember>;
   readonly versions: ReadonlyArray<StoredVersion>;
   readonly categories: ReadonlyArray<StoredCategory>;
@@ -510,7 +507,7 @@ function customFieldEntries(schema: HalElement): Array<StoredCustomField> {
 async function fetchMembers(
   profile: ActiveProfile,
   projectId: number,
-  links: StoredProjectLinks | undefined,
+  links: ProjectLinks | undefined,
 ): Promise<ReadonlyArray<StoredMember>> {
   const filters = encodeURIComponent(
     JSON.stringify([{ project: { operator: "=", values: [String(projectId)] } }]),
@@ -607,7 +604,7 @@ async function fetchTypeSchema(
   profile: ActiveProfile,
   projectId: number,
   typeId: number,
-  links: StoredProjectLinks | undefined,
+  links: ProjectLinks | undefined,
 ): Promise<HalElement> {
   try {
     const form = (await apiPost(
@@ -660,7 +657,7 @@ function versionFieldsOf(schema: HalElement): StoredVersionFields {
 async function fetchTypeSchemas(
   profile: ActiveProfile,
   projectId: number,
-  links: StoredProjectLinks | undefined,
+  links: ProjectLinks | undefined,
 ): Promise<Pick<ProjectVocabulary, "custom_fields" | "version_fields">> {
   const typeIds = await fetchVocabulary(
     profile,
@@ -858,7 +855,7 @@ async function fetchOptional<T>(
 async function fetchProjectLinks(
   profile: ActiveProfile,
   projectId: number,
-): Promise<StoredProjectLinks | undefined> {
+): Promise<ProjectLinks | undefined> {
   try {
     return projectLinksOf(await fetchProjectResource(profile, projectId));
   } catch {

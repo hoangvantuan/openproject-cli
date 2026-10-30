@@ -718,17 +718,19 @@ export function registerProjectCommands(
     description: string,
     endpoint: (hit: ProjectHit) => string,
     columns: ReadonlyArray<CollectionColumn>,
-    /**
-     * Table-only cell overrides for one element. JSON keeps the flattened
-     * record untouched (ADR-0003); only the rendered table differs.
-     */
-    tableCells?: (element: unknown) => Record<string, unknown>,
-    /**
-     * Where the collection may have moved to: tried once when the
-     * endpoint answers 404 (#57). Collections the project resource links
-     * to need none.
-     */
-    moved?: (projectId: number) => string,
+    extras: {
+      /**
+       * Table-only cell overrides for one element. JSON keeps the flattened
+       * record untouched (ADR-0003); only the rendered table differs.
+       */
+      readonly tableCells?: (element: unknown) => Record<string, unknown>;
+      /**
+       * Where the collection may have moved to: tried once when the
+       * endpoint answers 404 (#57). Collections the project resource links
+       * to need none.
+       */
+      readonly moved?: (projectId: number) => string;
+    } = {},
   ): Command =>
     project
       .command(name)
@@ -739,6 +741,7 @@ export function registerProjectCommands(
       .option("--profile <name>", "use this profile for this command only")
       .option("--project <name-or-id>", "override the profile default project")
       .action(async (reference: string, options: ScopeOptions) => {
+        const { tableCells, moved } = extras;
         const { getPage } = await connect(runtime, options);
         const hit = await resolveProjectRef(getPage, reference);
         const collect = async (path: string): Promise<{
@@ -788,21 +791,22 @@ export function registerProjectCommands(
     "List the sprints a work package in this project may use",
     (hit) => `${PROJECTS_COLLECTION}/${String(hit.id)}/sprints`,
     SPRINT_COLUMNS,
-    // The link's title is localized; the table shows the urn tail, like
-    // `meta sprints`.
-    (element) => {
-      const status = sprintStatusKey(element as HalElement);
-      return status === "" ? {} : { status };
+    {
+      // The link's title is localized; the table shows the urn tail, like
+      // `meta sprints`.
+      tableCells: (element) => {
+        const status = sprintStatusKey(element as HalElement);
+        return status === "" ? {} : { status };
+      },
+      moved: (projectId) => `${WORKSPACES_COLLECTION}/${String(projectId)}/sprints`,
     },
-    (projectId) => `${WORKSPACES_COLLECTION}/${String(projectId)}/sprints`,
   );
   registerVocabulary(
     "buckets",
     "List the backlog buckets a work package in this project may use",
     (hit) => `${PROJECTS_COLLECTION}/${String(hit.id)}/backlog_buckets`,
     BUCKET_COLUMNS,
-    undefined,
-    (projectId) => `${WORKSPACES_COLLECTION}/${String(projectId)}/backlog_buckets`,
+    { moved: (projectId) => `${WORKSPACES_COLLECTION}/${String(projectId)}/backlog_buckets` },
   );
   registerVocabulary(
     "types",
