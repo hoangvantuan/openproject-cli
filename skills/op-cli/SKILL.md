@@ -26,7 +26,9 @@ numeric; use each command's help to distinguish them. Run any command below with
   - A project in context narrows what you read: `--project`, or the
     profile default, scopes `wp list`, `wp count`, `time list`, and
     `time report` to that project and its subprojects. Without one, those
-    four report instance-wide.
+    four report instance-wide. `wp update` looks names up (version,
+    category, assignee, sprint, bucket, `--field`) in `--project`, else the
+    profile default, else the work package's own project.
   - `--field "Estimate=5"` sets a custom field by human name;
     `--field "Estimate="` clears it. The same empty-value convention
     clears links on `wp update`: `--assignee ""`, `--accountable ""`,

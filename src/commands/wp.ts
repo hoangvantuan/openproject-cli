@@ -3065,14 +3065,20 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // refused while the work package is still untouched.
       selectedFields(options.fields, flattenHalRecord(before));
       const beforeLinks = (before as { _links?: Record<string, LinkValue> })._links;
+      const ownProject = typeIdOf(beforeLinks?.project);
+      // Names are looked up in --project, else the profile's default; with
+      // neither, the work package's own project is the one that can matter.
+      const scope = profile.project === undefined && ownProject !== undefined
+        ? { ...profile, project: ownProject }
+        : profile;
       const { payload, refs } = await resolveNamedValues(
         runtime,
-        profile,
+        scope,
         options,
         undefined,
         {
           typeId: typeIdOf(beforeLinks?.type),
-          projectId: typeIdOf(beforeLinks?.project),
+          projectId: ownProject,
         },
       );
       if (options.subject !== undefined) {
@@ -3098,7 +3104,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         } else {
           response = await retryWithFreshIds(
             runtime,
-            profile,
+            scope,
             response,
             payload,
             refs,

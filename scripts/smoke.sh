@@ -459,18 +459,18 @@ if [ -z "$VERSION_NAME" ]; then
 else
   if wp_writable version || wp_writable targetVersions; then
     step "set, then clear, version '$VERSION_NAME' (targetVersions) on work package $WP_ID"
-    $BIN wp update "$WP_ID" --version "$VERSION_NAME" --json > /dev/null
+    $BIN wp update "$WP_ID" --version "$VERSION_NAME" --project "$PROJ_ID" --json > /dev/null
     wp_expect version "$VERSION_NAME" targetVersions "$VERSION_NAME"
-    $BIN wp update "$WP_ID" --version "" --json > /dev/null
+    $BIN wp update "$WP_ID" --version "" --project "$PROJ_ID" --json > /dev/null
     wp_expect version "" targetVersions ""
   else
     echo "[smoke] skip: version is not writable on work package $WP_ID; version step skipped."
   fi
   if wp_writable observedInVersions; then
     step "set, then clear, observed-in '$VERSION_NAME' on work package $WP_ID"
-    $BIN wp update "$WP_ID" --observed-in "$VERSION_NAME" --json > /dev/null
+    $BIN wp update "$WP_ID" --observed-in "$VERSION_NAME" --project "$PROJ_ID" --json > /dev/null
     wp_expect observedInVersions "$VERSION_NAME"
-    $BIN wp update "$WP_ID" --observed-in "" --json > /dev/null
+    $BIN wp update "$WP_ID" --observed-in "" --project "$PROJ_ID" --json > /dev/null
     wp_expect observedInVersions ""
   else
     echo "[smoke] skip: observedInVersions is not writable on work package $WP_ID; observed-in step skipped."
@@ -492,26 +492,26 @@ if [ -z "$SPRINT_NAME" ] && [ -z "$BUCKET_NAME" ]; then
 fi
 if [ -n "$SPRINT_NAME" ]; then
   step "place work package $WP_ID in sprint '$SPRINT_NAME'"
-  $BIN wp update "$WP_ID" --sprint "$SPRINT_NAME" --json > /dev/null
+  $BIN wp update "$WP_ID" --sprint "$SPRINT_NAME" --project "$PROJ_ID" --json > /dev/null
   wp_expect sprint "$SPRINT_NAME"
   if [ -z "$BUCKET_NAME" ]; then
     step "clear the sprint of work package $WP_ID"
-    $BIN wp update "$WP_ID" --sprint "" --json > /dev/null
+    $BIN wp update "$WP_ID" --sprint "" --project "$PROJ_ID" --json > /dev/null
     wp_expect sprint ""
   fi
 fi
 if [ -n "$BUCKET_NAME" ]; then
   if [ -n "$SPRINT_NAME" ]; then
     step "move work package $WP_ID from the sprint to bucket '$BUCKET_NAME' (clear, then set)"
-    $BIN wp update "$WP_ID" --sprint "" --json > /dev/null
+    $BIN wp update "$WP_ID" --sprint "" --project "$PROJ_ID" --json > /dev/null
     wp_expect sprint ""
   else
     step "place work package $WP_ID in bucket '$BUCKET_NAME'"
   fi
-  $BIN wp update "$WP_ID" --bucket "$BUCKET_NAME" --json > /dev/null
+  $BIN wp update "$WP_ID" --bucket "$BUCKET_NAME" --project "$PROJ_ID" --json > /dev/null
   wp_expect backlogBucket "$BUCKET_NAME" sprint ""
   step "clear the bucket of work package $WP_ID"
-  $BIN wp update "$WP_ID" --bucket "" --json > /dev/null
+  $BIN wp update "$WP_ID" --bucket "" --project "$PROJ_ID" --json > /dev/null
   wp_expect backlogBucket ""
 fi
 

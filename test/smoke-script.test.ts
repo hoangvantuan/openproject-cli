@@ -168,7 +168,11 @@ test.each([
     expect(ran).toContainEqual(["wp", "comment-edit", "9", "smoke comment **C2**"]);
     for (const flag of log ?? []) expect(ran.some((args) => args.includes(flag)), flag).toBe(true);
     for (const line of skipped ?? []) expect(result.stdout).toContain(line);
-    if (log !== undefined) expect(ran).toContainEqual(["wp", "update", "501", "--sprint", "", "--json"]);
+    // Name-based update steps pin the project, so they never depend on a
+    // default project being configured.
+    if (log !== undefined) {
+      expect(ran).toContainEqual(["wp", "update", "501", "--sprint", "", "--project", "12", "--json"]);
+    }
     if (log !== undefined) {
       expect(ran.some((args) => args[1] === "attach")).toBe(true);
       expect(ran.some((args) => args[1] === "attachment-download")).toBe(true);

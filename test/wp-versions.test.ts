@@ -618,6 +618,38 @@ describe("wp update reads the schema of the work package's own project (review B
     });
   });
 
+  // With neither --project nor a default project the work package's own
+  // project is the only one that can matter, so names resolve there.
+  test("--version <name> resolves in the work package's own project without a default", async () => {
+    const r = await room(MULTI, undefined, { project: null });
+    const api = install();
+    const result = await wp(r, ["update", "675", "--version", "1.0.0"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({
+      targetVersions: [{ href: "/api/v3/versions/32" }],
+    });
+  });
+
+  test("--observed-in <name> resolves in the work package's own project without a default", async () => {
+    const r = await room(MULTI, undefined, { project: null });
+    const api = install();
+    const result = await wp(r, ["update", "675", "--observed-in", "0.9.0"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(api.bodies[0]?.body._links).toEqual({
+      observedInVersions: [{ href: "/api/v3/versions/31" }],
+    });
+  });
+
+  test("an explicit --project still wins over the work package's own project", async () => {
+    // The work package is in 99, whose cache has no version named 1.0.0
+    // resolvable under 13's list; --project 13 must be the one consulted.
+    const r = await room(MULTI, undefined, { project: null, others: { "99": LEGACY } });
+    const api = install(99);
+    const result = await wp(r, ["update", "675", "--version", "1.0.0", "--project", "13"]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.stringify(api.bodies[0]?.body._links)).toContain("/api/v3/versions/32");
+  });
+
   test("a work package in project 99 is judged by 99's schema, not the profile's", async () => {
     // Profile project 13 has targetVersions; project 99 has the legacy
     // single version only.
