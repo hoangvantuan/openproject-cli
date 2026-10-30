@@ -11,7 +11,7 @@ export interface DoctorRuntime {
   readonly setJsonMode: (on: boolean) => void;
 }
 
-type CheckStatus = "pass" | "warn" | "fail" | "skipped";
+type CheckStatus = "pass" | "info" | "warn" | "fail" | "skipped";
 
 interface CheckResult {
   readonly check: string;
@@ -44,6 +44,24 @@ function majorOf(version: string): number | undefined {
   const match = /^(\d+)/.exec(version.trim());
   const major = match?.[1];
   return major === undefined ? undefined : Number.parseInt(major, 10);
+}
+
+/**
+ * Feature names from /api/v3/configuration. Some instances hide coreVersion
+ * from the root document yet keep the configuration readable; its
+ * availableFeatures is the evidence that remains. Never throws: a refused or
+ * odd configuration only means there is less to report.
+ */
+async function availableFeaturesOf(profile: ActiveProfile): Promise<ReadonlyArray<string>> {
+  try {
+    const configuration = await apiGet(profile.instanceUrl, profile.apiKey, "/api/v3/configuration");
+    const features = (configuration as { readonly availableFeatures?: unknown }).availableFeatures;
+    return Array.isArray(features)
+      ? features.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 function errorCodeOf(error: unknown): ErrorCode {
@@ -145,6 +163,17 @@ export function registerDoctorCommand(parent: Command, runtime: DoctorRuntime): 
             check: "versions",
             status: "warn",
             detail: `core ${info.coreVersion} is below the minimum supported v13`,
+          });
+        } else if (info.coreVersion === null) {
+          const features = await availableFeaturesOf(profile);
+          checks.push({
+            check: "versions",
+            status: "info",
+            detail: `core version hidden; API v3 reachable${
+              features.length === 0
+                ? "; no feature list readable"
+                : `; features: ${features.join(", ")}`
+            }`,
           });
         } else {
           checks.push({

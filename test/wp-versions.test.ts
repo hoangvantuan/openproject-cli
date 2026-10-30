@@ -20,6 +20,7 @@ const WP_PATH = "/api/v3/work_packages/675";
 interface VersionFieldSpec {
   readonly targetVersions?: { readonly multiple: boolean };
   readonly observedInVersions?: { readonly multiple: boolean };
+  readonly deprecated?: ReadonlyArray<string>;
 }
 
 interface Room {
@@ -185,6 +186,32 @@ describe("wp --version writes through the schema (#47)", () => {
     expect(api.bodies[0]?.body._links).toEqual({
       version: { href: "/api/v3/versions/32" },
     });
+  });
+
+  test("writing the deprecated version attribute warns on stderr only (#56)", async () => {
+    const r = await room({ deprecated: ["version"] });
+    const api = install();
+    const result = await wp(r, ["update", "675", "--version", "1.0.0", "--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("version attribute is deprecated");
+    expect(result.stderr.trim().split("\n")).toHaveLength(1);
+    expect(result.stdout).not.toContain("deprecated");
+    expect(() => JSON.parse(result.stdout)).not.toThrow();
+    expect(api.bodies[0]?.body._links).toEqual({ version: { href: "/api/v3/versions/32" } });
+  });
+
+  test("a schema without the deprecated mark writes version silently (#56)", async () => {
+    const r = await room(LEGACY);
+    install();
+    const result = await wp(r, ["update", "675", "--version", "1.0.0"]);
+    expect(result.stderr).toBe("");
+  });
+
+  test("targetVersions writes never warn (#56)", async () => {
+    const r = await room({ ...MULTI, deprecated: ["version"] });
+    install();
+    const result = await wp(r, ["update", "675", "--version", "1.0.0"]);
+    expect(result.stderr).toBe("");
   });
 
   test("create writes targetVersions", async () => {
