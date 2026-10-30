@@ -2788,11 +2788,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
           { comment: { raw: text } },
         ));
       } catch (error) {
-        if (error instanceof OpCliError && error.code === "AUTH_FAILED") {
+        // A 401 stays AUTH_FAILED as http.ts raised it; only a 403 is
+        // this key lacking the right to edit someone else's comment.
+        if (error instanceof OpCliError && error.code === "PERMISSION_DENIED") {
           throw new OpCliError(
-            "AUTH_FAILED",
+            "PERMISSION_DENIED",
             `this key may not edit comment ${activityId}.`,
             "only your own comments, or any comment with the \"Edit notes\" permission, can be edited.",
+            error.details,
           );
         }
         throw error;

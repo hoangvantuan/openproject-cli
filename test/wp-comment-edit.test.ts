@@ -188,8 +188,22 @@ describe("wp comment-edit", () => {
 
     const result = await runEdit(["1480", "text"]);
 
+    expect(result.exitCode).toBe(8);
+    expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
+    expect(result.stderr).toMatch(/edit notes/i);
+    expect(result.stderr).not.toMatch(/auth login/);
+  });
+
+  test("a 401 on the PATCH still blames the credentials", async () => {
+    installApi([
+      { method: "GET", status: 200, body: activity("Comment", "old") },
+      { method: "PATCH", status: 401, body: {} },
+    ]);
+
+    const result = await runEdit(["1480", "text"]);
+
     expect(result.exitCode).toBe(3);
     expect(result.stderr).toMatch(/^\[AUTH_FAILED\]/);
-    expect(result.stderr).toMatch(/edit notes/i);
+    expect(result.stderr).toContain("auth login");
   });
 });
