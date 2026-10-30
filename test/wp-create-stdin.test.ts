@@ -500,6 +500,7 @@ describe("wp create --stdin bulk path", () => {
       JSON.stringify([
         "not an object",
         { subject: "", type: "Task" },
+        { subject: "Cleared", assignee: "" },
         { subject: "Mystery", surprise: true },
         { subject: "Good", type: "Task" },
       ]),
@@ -509,8 +510,9 @@ describe("wp create --stdin bulk path", () => {
     expect(lines[0]).toMatchObject({ index: 0, ok: false, code: "USAGE_ERROR" });
     expect(lines[1]).toMatchObject({ index: 1, ok: false, code: "USAGE_ERROR" });
     expect(lines[2]).toMatchObject({ index: 2, ok: false, code: "USAGE_ERROR" });
-    expect(String(lines[2].hint)).toContain("subject");
-    expect(lines[3]).toMatchObject({ index: 3, ok: true, status: "created", id: 102 });
+    expect(lines[3]).toMatchObject({ index: 3, ok: false, code: "USAGE_ERROR" });
+    expect(String(lines[3].hint)).toContain("subject");
+    expect(lines[4]).toMatchObject({ index: 4, ok: true, status: "created", id: 102 });
     expect(api.postCount()).toBe(1);
   });
 

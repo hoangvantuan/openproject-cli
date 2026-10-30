@@ -521,6 +521,18 @@ describe("wp create values by name", () => {
     ]);
   });
 
+  for (const flag of ["--assignee", "--version", "--category", "--parent", "--type", "--status", "--priority"]) {
+    test(`${flag} "" is a usage error on create, never dropped`, async () => {
+      const { configDir, cacheDir } = await standardRoom();
+      await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+      const { postBodies } = installMockApi({});
+      const result = await runWp(configDir, cacheDir, ["create", "QA bug", flag, ""]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("USAGE_ERROR");
+      expect(postBodies).toHaveLength(0);
+    });
+  }
+
   test("a single-valued list field refuses two values before any traffic", async () => {
     const { configDir, cacheDir } = await standardRoom();
     await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
