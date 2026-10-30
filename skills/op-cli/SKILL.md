@@ -122,6 +122,8 @@ op-cli wp delete <id> --yes
 echo '[{"subject":"First"},{"subject":"Second"}]' | op-cli wp create --stdin
 # discuss and audit a work package
 op-cli wp comment <id> <text>
+# edit a comment by the activity id `wp comments` lists (no delete: API v3 has none)
+op-cli wp comment-edit <activity-id> <text>
 op-cli wp history <id>
 # relations between work packages
 op-cli wp relations <id>
