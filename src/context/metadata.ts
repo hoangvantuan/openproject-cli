@@ -8,7 +8,12 @@ import { halElements } from "../core/paginate.js";
 import { OpCliError } from "../core/errors.js";
 
 import { ENV_PROFILE_NAME, type ActiveProfile } from "./profile.js";
-import { projectLinksOf, type ProjectLinks } from "./projectref.js";
+import {
+  projectLinksOf,
+  type ProjectLinks,
+  withMovedRetry,
+  WORKSPACES_COLLECTION,
+} from "./projectref.js";
 import type { RunEnvironment } from "../run.js";
 
 export interface StoredType {
@@ -549,29 +554,16 @@ async function fetchUnlinkedCollection<T extends { readonly name: string }>(
   collection: string,
   convert: (element: HalElement) => T,
 ): Promise<ReadonlyArray<T>> {
-  try {
-    return await fetchProjectCollection(profile, projectId, collection, convert);
-  } catch (error) {
-    if (!(error instanceof OpCliError && error.code === "NOT_FOUND")) {
-      throw error;
-    }
-    try {
-      return await fetchProjectCollection(
-        profile,
-        projectId,
-        collection,
-        convert,
-        `/api/v3/workspaces/${String(projectId)}/${collection}`,
-      );
-    } catch (retry) {
-      // Both routes missing: report the first answer, the one the
-      // caller's own project path gave.
-      if (retry instanceof OpCliError && retry.code === "NOT_FOUND") {
-        throw error;
-      }
-      throw retry;
-    }
-  }
+  return withMovedRetry(
+    () => fetchProjectCollection(profile, projectId, collection, convert),
+    () => fetchProjectCollection(
+      profile,
+      projectId,
+      collection,
+      convert,
+      `${WORKSPACES_COLLECTION}/${String(projectId)}/${collection}`,
+    ),
+  );
 }
 
 // The bare schema endpoint builds its values from TimeEntry.new, so its

@@ -40,7 +40,13 @@ import {
   type ContextOverrides,
 } from "../context/profile.js";
 import { sprintStatusKey, type HalElement } from "../context/metadata.js";
-import { PROJECTS_COLLECTION, resolveProjectRef, type ProjectHit } from "../context/projectref.js";
+import {
+  PROJECTS_COLLECTION,
+  resolveProjectRef,
+  type ProjectHit,
+  withMovedRetry,
+  WORKSPACES_COLLECTION,
+} from "../context/projectref.js";
 
 export interface ProjectRuntime {
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
@@ -121,7 +127,6 @@ function collectValue(value: string, previous: Array<string>): Array<string> {
 const PRINCIPALS_COLLECTION = "/api/v3/principals";
 const ROLES_COLLECTION = "/api/v3/roles";
 const MEMBERSHIPS_COLLECTION = "/api/v3/memberships";
-const WORKSPACES_COLLECTION = "/api/v3/workspaces";
 
 
 /**
@@ -752,20 +757,12 @@ export function registerProjectCommands(
           }
           return { rows, shown };
         };
-        let collected;
-        try {
-          collected = await collect(endpoint(hit));
-        } catch (error) {
-          if (moved === undefined || !(error instanceof OpCliError && error.code === "NOT_FOUND")) {
-            throw error;
-          }
-          try {
-            collected = await collect(moved(hit.id));
-          } catch (retry) {
-            // Both routes missing: the first answer is the one to report.
-            throw retry instanceof OpCliError && retry.code === "NOT_FOUND" ? error : retry;
-          }
-        }
+        const collected = moved === undefined
+          ? await collect(endpoint(hit))
+          : await withMovedRetry(
+            () => collect(endpoint(hit)),
+            () => collect(moved(hit.id)),
+          );
         emitRows(
           vocabularyRuntime,
           columns,

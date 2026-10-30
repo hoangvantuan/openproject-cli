@@ -100,6 +100,31 @@ export function hitOf(element: unknown): ProjectHit | undefined {
 }
 
 export const PROJECTS_COLLECTION = "/api/v3/projects";
+/** Where instances that renamed projects to workspaces serve them (#57). */
+export const WORKSPACES_COLLECTION = "/api/v3/workspaces";
+
+/**
+ * Try `first`; when it answers NOT_FOUND the route may have moved, so
+ * `moved` is tried once (#57). Any other failure stands. When both routes
+ * are missing the first answer is the one reported.
+ */
+export async function withMovedRetry<T>(
+  first: () => Promise<T>,
+  moved: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await first();
+  } catch (error) {
+    if (!(error instanceof OpCliError && error.code === "NOT_FOUND")) {
+      throw error;
+    }
+    try {
+      return await moved();
+    } catch (retry) {
+      throw retry instanceof OpCliError && retry.code === "NOT_FOUND" ? error : retry;
+    }
+  }
+}
 
 /**
  * Every visible project, page by page in server order. Resolution walks
