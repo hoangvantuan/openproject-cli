@@ -501,52 +501,21 @@ async function fetchMembers(
   return sortByName(members);
 }
 
-async function fetchVersions(
+/**
+ * One name-sorted project collection: the shape every optional source
+ * except activities shares, so a new source is a path and a converter.
+ */
+async function fetchProjectCollection<T extends { readonly name: string }>(
   profile: ActiveProfile,
   projectId: number,
-): Promise<ReadonlyArray<StoredVersion>> {
-  const versions = await fetchVocabulary(
+  collection: string,
+  convert: (element: HalElement) => T,
+): Promise<ReadonlyArray<T>> {
+  return sortByName(await fetchVocabulary(
     profile,
-    `/api/v3/projects/${String(projectId)}/versions`,
-    toStoredVersion,
-  );
-  return sortByName(versions);
-}
-
-async function fetchCategories(
-  profile: ActiveProfile,
-  projectId: number,
-): Promise<ReadonlyArray<StoredCategory>> {
-  const categories = await fetchVocabulary(
-    profile,
-    `/api/v3/projects/${String(projectId)}/categories`,
-    toStoredCategory,
-  );
-  return sortByName(categories);
-}
-
-async function fetchSprints(
-  profile: ActiveProfile,
-  projectId: number,
-): Promise<ReadonlyArray<StoredSprint>> {
-  const sprints = await fetchVocabulary(
-    profile,
-    `/api/v3/projects/${String(projectId)}/sprints`,
-    toStoredSprint,
-  );
-  return sortByName(sprints);
-}
-
-async function fetchBuckets(
-  profile: ActiveProfile,
-  projectId: number,
-): Promise<ReadonlyArray<StoredBucket>> {
-  const buckets = await fetchVocabulary(
-    profile,
-    `/api/v3/projects/${String(projectId)}/backlog_buckets`,
-    toStoredBucket,
-  );
-  return sortByName(buckets);
+    `/api/v3/projects/${String(projectId)}/${collection}`,
+    convert,
+  ));
 }
 
 // The bare schema endpoint builds its values from TimeEntry.new, so its
@@ -819,16 +788,16 @@ export async function fetchProjectVocabulary(
   // there, which the refresh reads as "drop this project".
   const members = await fetchMembers(profile, projectId);
   const versions = await fetchOptional("versions", unavailable,
-    () => fetchVersions(profile, projectId));
+    () => fetchProjectCollection(profile, projectId, "versions", toStoredVersion));
   const categories = await fetchOptional("categories", unavailable,
-    () => fetchCategories(profile, projectId));
+    () => fetchProjectCollection(profile, projectId, "categories", toStoredCategory));
   const activities = await fetchOptional("activities", unavailable,
     () => fetchActivities(profile, projectId));
   // A project without the backlogs module answers 404 on both.
   const sprints = await fetchOptional("sprints", unavailable,
-    () => fetchSprints(profile, projectId));
+    () => fetchProjectCollection(profile, projectId, "sprints", toStoredSprint));
   const buckets = await fetchOptional("buckets", unavailable,
-    () => fetchBuckets(profile, projectId));
+    () => fetchProjectCollection(profile, projectId, "backlog_buckets", toStoredBucket));
   return {
     project_id: projectId,
     fetched_at: new Date().toISOString(),
