@@ -63,7 +63,11 @@ async function attempt(
   path: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
+  accept = "application/hal+json",
 ): Promise<Response> {
+  // A multipart upload carries its own boundary-bearing content type;
+  // fetch only writes it when the caller leaves the header alone.
+  const multipart = body instanceof FormData;
   // AbortSignal.timeout aborts with a TimeoutError reason. A budget
   // problem (too impatient) and a reachability problem (wrong URL)
   // share the NETWORK_ERROR code and exit 6 by contract; only the
@@ -72,17 +76,17 @@ async function attempt(
   try {
     return await fetch(`${instanceUrl}${path}`, {
       headers: {
-        accept: "application/hal+json",
+        accept,
         authorization: `Basic ${Buffer.from(`apikey:${apiKey}`).toString("base64")}`,
         // The API rejects non-JSON bodies with 415; without this header
         // fetch would label the body text/plain.
-        ...(method === "POST" || method === "PATCH"
+        ...((method === "POST" || method === "PATCH") && !multipart
           ? { "content-type": "application/json" }
           : {}),
       },
       signal,
       ...(method === "POST" || method === "PATCH"
-        ? { method, body: JSON.stringify(body) }
+        ? { method, body: multipart ? body : JSON.stringify(body) }
         : { method }),
     });
   } catch {
@@ -104,12 +108,13 @@ async function request(
   path: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
   body?: unknown,
+  accept?: string,
 ): Promise<Response> {
-  let response = await attempt(instanceUrl, apiKey, path, method, body);
+  let response = await attempt(instanceUrl, apiKey, path, method, body, accept);
   if (method === "GET" && (response.status === 429 || response.status >= 500)) {
     // Promise.withResolvers needs ES2024 lib; the executor form stays.
     await new Promise<void>((resolve) => setTimeout(resolve, READ_RETRY_DELAY_MS));
-    response = await attempt(instanceUrl, apiKey, path, method, body);
+    response = await attempt(instanceUrl, apiKey, path, method, body, accept);
   }
 
   if (response.status === 401) {
@@ -233,4 +238,38 @@ export async function apiPatch(
   body: unknown,
 ): Promise<unknown> {
   return send(instanceUrl, apiKey, path, "PATCH", body);
+}
+
+/**
+ * The raw bytes of a file download. Redirects (external storage) are
+ * followed by fetch; it drops the credentials on a cross-origin hop.
+ */
+export async function apiGetBytes(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+): Promise<Uint8Array> {
+  const response = await request(instanceUrl, apiKey, path, "GET", undefined, "*/*");
+  if (response.status === 404) {
+    throw new OpCliError("NOT_FOUND");
+  }
+  if (!response.ok) {
+    throw new OpCliError("API_ERROR");
+  }
+  try {
+    return new Uint8Array(await response.arrayBuffer());
+  } catch {
+    throw new OpCliError("NETWORK_ERROR");
+  }
+}
+
+/** A multipart/form-data POST; like every write it is never retried. */
+export async function apiPostMultipartRaw(
+  instanceUrl: string,
+  apiKey: string,
+  path: string,
+  form: FormData,
+): Promise<RawWriteResponse> {
+  const response = await request(instanceUrl, apiKey, path, "POST", form);
+  return { status: response.status, body: await bodyOf(response) };
 }
