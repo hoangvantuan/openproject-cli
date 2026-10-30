@@ -38,6 +38,12 @@ export interface WpListFlags {
   /** Substring matched against subjects through the API's `~` operator. */
   readonly search?: string | undefined;
   readonly createdAfter?: string | undefined;
+  /** Due on or before this date; same grammar as the window dates. */
+  readonly dueBefore?: string | undefined;
+  /** Due on or after this date. */
+  readonly dueAfter?: string | undefined;
+  /** Open and due before today. */
+  readonly overdue?: boolean | undefined;
 }
 
 const DATE_FORMS = "today, yesterday, a number of days such as 7d, or an explicit YYYY-MM-DD date";
@@ -159,6 +165,13 @@ export function buildWpFilters(
     );
   }
   const statuses = unique(flags.statuses ?? []);
+  if (flags.overdue === true && flags.closed === true) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--overdue cannot be combined with --closed.",
+      "an overdue work package is an open one past its due date.",
+    );
+  }
   if ((flags.open === true || flags.closed === true) && statuses.length > 0) {
     throw new OpCliError(
       "USAGE_ERROR",
@@ -180,6 +193,9 @@ export function buildWpFilters(
     filters.push({ name: "status", operator: "c", values: [] });
   } else if (statuses.length > 0) {
     filters.push({ name: "status", operator: "=", values: statuses });
+  }
+  if (flags.overdue === true && flags.open !== true && statuses.length === 0) {
+    filters.push({ name: "status", operator: "o", values: [] });
   }
   if ((flags.types ?? []).length > 0) {
     filters.push({ name: "type", operator: "=", values: unique(flags.types!) });
@@ -222,6 +238,30 @@ export function buildWpFilters(
       // Open upper bound, same reason as updated_at (#24).
       values: [since, ""],
     });
+  }
+  if (flags.dueAfter !== undefined || flags.dueBefore !== undefined || flags.overdue === true) {
+    // One clause carries the whole window: the API ANDs separate clauses
+    // on the same attribute only loosely, and an empty bound is open.
+    const lower = flags.dueAfter === undefined
+      ? ""
+      : untilDate(flags.dueAfter, now, "--due-after");
+    let upper = flags.dueBefore === undefined
+      ? ""
+      : untilDate(flags.dueBefore, now, "--due-before");
+    if (flags.overdue === true) {
+      const yesterday = isoDate(daysAgo(now, 1));
+      if (upper === "" || upper > yesterday) {
+        upper = yesterday;
+      }
+    }
+    if (lower !== "" && upper !== "" && lower > upper) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `the due window is empty: ${lower} is after ${upper}.`,
+        "--due-after must not be later than --due-before (or the day before today with --overdue).",
+      );
+    }
+    filters.push({ name: "dueDate", operator: "<>d", values: [lower, upper] });
   }
   if (flags.updatedAfter !== undefined) {
     const since = sinceDate(flags.updatedAfter, now);

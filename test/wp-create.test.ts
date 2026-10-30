@@ -1459,4 +1459,47 @@ describe("wp create --description", () => {
     expect(result.exitCode).toBe(0);
     expect(postBodies[0]?.description).toEqual({ raw: "" });
   });
+
+describe("wp create scalar attributes", () => {
+  test("scalar flags land in the create payload in wire form", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1501, "Plan it") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create", "Plan it",
+      "--start", "2026-09-01", "--due", "2026-09-30",
+      "--estimate", "PT4H", "--remaining", "2h",
+      "--done", "10", "--story-points", "3",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(postBodies[0]).toMatchObject({
+      startDate: "2026-09-01",
+      dueDate: "2026-09-30",
+      estimatedTime: "PT4H",
+      remainingTime: "PT2H",
+      percentageDone: 10,
+      storyPoints: 3,
+    });
+  });
+
+  test("an empty scalar is a usage error on create, before any request", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({});
+    const result = await runWp(configDir, cacheDir, ["create", "Plan it", "--due", ""]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--due cannot be empty on create");
+    expect(postBodies).toHaveLength(0);
+  });
+
+  test("an invalid scalar is a usage error before any request", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    const { postBodies } = installMockApi({});
+    const result = await runWp(configDir, cacheDir, ["create", "Plan it", "--done", "250"]);
+    expect(result.exitCode).toBe(1);
+    expect(postBodies).toHaveLength(0);
+  });
+});
+
 });
