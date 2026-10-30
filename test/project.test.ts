@@ -660,6 +660,27 @@ describe("project vocabulary listings", () => {
     expect(types.stdout).toContain("Task");
   });
 
+  test("links stay requestable on an instance hosted under a subpath (#57 review 1)", async () => {
+    const root = await makeTempRoom("project-links-subpath-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, `${INSTANCE}/openproject`);
+    installMockApi({
+      gets: {
+        "/openproject/api/v3/projects/21": {
+          ...projectElement(21, "demo-site", "Demo Site"),
+          _links: {
+            versions: { href: "/openproject/api/v3/workspaces/21/versions" },
+          },
+        },
+        "/openproject/api/v3/workspaces/21/versions?pageSize=100": halCollection(1, [
+          { _type: "Version", id: 5, name: "0.1.0", status: "open" },
+        ]),
+      },
+    });
+    const versions = await runProject(configDir, cacheDir, ["versions", "21"]);
+    expect(versions.exitCode).toBe(0);
+    expect(versions.stdout).toContain("0.1.0");
+  });
+
   test("sprints retry once under /workspaces/ when the projects path is 404 (#57)", async () => {
     const root = await makeTempRoom("project-sprints-moved-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);

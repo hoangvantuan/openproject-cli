@@ -35,6 +35,20 @@ const PROJECT_LINK_KEYS: ReadonlyArray<readonly [string, keyof ProjectLinks]> = 
   ["memberships", "memberships"],
 ];
 
+const API_ROOT = "/api/v3/";
+
+/**
+ * The path of a link relative to the instance URL. A link on an instance
+ * hosted under a subpath (https://host/openproject) carries that subpath,
+ * which the client prepends again from the instance URL, so everything
+ * before the API root is dropped.
+ */
+function instancePathOf(href: string): string | undefined {
+  const path = halNextPath(href);
+  const root = path?.indexOf(API_ROOT) ?? -1;
+  return path === undefined || root <= 0 ? path : path.slice(root);
+}
+
 /** The collection paths a project resource links to; undefined when it links none. */
 export function projectLinksOf(project: unknown): ProjectLinks | undefined {
   const rawLinks = ((project as { readonly _links?: unknown })._links ?? {}) as
@@ -42,7 +56,7 @@ export function projectLinksOf(project: unknown): ProjectLinks | undefined {
   const found: { -readonly [K in keyof ProjectLinks]?: string } = {};
   for (const [name, key] of PROJECT_LINK_KEYS) {
     const href = rawLinks[name]?.href;
-    const path = typeof href === "string" ? halNextPath(href) : undefined;
+    const path = typeof href === "string" ? instancePathOf(href) : undefined;
     if (path !== undefined) {
       found[key] = path;
     }
