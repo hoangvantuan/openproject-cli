@@ -357,6 +357,29 @@ describe("wp list filters", () => {
     expect(result.stdout).toContain("Accountable task");
   });
 
+  test("--watcher maps to the watcher filter and resolves me (#52)", async () => {
+    const root = await makeTempRoom("wp-list-watcher-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        "/api/v3/users/me": { id: 5, name: "Tuan Ha", login: "tuan" },
+        [listPath([{ watcher: { operator: "=", values: ["5", "9"] } }], 100)]: halCollection(
+          1,
+          [wpElement(1522, "Watched task")],
+        ),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "list",
+      "--watcher",
+      "me",
+      "--watcher",
+      "9",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Watched task");
+  });
+
   test("--open maps to the o operator without touching metadata", async () => {
     const root = await makeTempRoom("wp-list-open-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);
