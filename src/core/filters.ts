@@ -34,6 +34,10 @@ export interface WpListFlags {
   readonly versions?: ReadonlyArray<string> | undefined;
   readonly observedIn?: ReadonlyArray<string> | undefined;
   readonly categories?: ReadonlyArray<string> | undefined;
+  readonly sprints?: ReadonlyArray<string> | undefined;
+  readonly buckets?: ReadonlyArray<string> | undefined;
+  /** In neither a sprint nor a backlog bucket (#46). */
+  readonly inbox?: boolean | undefined;
   readonly priorities?: ReadonlyArray<string> | undefined;
   readonly parents?: ReadonlyArray<string> | undefined;
   readonly updatedAfter?: string | undefined;
@@ -181,6 +185,21 @@ export function buildWpFilters(
       "list explicit statuses or use one shorthand, not both.",
     );
   }
+  // A work package sits in a sprint, in a backlog bucket, or in the
+  // inbox, never in two, so any pair of these ANDs to nothing (#46).
+  const placements = [
+    (flags.sprints ?? []).length > 0 ? "--sprint" : undefined,
+    (flags.buckets ?? []).length > 0 ? "--bucket" : undefined,
+    flags.inbox === true ? "--inbox" : undefined,
+  ].filter((flag): flag is string => flag !== undefined);
+  if (placements.length > 1) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `${placements.join(" and ")} cannot be combined.`,
+      "a work package sits in a sprint, in a backlog bucket, or in the inbox; "
+        + "run one listing per placement.",
+    );
+  }
 
   const filters: Array<WpFilter> = [];
   // The project leads: it is the scope every other clause narrows, and it
@@ -223,6 +242,16 @@ export function buildWpFilters(
   }
   if ((flags.categories ?? []).length > 0) {
     filters.push({ name: "category", operator: "=", values: unique(flags.categories!) });
+  }
+  if ((flags.sprints ?? []).length > 0) {
+    filters.push({ name: "sprint", operator: "=", values: unique(flags.sprints!) });
+  }
+  if ((flags.buckets ?? []).length > 0) {
+    filters.push({ name: "backlogBucket", operator: "=", values: unique(flags.buckets!) });
+  }
+  if (flags.inbox === true) {
+    // A boolean filter: the instance reads "t", and refuses "true".
+    filters.push({ name: "backlogInbox", operator: "=", values: ["t"] });
   }
   if ((flags.priorities ?? []).length > 0) {
     filters.push({ name: "priority", operator: "=", values: unique(flags.priorities!) });

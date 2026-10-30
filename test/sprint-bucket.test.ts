@@ -157,7 +157,10 @@ function install(overrides: Record<string, Reply> = {}): void {
         key,
         body: typeof call.body === "string" ? JSON.parse(call.body) as unknown : undefined,
       });
-      const reply = table[key] ?? { status: 599, body: { unexpected: key } };
+      const listing = key.startsWith("GET /api/v3/work_packages?")
+        ? { status: 200, body: collection([]) }
+        : undefined;
+      const reply = table[key] ?? listing ?? { status: 599, body: { unexpected: key } };
       return { statusCode: reply.status, data: reply.body ?? {} };
     })
     .persist();
@@ -312,4 +315,121 @@ test("meta refresh diffs sprints and buckets", async () => {
     },
     { section: "buckets", kind: "removed", id: 4, detail: "removed PoC (4)" },
   ]));
+});
+
+// ---------------------------------------------------------------------------
+// wp list / count filters
+
+/** The filter clauses of the last work package listing, decoded. */
+function listedFilters(): unknown {
+  const listing = [...requests].reverse()
+    .find((entry) => entry.key.startsWith("GET /api/v3/work_packages?"));
+  const query = new URLSearchParams((listing?.key ?? "").split("?")[1]);
+  return JSON.parse(query.get("filters") ?? "null") as unknown;
+}
+
+const PROJECT_CLAUSE = { project: { operator: "=", values: [String(PROJECT)] } };
+
+test("wp list --sprint resolves names and ids into one sprint clause", async () => {
+  install();
+
+  const result = await run(
+    ["wp", "list", "--sprint", "Sprint 14", "--sprint", "57", "--json"],
+    env,
+    {},
+  );
+
+  expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
+  expect(listedFilters()).toEqual([
+    PROJECT_CLAUSE,
+    { sprint: { operator: "=", values: ["58", "57"] } },
+  ]);
+});
+
+test("wp count --bucket and --inbox build their clauses", async () => {
+  install();
+
+  const bucketed = await run(["wp", "count", "--bucket", "PoC"], env, {});
+  expect(bucketed.stderr).toBe("");
+  expect(bucketed.exitCode).toBe(0);
+  expect(listedFilters()).toEqual([
+    PROJECT_CLAUSE,
+    { backlogBucket: { operator: "=", values: ["4"] } },
+  ]);
+
+  const inbox = await run(["wp", "count", "--inbox"], env, {});
+  expect(inbox.exitCode).toBe(0);
+  expect(listedFilters()).toEqual([
+    PROJECT_CLAUSE,
+    { backlogInbox: { operator: "=", values: ["t"] } },
+  ]);
+});
+
+test("wp list refuses --sprint with --inbox before any traffic", async () => {
+  install();
+
+  const result = await run(["wp", "list", "--sprint", "58", "--inbox"], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] --sprint and --inbox cannot be combined/);
+  expect(requests).toEqual([]);
+});
+
+test("an unknown sprint name lists the valid ones", async () => {
+  install();
+
+  const result = await run(["wp", "list", "--sprint", "Sprint 41"], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('sprint "Sprint 41" not found');
+  expect(result.stderr).toContain("Sprint 14");
+});
+
+test("a project without sprints says so, naming the project", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 200, body: collection([]) },
+  });
+
+  const result = await run(["wp", "list", "--sprint", "Sprint 14"], env, {});
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toMatch(/^\[USAGE_ERROR\] .*project 16 has no sprints/);
+  // The empty list was re-read once before giving up.
+  expect(requests.filter((entry) =>
+    entry.key === `GET /api/v3/projects/${String(PROJECT)}/sprints`)).toHaveLength(2);
+});
+
+test("an unavailable bucket source fails --bucket with PERMISSION_DENIED", async () => {
+  install({
+    [`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`]: { status: 404, body: NOT_FOUND },
+  });
+
+  const result = await run(["wp", "count", "--bucket", "PoC"], env, {});
+
+  expect(result.exitCode).toBe(8);
+  expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\] The buckets of project 16 are unavailable/);
+});
+
+test("a vocabulary stored before #46 is refreshed once for --sprint", async () => {
+  install();
+  expect((await run(["meta", "versions"], env, {})).exitCode).toBe(0);
+  const stored = JSON.parse(await readFile(storePath(), "utf8")) as {
+    projectScoped: Record<string, Record<string, unknown>>;
+  };
+  const legacy = stored.projectScoped[String(PROJECT)] as Record<string, unknown>;
+  delete legacy.sprints;
+  delete legacy.buckets;
+  await writeFile(storePath(), JSON.stringify(stored));
+  requests = [];
+
+  const result = await run(["wp", "list", "--sprint", "Sprint 14"], env, {});
+
+  expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
+  expect(listedFilters()).toEqual([
+    PROJECT_CLAUSE,
+    { sprint: { operator: "=", values: ["58"] } },
+  ]);
+  expect((await storedVocabulary()).sprints).toHaveLength(2);
 });
