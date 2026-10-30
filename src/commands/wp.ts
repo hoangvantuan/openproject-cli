@@ -3202,11 +3202,13 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
     .description("Add a comment to one work package")
     .argument("<id>")
     .argument("<text>", "markdown body of the comment")
+    .option("--internal", "post an internal comment, visible only to users who may see internal comments")
     .option(recordOptions.json, "emit a flat JSON record")
     .option(recordOptions.fields, "comma-separated columns to show")
     .option(recordOptions.profile, "use this profile for this command only")
     .option(recordOptions.project, "override the profile default project")
     .action(async (reference: string, text: string, options: {
+      internal?: boolean;
       json?: boolean;
       fields?: string;
       profile?: string;
@@ -3217,11 +3219,16 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       // a caller who fixes the flag and retries cannot post it twice.
       selectedFields(options.fields, ACTIVITY_ROW_SHAPE);
       const profile = await openProfile(runtime, options);
+      // The key is sent only with the flag: an instance without the
+      // internal_comments feature then sees exactly the public request.
+      const body = options.internal === true
+        ? { comment: { raw: text }, internal: true }
+        : { comment: { raw: text } };
       const created = activityRow(await apiPost(
         profile.instanceUrl,
         profile.apiKey,
         `/api/v3/work_packages/${reference}/activities`,
-        { comment: { raw: text } },
+        body,
       ));
       const named = await authorResolver(
         (path) => apiGet(profile.instanceUrl, profile.apiKey, path),

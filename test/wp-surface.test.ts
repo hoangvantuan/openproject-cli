@@ -842,6 +842,84 @@ describe("wp comment", () => {
     expect(result.exitCode).toBe(4);
     expect(result.stderr).toMatch(/^\[NOT_FOUND\]/);
   });
+
+  test("--internal posts the flag alongside the raw text", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-internal-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const { writes } = installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 200,
+          body: { ...commentActivity(1482, "Ping the client first.", 9, "Linh Nguyen"), internal: true },
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, [
+      "comment",
+      "1520",
+      "Ping the client first.",
+      "--internal",
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(writes[0]?.body ?? "{}")).toEqual({
+      comment: { raw: "Ping the client first." },
+      internal: true,
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({ id: 1482, internal: true });
+  });
+
+  test("without --internal the payload carries no internal key", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-public-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const { writes } = installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 200,
+          body: commentActivity(1483, "Deployed.", 9, "Linh Nguyen"),
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, ["comment", "1520", "Deployed."]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(writes[0]?.body ?? "{}")).toEqual({
+      comment: { raw: "Deployed." },
+    });
+  });
+
+  test("a server refusal of an internal comment surfaces its message", async () => {
+    const root = await makeTempRoom("op-cli-wp-comment-refused-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      writes: [
+        {
+          path: activitiesPath(),
+          method: "POST",
+          status: 403,
+          body: { message: "You are not allowed to add internal comments." },
+        },
+      ],
+    });
+
+    const result = await runWp(configDir, cacheDir, [
+      "comment",
+      "1520",
+      "secret",
+      "--internal",
+    ]);
+
+    expect(result.exitCode).toBe(8);
+    expect(result.stderr).toMatch(/^\[PERMISSION_DENIED\]/);
+    expect(result.stderr).toMatch(/internal comments/);
+  });
 });
 
 /**
