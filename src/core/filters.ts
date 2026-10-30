@@ -24,6 +24,14 @@ export interface WpListFlags {
    * every clause beside it is read inside that project (#19).
    */
   readonly project?: string | undefined;
+  /**
+   * `false` keeps a project-scoped listing to the project's own work
+   * packages, read from the project's own collection; the default (and
+   * `true`) includes subprojects (#55).
+   */
+  readonly includeSubprojects?: boolean | undefined;
+  /** Work package ids, matched through `id =`. */
+  readonly ids?: ReadonlyArray<string> | undefined;
   readonly statuses?: ReadonlyArray<string> | undefined;
   readonly open?: boolean | undefined;
   readonly closed?: boolean | undefined;
@@ -198,12 +206,30 @@ export function buildWpFilters(
       + "run one listing per placement.",
   );
 
+  if (flags.includeSubprojects === false && flags.project === undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--no-include-subprojects needs a project in context.",
+      "pass --project <name-or-id> or set a default project on the profile.",
+    );
+  }
+
   const filters: Array<WpFilter> = [];
   // The project leads: it is the scope every other clause narrows, and it
   // is the same clause the project-scoped collection applies internally,
   // subprojects included.
-  if (flags.project !== undefined) {
+  if (flags.project !== undefined && flags.includeSubprojects !== false) {
     filters.push({ name: "project", operator: "=", values: [flags.project] });
+  }
+  if (flags.includeSubprojects === false) {
+    // The global project clause reaches subprojects. subprojectId "none"
+    // drops them, but the instance only evaluates it inside the
+    // project-scoped collection (see projectScopedPath), so the project
+    // clause is left out here and the route carries the scope.
+    filters.push({ name: "subprojectId", operator: "!*", values: [] });
+  }
+  if ((flags.ids ?? []).length > 0) {
+    filters.push({ name: "id", operator: "=", values: unique(flags.ids!) });
   }
   if (flags.open === true) {
     filters.push({ name: "status", operator: "o", values: [] });
@@ -326,4 +352,60 @@ export function filtersQuery(filters: ReadonlyArray<WpFilter>): string {
     [filter.name]: { operator: filter.operator, values: [...filter.values] },
   }));
   return encodeURIComponent(JSON.stringify(wire));
+}
+
+/**
+ * The sort fields `wp list --sort` accepts: the flattened record names
+ * users see, mapped to the API's sortBy keys.
+ */
+const SORT_FIELDS: Readonly<Record<string, string>> = {
+  updatedAt: "updatedAt",
+  createdAt: "createdAt",
+  dueDate: "dueDate",
+  startDate: "startDate",
+  priority: "priority",
+  status: "status",
+  id: "id",
+  subject: "subject",
+};
+
+/** Parse repeated `field[:asc|desc]` values into the API's sortBy pairs. */
+export function parseSort(raw: ReadonlyArray<string>): Array<[string, "asc" | "desc"]> {
+  const allowed = Object.keys(SORT_FIELDS).join(", ");
+  const pairs: Array<[string, "asc" | "desc"]> = [];
+  for (const entry of raw) {
+    const [name = "", direction = "asc", ...rest] = entry.trim().split(":");
+    const field = Object.keys(SORT_FIELDS).find(
+      (candidate) => candidate.toLowerCase() === name.toLowerCase(),
+    );
+    if (field === undefined) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `cannot sort by "${name}".`,
+        `--sort accepts ${allowed}, each optionally followed by :asc or :desc.`,
+      );
+    }
+    const lowered = direction.toLowerCase();
+    if (rest.length > 0 || (lowered !== "asc" && lowered !== "desc")) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `"${entry}" is not a sort direction.`,
+        "--sort <field>:asc or <field>:desc; the direction defaults to asc.",
+      );
+    }
+    if (pairs.some(([existing]) => existing === SORT_FIELDS[field])) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `--sort lists ${field} twice.`,
+        "name each field once.",
+      );
+    }
+    pairs.push([SORT_FIELDS[field]!, lowered]);
+  }
+  return pairs;
+}
+
+/** The URL-encoded `sortBy` query parameter value. */
+export function sortByQuery(pairs: ReadonlyArray<[string, string]>): string {
+  return encodeURIComponent(JSON.stringify(pairs));
 }

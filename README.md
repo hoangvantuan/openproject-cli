@@ -41,6 +41,7 @@ points beyond the quickstart:
 op-cli wp create "Fix login bug" --type Bug --priority High
 op-cli wp update 123 --start 2026-09-01 --due 2026-09-30 --estimate 4h --done 40 --story-points 5
 op-cli wp list --search login          # server-side subject search
+op-cli wp list --sort updatedAt:desc   # repeatable; also --id <id>, --no-include-subprojects
 op-cli wp update 123 --sprint "Sprint 14"   # or --bucket <name>, never both
 op-cli wp list --backlog-inbox          # in neither a sprint nor a backlog bucket
 op-cli wp watchers <id>                # list watchers; also `wp watch` / `wp unwatch`, `wp list --watcher me`

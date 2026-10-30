@@ -109,6 +109,12 @@ op-cli wp list --due-before 2026-09-30 --due-after 2026-09-01
 op-cli wp count --overdue
 # find by words in the subject, server-side
 op-cli wp list --search login
+# order the list: repeatable --sort field[:asc|desc] (asc by default; wp count refuses it);
+# fields are updatedAt, createdAt, dueDate, startDate, priority, status, id, subject
+op-cli wp list --sort updatedAt:desc --sort subject
+# by id (repeatable); a project listing includes subprojects unless excluded
+op-cli wp list --id 12 --id 34
+op-cli wp list --project web --no-include-subprojects
 # how many match, without paginating; fetch every page with --all
 op-cli wp count --priority High
 # inspect one work package, optionally narrowing columns
