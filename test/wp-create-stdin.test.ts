@@ -619,4 +619,51 @@ describe("wp create --stdin bulk path", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("stdin");
   });
+
+describe("wp create --stdin scalar keys", () => {
+  test("scalar keys (camel and kebab) reach the payload", async () => {
+    const { configDir, cacheDir } = await room();
+    const api = installMockApi({
+      gets: refreshEndpoints(baseMetadata()),
+      posts: [
+        { status: 201, body: createdElement(101, "Plan A") },
+        { status: 201, body: createdElement(102, "Plan B") },
+      ],
+    });
+    const result = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["--stdin"],
+      JSON.stringify([
+        { subject: "Plan A", start: "2026-09-01", due: "2026-09-30", estimate: "4h", remaining: "1h", done: 25, storyPoints: 8 },
+        { subject: "Plan B", "story-points": 2 },
+      ]),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(api.postBodies[0]).toMatchObject({
+      startDate: "2026-09-01",
+      dueDate: "2026-09-30",
+      estimatedTime: "PT4H",
+      remainingTime: "PT1H",
+      percentageDone: 25,
+      storyPoints: 8,
+    });
+    expect(api.postBodies[1]).toMatchObject({ storyPoints: 2 });
+  });
+
+  test("a bad scalar fails its own item by index, without a request for it", async () => {
+    const { configDir, cacheDir } = await room();
+    const api = installMockApi({ gets: refreshEndpoints(baseMetadata()) });
+    const result = await runWpStdin(
+      configDir,
+      cacheDir,
+      ["--stdin", "--dry-run"],
+      JSON.stringify([{ subject: "Bad", due: "2026-13-40" }]),
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout + result.stderr).toContain("input 0");
+    expect(api.postCount()).toBe(0);
+  });
+});
+
 });

@@ -33,6 +33,14 @@ numeric; use each command's help to distinguish them. Run any command below with
     `--version ""`, `--category ""`, `--parent ""`, `--observed-in ""`. `--type`, `--status`, `--priority`,
     and `--subject` refuse an empty value, and so does every empty value
     on `wp create`, all with `USAGE_ERROR` before any request.
+  - Scalar attributes: `--start`/`--due` (YYYY-MM-DD), `--estimate`/
+    `--remaining` (durations like `4h`, `1h30m`, `PT4H`, sent as ISO 8601),
+    `--done` (0-100), `--story-points` (whole number), on `wp create` and
+    `wp update`. `--due ""` and the others clear on update. Values are
+    validated locally with `USAGE_ERROR`; server refusals such as
+    `--done` in status-based progress mode show the server's message.
+    `wp create --stdin` items use the keys `start`, `due`, `estimate`,
+    `remaining`, `done`, `storyPoints` (or `story-points`).
   - `--accountable <name|id|me>` sets the work package Accountable (API
     field `responsible`) on `wp create`/`update`, resolved like
     `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk
@@ -77,6 +85,9 @@ the command you need directly. If it fails with `PROFILE_NOT_FOUND` or
 # find work packages; repeat a filter flag to OR values
 # --created-after and --updated-after take the same date forms
 op-cli wp list --open --type Task --assignee me --updated-after 7d
+# due dates: on or before / on or after; --overdue is open and due before today
+op-cli wp list --due-before 2026-09-30 --due-after 2026-09-01
+op-cli wp count --overdue
 # find by words in the subject, server-side
 op-cli wp list --search login
 # how many match, without paginating; fetch every page with --all
@@ -94,6 +105,9 @@ op-cli wp update <id> --version 1.0.0 --observed-in 0.9.0
 op-cli wp list --observed-in 0.9.0
 # clear a link with an empty value
 op-cli wp update <id> --assignee ""
+# dates, effort, progress, points; an empty value clears on update
+op-cli wp update <id> --start 2026-09-01 --due 2026-09-30 --estimate 4h --done 40 --story-points 5
+op-cli wp update <id> --due ""
 # Accountable (API field responsible): set, clear, filter
 op-cli wp update <id> --accountable Linh
 op-cli wp update <id> --accountable ""

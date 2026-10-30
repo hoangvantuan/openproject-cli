@@ -283,4 +283,51 @@ describe("filtersQuery", () => {
       ),
     );
   });
+
+describe("due-date filters", () => {
+  test("--due-before is an open-lower window", () => {
+    expect(buildWpFilters({ dueBefore: "2026-09-30" }, NOW)).toEqual([
+      { name: "dueDate", operator: "<>d", values: ["", "2026-09-30"] },
+    ]);
+  });
+
+  test("--due-after is an open-upper window", () => {
+    expect(buildWpFilters({ dueAfter: "2026-09-01" }, NOW)).toEqual([
+      { name: "dueDate", operator: "<>d", values: ["2026-09-01", ""] },
+    ]);
+  });
+
+  test("both bounds share one clause", () => {
+    expect(
+      buildWpFilters({ dueAfter: "2026-09-01", dueBefore: "2026-09-30" }, NOW),
+    ).toEqual([{ name: "dueDate", operator: "<>d", values: ["2026-09-01", "2026-09-30"] }]);
+  });
+
+  test("--overdue is open work due up to yesterday", () => {
+    expect(buildWpFilters({ overdue: true }, NOW)).toEqual([
+      { name: "status", operator: "o", values: [] },
+      { name: "dueDate", operator: "<>d", values: ["", "2026-08-22"] },
+    ]);
+  });
+
+  test("--overdue keeps an explicit --open to one status clause and an earlier --due-before", () => {
+    expect(buildWpFilters({ overdue: true, open: true, dueBefore: "2026-08-01" }, NOW)).toEqual([
+      { name: "status", operator: "o", values: [] },
+      { name: "dueDate", operator: "<>d", values: ["", "2026-08-01"] },
+    ]);
+  });
+
+  test("--overdue refuses --closed", () => {
+    expect(catchUsage(() => buildWpFilters({ overdue: true, closed: true }, NOW))?.code)
+      .toBe("USAGE_ERROR");
+  });
+
+  test("an empty window and a bad date are usage errors", () => {
+    expect(catchUsage(() => buildWpFilters({ dueAfter: "2026-10-01", dueBefore: "2026-09-01" }, NOW))?.code)
+      .toBe("USAGE_ERROR");
+    expect(catchUsage(() => buildWpFilters({ dueBefore: "2026-02-30" }, NOW))?.code)
+      .toBe("USAGE_ERROR");
+  });
+});
+
 });

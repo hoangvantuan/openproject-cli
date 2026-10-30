@@ -181,3 +181,15 @@ describe("parseDuration", () => {
     }
   });
 });
+
+describe("parseDuration with allowZero", () => {
+  test("zero is legal for an estimate and names the asking flag", () => {
+    expect(parseDuration("0", { flag: "--estimate", allowZero: true }).iso).toBe("PT0S");
+    expect(() => parseDuration("0")).toThrow();
+    try {
+      parseDuration("soon", { flag: "--estimate" });
+    } catch (error) {
+      expect((error as OpCliError).hint).toContain("--estimate");
+    }
+  });
+});
