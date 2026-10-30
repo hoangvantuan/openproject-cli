@@ -21,6 +21,9 @@ test.each([undefined, "12"])("smoke dry mode supports scope %s without live writ
   // The write paths of #43-#49 all walk through in a dry run.
   for (const step of [
     "edit the comment on work package",
+    "watch and unwatch work package",
+    "attach a small file to work package",
+    "read the internal comment on work package",
     "set, then clear, start and due dates",
     "set, then clear, estimate and remaining work",
     "set, then clear, percent complete",
@@ -86,7 +89,16 @@ if(cmd==='wp schema'){
   const allowed=(process.env.WRITABLE||fields.join(',')).split(',');
   data=fields.map(field=>({field,writable:allowed.includes(field)}));
 }
-if(cmd==='wp comment')state.comments.push({id:9,comment:args[3]});
+if(cmd==='wp comment'){
+  if(args.includes('--internal')&&process.env.NO_INTERNAL==='1')process.exit(1);
+  state.comments.push({id:9+state.comments.length,comment:args[3],internal:args.includes('--internal')});
+}
+if(cmd==='wp watch')state.watching=true;
+if(cmd==='wp unwatch'&&process.env.IGNORE!=='wp unwatch')state.watching=false;
+if(cmd==='wp watchers')data=state.watching?[{id:5,name:'Me'}]:[];
+if(cmd==='wp attach'){state.source=args[3];data={id:801,fileName:value('--name')};}
+if(cmd==='wp attachments')data=[{id:801}];
+if(cmd==='wp attachment-download')fs.copyFileSync(state.source,value('--output'));
 if(cmd==='wp comment-edit')state.comments.forEach(c=>{if(String(c.id)===args[2])c.comment=args[3];});
 if(cmd==='wp comments')data=state.comments;
 if(args[0]==='meta'&&['versions','sprints','buckets'].includes(args[1])){
@@ -133,7 +145,7 @@ test.each([
 // Success and failure of the write-path steps against the stateful fake.
 test.each([
   { name: "everything available", env: {}, log: ["--accountable", "--story-points", "--sprint", "--bucket", "--version", "--observed-in"] },
-  { name: "optional fields missing", env: { WRITABLE: "startDate,dueDate", NO_VOCAB: "1" }, skipped: ["skip: estimatedTime/remainingTime", "skip: percentageDone", "skip: storyPoints", "skip: responsible", "no versions visible", "no usable sprints or buckets"] },
+  { name: "optional fields missing", env: { WRITABLE: "startDate,dueDate", NO_VOCAB: "1", NO_INTERNAL: "1" }, skipped: ["skip: estimatedTime/remainingTime", "skip: percentageDone", "skip: storyPoints", "skip: responsible", "no versions visible", "no usable sprints or buckets", "skip: the instance rejected an internal comment"] },
 ])("write-path steps run or skip cleanly: $name", async ({ env, log, skipped }) => {
   const dir = await mkdtemp(join(tmpdir(), "op-smoke-test-"));
   try {
@@ -157,6 +169,11 @@ test.each([
     for (const flag of log ?? []) expect(ran.some((args) => args.includes(flag)), flag).toBe(true);
     for (const line of skipped ?? []) expect(result.stdout).toContain(line);
     if (log !== undefined) expect(ran).toContainEqual(["wp", "update", "501", "--sprint", "", "--json"]);
+    if (log !== undefined) {
+      expect(ran.some((args) => args[1] === "attach")).toBe(true);
+      expect(ran.some((args) => args[1] === "attachment-download")).toBe(true);
+      expect(ran.some((args) => args.includes("--internal"))).toBe(true);
+    }
     expect(ran).toContainEqual(["wp", "delete", "501", "--yes"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -165,6 +182,7 @@ test.each([
   { ignore: "--story-points", step: "story points" },
   { ignore: "--accountable", step: "the accountable" },
   { ignore: "--bucket", step: "bucket" },
+  { ignore: "wp unwatch", step: "watch and unwatch" },
   { ignore: "--observed-in", step: "observed-in" },
 ])("a dropped $ignore write fails the gate at its step", async ({ ignore, step }) => {
   const dir = await mkdtemp(join(tmpdir(), "op-smoke-test-"));
@@ -180,6 +198,6 @@ test.each([
     expect(result.status, result.stderr).toBe(3);
     expect(result.stderr).toContain("FAIL at step:");
     expect(result.stderr).toContain(step);
-    expect(result.stderr).toContain("smoke: wp get reads");
+    expect(result.stderr).toMatch(/smoke: wp (get reads|unwatch left)/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -50,6 +50,7 @@ WP_ID=""
 LIST_WP_ID=""
 ENTRY_ID=""
 DAY_ENTRY_ID=""
+SMOKE_TMP=""
 on_error() {
   echo "smoke: FAIL at step: ${CURRENT_STEP:-<unknown>}" >&2
   if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ]; then
@@ -65,6 +66,7 @@ cleanup_scoped() {
   local original=$?
   local cleanup_failed=0
   trap - ERR EXIT
+  if [ -n "$SMOKE_TMP" ]; then rm -rf "$SMOKE_TMP"; fi
   if [ -n "${OP_CLI_SMOKE_PROJECT:-}" ] && [ "$DRY" != "1" ]; then
     # These variables are populated only from this run's creation responses.
     # Never delete by subject, search result, or IDs supplied by the caller.
@@ -327,6 +329,77 @@ if [ "$DRY" != "1" ]; then
       process.exit(3);
     }
   ' "$COMMENT_EDITED"
+fi
+
+step "watch and unwatch work package $WP_ID (default: me)"
+$BIN wp watch "$WP_ID" > /dev/null
+WATCHERS_JSON="$($BIN wp watchers "$WP_ID" --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$WATCHERS_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows) || rows.length === 0) {
+      console.error("smoke: wp watch left the watcher list empty");
+      process.exit(3);
+    }
+  '
+fi
+$BIN wp unwatch "$WP_ID" > /dev/null
+UNWATCHED_JSON="$($BIN wp watchers "$WP_ID" --json)"
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$UNWATCHED_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows) || rows.length !== 0) {
+      console.error("smoke: wp unwatch left " + JSON.stringify(rows) + " in the watcher list");
+      process.exit(3);
+    }
+  '
+fi
+
+# The attachment dies with the work package at teardown (the API offers no
+# attachment delete on this surface); only the local temp directory needs
+# its own cleanup, which the EXIT trap does.
+step "attach a small file to work package $WP_ID and download it back"
+SMOKE_TMP="$(mktemp -d)"
+ATTACH_SRC="$SMOKE_TMP/up.txt"
+ATTACH_DST="$SMOKE_TMP/down.txt"
+printf 'smoke attachment %s\n' "$STAMP" > "$ATTACH_SRC"
+ATTACH_JSON="$($BIN wp attach "$WP_ID" "$ATTACH_SRC" --name "smoke-$STAMP.txt" \
+  --description "smoke attachment" --json)"
+ATTACH_ID="$(printf '%s' "$ATTACH_JSON" | json_field id)"
+ATTACHMENTS_JSON="$($BIN wp attachments "$WP_ID" --json)"
+$BIN wp attachment-download "$ATTACH_ID" --output "$ATTACH_DST" > /dev/null
+if [ "$DRY" != "1" ]; then
+  printf '%s' "$ATTACHMENTS_JSON" | node -e '
+    const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(rows) || !rows.some((row) => String(row.id) === process.argv[1])) {
+      console.error("smoke: wp attachments missed the attachment " + process.argv[1]);
+      process.exit(3);
+    }
+  ' "$ATTACH_ID"
+  if ! cmp -s "$ATTACH_SRC" "$ATTACH_DST"; then
+    echo "smoke: the downloaded attachment differs from the uploaded file" >&2
+    false
+  fi
+fi
+
+# Internal comments need the instance's internal_comments feature and the
+# permission to write them; a rejection is a skip, not a failure.
+INTERNAL_TEXT="smoke internal **I**"
+if $BIN wp comment "$WP_ID" "$INTERNAL_TEXT" --internal --json > /dev/null 2>&1; then
+  step "read the internal comment on work package $WP_ID back flagged internal"
+  INTERNAL_JSON="$($BIN wp comments "$WP_ID" --json)"
+  if [ "$DRY" != "1" ]; then
+    printf '%s' "$INTERNAL_JSON" | node -e '
+      const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const want = process.argv[1];
+      if (!Array.isArray(rows) || !rows.some((r) => r.comment === want && r.internal === true)) {
+        console.error("smoke: no comment equal to " + JSON.stringify(want) + " reads back as internal");
+        process.exit(3);
+      }
+    ' "$INTERNAL_TEXT"
+  fi
+else
+  echo "[smoke] skip: the instance rejected an internal comment on work package $WP_ID; internal comment step skipped."
 fi
 
 if wp_writable startDate && wp_writable dueDate; then
