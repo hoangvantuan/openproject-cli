@@ -343,6 +343,8 @@ function refreshEndpoints(): Record<string, unknown> {
     [`/api/v3/memberships?filters=${memberFilters}`]: halCollection(0, []),
     "/api/v3/projects/13/versions": halCollection(0, []),
     "/api/v3/projects/13/categories": halCollection(0, []),
+    "/api/v3/projects/13/sprints": halCollection(0, []),
+    "/api/v3/projects/13/backlog_buckets": halCollection(0, []),
     "/api/v3/projects/13/types": halCollection(1, [{ id: 2, name: "Task" }]),
     "/api/v3/work_packages/schemas/13-2": {},
   };

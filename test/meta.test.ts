@@ -63,6 +63,12 @@ interface InstallOptions {
   readonly members?: Record<number, unknown[]>;
   readonly versions?: Record<number, unknown[]>;
   readonly categories?: Record<number, unknown[]>;
+  /**
+   * Sprints and backlog buckets per project (#46). Every project with
+   * members answers both, empty unless listed here.
+   */
+  readonly sprints?: Record<number, unknown[]>;
+  readonly buckets?: Record<number, unknown[]>;
   readonly activities?: Record<number, { readonly allowedValues: unknown[] }>;
   readonly projectTypes?: Record<number, unknown[]>;
   readonly schemas?: Record<string, Record<string, unknown>>;
@@ -178,6 +184,15 @@ function installMockApi(options: InstallOptions): MockAgent {
       })
       .reply(200, halCollection(elements))
       .persist();
+    for (const [segment, byProject] of [
+      ["sprints", options.sprints],
+      ["backlog_buckets", options.buckets],
+    ] as const) {
+      pool
+        .intercept({ path: `/api/v3/projects/${projectId}/${segment}`, method: "GET" })
+        .reply(200, halCollection(byProject?.[Number(projectId)] ?? []))
+        .persist();
+    }
   }
   for (const [projectId, elements] of Object.entries(options.versions ?? {})) {
     pool

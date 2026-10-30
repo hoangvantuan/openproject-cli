@@ -106,6 +106,38 @@ describe("buildWpFilters", () => {
     ]);
   });
 
+  test("sprints and buckets map to their link filters with = (#46)", () => {
+    expect(buildWpFilters({ sprints: ["58", "57", "58"] }, NOW)).toEqual([
+      { name: "sprint", operator: "=", values: ["58", "57"] },
+    ]);
+    expect(buildWpFilters({ buckets: ["2"] }, NOW)).toEqual([
+      { name: "backlogBucket", operator: "=", values: ["2"] },
+    ]);
+  });
+
+  test("inbox is the backlogInbox boolean, spelled t on the wire (#46)", () => {
+    const filters = buildWpFilters({ project: "16", inbox: true }, NOW);
+    expect(filters).toEqual([
+      { name: "project", operator: "=", values: ["16"] },
+      { name: "backlogInbox", operator: "=", values: ["t"] },
+    ]);
+    expect(decodeURIComponent(filtersQuery(filters))).toBe(
+      '[{"project":{"operator":"=","values":["16"]}},'
+        + '{"backlogInbox":{"operator":"=","values":["t"]}}]',
+    );
+  });
+
+  test("a work package sits in one of sprint, bucket, or inbox, so mixing them is refused (#46)", () => {
+    for (const flags of [
+      { sprints: ["58"], buckets: ["2"] },
+      { sprints: ["58"], inbox: true },
+      { buckets: ["2"], inbox: true },
+    ] satisfies ReadonlyArray<WpListFlags>) {
+      const error = catchUsage(() => buildWpFilters(flags, NOW));
+      expect(error?.code).toBe("USAGE_ERROR");
+    }
+  });
+
   test("repeated values become one OR clause in arrival order", () => {
     const filters = buildWpFilters(
       { statuses: ["1", "5", "9"], types: ["2", "6"] },

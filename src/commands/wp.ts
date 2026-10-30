@@ -231,6 +231,9 @@ interface FilterFlagOptions {
   readonly version?: Array<string>;
   readonly observedIn?: Array<string>;
   readonly category?: Array<string>;
+  readonly sprint?: Array<string>;
+  readonly bucket?: Array<string>;
+  readonly inbox?: boolean;
   readonly priority?: Array<string>;
   readonly parent?: Array<string>;
   readonly updatedAfter?: string;
@@ -269,6 +272,9 @@ function addFilterFlags(command: Command): Command {
       [],
     )
     .option("--category <name>", "category name or id; repeat to OR values", collectValue, [])
+    .option("--sprint <name>", "sprint name or id; repeat to OR values", collectValue, [])
+    .option("--bucket <name>", "backlog bucket name or id; repeat to OR values", collectValue, [])
+    .option("--inbox", "only work packages in neither a sprint nor a backlog bucket")
     .option("--priority <name>", "priority name or id; repeat to OR values", collectValue, [])
     .option("--parent <reference>", "parent work package id or exact subject", collectValue, [])
     .option(
@@ -303,6 +309,9 @@ function rawListFlags(options: FilterFlagOptions): WpListFlags {
     versions: options.version,
     observedIn: options.observedIn,
     categories: options.category,
+    sprints: options.sprint,
+    buckets: options.bucket,
+    inbox: options.inbox,
     priorities: options.priority,
     parents: options.parent,
     updatedAfter: options.updatedAfter,
@@ -366,6 +375,75 @@ function projectSource<V>(
       memo?.invalidate();
       await refreshStoredMetadata(runtime.env, profile);
     },
+  };
+}
+
+/** The two backlog placements a work package link can name (#46). */
+const BACKLOG_SOURCES = {
+  sprint: { source: "sprints", owner: "Sprint", plural: "sprints" },
+  bucket: { source: "buckets", owner: "Bucket", plural: "backlog buckets" },
+} as const;
+
+/**
+ * The sprints or backlog buckets of the profile's project. A store from
+ * before #46 lacks them and an empty list may simply be stale, so either
+ * re-reads once; a project that still has none fails naming the project
+ * instead of matching against nothing.
+ */
+function backlogSource(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  flag: keyof typeof BACKLOG_SOURCES,
+  memo?: ResolutionMemo,
+): LookupSource<number> {
+  const { source, owner, plural } = BACKLOG_SOURCES[flag];
+  let refreshed = false;
+  const refresh = async (): Promise<void> => {
+    // The vocabulary this source read is already fresh; a second refresh
+    // in the same lookup would only repeat the fetch.
+    if (refreshed) {
+      return;
+    }
+    refreshed = true;
+    memo?.invalidate();
+    await refreshStoredMetadata(runtime.env, profile);
+  };
+  const read = async (): Promise<ProjectVocabulary> => {
+    if (profile.project === undefined) {
+      throw new OpCliError(
+        "USAGE_ERROR",
+        `--${flag} needs a project to look names up in.`,
+        "pass --project <name-or-id> or set a default project on the profile.",
+      );
+    }
+    return memo === undefined
+      ? loadProjectVocabulary(runtime.env, profile)
+      : memo.vocabulary();
+  };
+  return {
+    label: flag,
+    load: async () => {
+      let vocabulary = await read();
+      if (vocabulary[source] === undefined) {
+        await refresh();
+        vocabulary = await read();
+      }
+      let entries = requireVocabulary(vocabulary, source);
+      if (entries.length === 0 && !refreshed) {
+        await refresh();
+        entries = requireVocabulary(await read(), source);
+      }
+      if (entries.length === 0) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `--${flag}: project ${String(profile.project)} has no ${plural}.`,
+          `run op-cli project ${source} ${String(profile.project)} to check, `
+            + `or leave --${flag} out.`,
+        );
+      }
+      return entries.map((entry) => ({ name: entry.name, owner, value: entry.id }));
+    },
+    refresh,
   };
 }
 
@@ -453,6 +531,9 @@ interface CreateValueFlags extends ScalarFlags {
   readonly version?: ReadonlyArray<string>;
   readonly observedIn?: ReadonlyArray<string>;
   readonly category?: string;
+  /** A sprint or, exclusively, a backlog bucket (#46). */
+  readonly sprint?: string;
+  readonly bucket?: string;
   readonly parent?: string;
   readonly description?: string;
   readonly field?: Array<string>;
@@ -473,6 +554,8 @@ const VALUE_OPTIONS: Readonly<Record<keyof CreateValueFlags, true>> = {
   version: true,
   observedIn: true,
   category: true,
+  sprint: true,
+  bucket: true,
   parent: true,
   description: true,
   field: true,
@@ -672,6 +755,8 @@ function parseBulkItem(
     "assignee",
     "accountable",
     "category",
+    "sprint",
+    "bucket",
     "parent",
     "description",
   ];
@@ -684,6 +769,14 @@ function parseBulkItem(
       throw usage(`"${key}" must be a non-empty name-or-id string.`);
     }
     values[key] = rawValue;
+  }
+  try {
+    refuseTwoPlacements(values);
+  } catch (error) {
+    if (error instanceof OpCliError) {
+      throw usage(error.message, error.hint);
+    }
+    throw error;
   }
   // A version key takes one name-or-id string or an array of them.
   for (const key of ["version", "observedIn"] as const) {
@@ -1031,13 +1124,30 @@ const REQUIRED_VALUE_FLAGS: ReadonlyArray<"type" | "status" | "priority"> = [
 
 /** Flags whose empty value clears the link on update. */
 const CLEARABLE_LINK_FLAGS: ReadonlyArray<
-  "assignee" | "accountable" | "category" | "parent"
+  "assignee" | "accountable" | "category" | "sprint" | "bucket" | "parent"
 > = [
   "assignee",
   "accountable",
   "category",
+  "sprint",
+  "bucket",
   "parent",
 ];
+
+/**
+ * A work package sits in a sprint or in a backlog bucket, never both, so
+ * one command naming both is refused whatever the values (#46). Moving
+ * between the two is one command per placement.
+ */
+function refuseTwoPlacements(options: Pick<CreateValueFlags, "sprint" | "bucket">): void {
+  if (options.sprint !== undefined && options.bucket !== undefined) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      "--sprint and --bucket cannot be combined.",
+      "a work package sits in a sprint or in a backlog bucket; pass one of the two.",
+    );
+  }
+}
 
 /** The repeatable version flags; their empty value is `[""]`. */
 const VERSION_FLAGS = [
@@ -1055,6 +1165,7 @@ function refuseEmptyValues(
   options: CreateValueFlags & { readonly subject?: string },
   mode: "create" | "update",
 ): void {
+  refuseTwoPlacements(options);
   if (mode === "update" && options.subject === "") {
     throw new OpCliError(
       "USAGE_ERROR",
@@ -1644,6 +1755,8 @@ async function resolveListFlags(
     versions?: Array<string>;
     observedIn?: Array<string>;
     categories?: Array<string>;
+    sprints?: Array<string>;
+    buckets?: Array<string>;
     priorities?: Array<string>;
     parents?: Array<string>;
     updatedAfter?: string;
@@ -1728,6 +1841,14 @@ async function resolveListFlags(
       categorySource(runtime, profile),
     );
   }
+  const sprint = options.sprint ?? [];
+  if (sprint.length > 0) {
+    flags.sprints = await resolveValues(sprint, backlogSource(runtime, profile, "sprint"));
+  }
+  const bucket = options.bucket ?? [];
+  if (bucket.length > 0) {
+    flags.buckets = await resolveValues(bucket, backlogSource(runtime, profile, "bucket"));
+  }
   const priority = options.priority ?? [];
   if (priority.length > 0) {
     flags.priorities = await resolveValues(
@@ -1765,6 +1886,7 @@ async function resolveListFlags(
     open: options.open,
     closed: options.closed,
     overdue: options.overdue,
+    inbox: options.inbox,
   };
 }
 
@@ -2118,6 +2240,24 @@ async function resolveNamedValues(
     "--category",
     options.category,
     categorySource(runtime, profile, memo),
+    refs,
+  );
+  await resolveLinkOption(
+    links,
+    "sprint",
+    "/api/v3/sprints/",
+    "--sprint",
+    options.sprint,
+    backlogSource(runtime, profile, "sprint", memo),
+    refs,
+  );
+  await resolveLinkOption(
+    links,
+    "backlogBucket",
+    "/api/v3/backlog_buckets/",
+    "--bucket",
+    options.bucket,
+    backlogSource(runtime, profile, "bucket", memo),
     refs,
   );
 
@@ -2639,6 +2779,11 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       collectOptional,
     )
     .option("--category <name-or-id>", "category of the project, by name or id")
+    .option("--sprint <name-or-id>", "sprint of the project, by name or id; not with --bucket")
+    .option(
+      "--bucket <name-or-id>",
+      "backlog bucket of the project, by name or id; not with --sprint",
+    )
     .option("--parent <id-or-subject>", "parent work package, by id or exact subject")
     .option("--description <text>", "markdown description of the work package")
     .option("--start <date>", "start date, YYYY-MM-DD")
@@ -2732,6 +2877,14 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       collectOptional,
     )
     .option("--category <name-or-id>", 'category of the project, by name or id; "" clears')
+    .option(
+      "--sprint <name-or-id>",
+      'sprint of the project, by name or id; "" clears; not with --bucket',
+    )
+    .option(
+      "--bucket <name-or-id>",
+      'backlog bucket of the project, by name or id; "" clears; not with --sprint',
+    )
     .option("--parent <id-or-subject>", 're-parent under this work package, by id or exact subject; "" clears')
     .option("--description <text>", "new markdown description of the work package")
     .option("--start <date>", 'start date, YYYY-MM-DD; "" clears')

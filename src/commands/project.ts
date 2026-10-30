@@ -67,6 +67,19 @@ export const CATEGORY_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "NAME", field: "name" },
 ];
 
+export const SPRINT_COLUMNS: ReadonlyArray<CollectionColumn> = [
+  { title: "ID", field: "id" },
+  { title: "NAME", field: "name" },
+  { title: "START", field: "startDate" },
+  { title: "FINISH", field: "finishDate" },
+  { title: "STATUS", field: "status" },
+];
+
+export const BUCKET_COLUMNS: ReadonlyArray<CollectionColumn> = [
+  { title: "ID", field: "id" },
+  { title: "NAME", field: "name" },
+];
+
 export const TYPE_COLUMNS: ReadonlyArray<CollectionColumn> = [
   { title: "ID", field: "id" },
   { title: "NAME", field: "name" },
@@ -685,7 +698,7 @@ export function registerProjectCommands(
     });
 
   // ---------------------------------------------------------------------------
-  // project versions / categories / types
+  // project versions / categories / sprints / buckets / types
 
   const vocabularyRuntime: Omit<CollectionRuntime, "connect"> = {
     write: runtime.write,
@@ -732,6 +745,18 @@ export function registerProjectCommands(
     "List the categories a work package in this project may use",
     (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/categories`,
     CATEGORY_COLUMNS,
+  );
+  registerVocabulary(
+    "sprints",
+    "List the sprints a work package in this project may use",
+    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/sprints`,
+    SPRINT_COLUMNS,
+  );
+  registerVocabulary(
+    "buckets",
+    "List the backlog buckets a work package in this project may use",
+    (projectId) => `${PROJECTS_COLLECTION}/${String(projectId)}/backlog_buckets`,
+    BUCKET_COLUMNS,
   );
   registerVocabulary(
     "types",

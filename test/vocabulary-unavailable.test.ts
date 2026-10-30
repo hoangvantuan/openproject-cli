@@ -82,6 +82,8 @@ function routes(): Record<string, Reply> {
       status: 200,
       body: collection([{ _type: "Category", id: 4, name: "Billing" }]),
     },
+    [`GET /api/v3/projects/${String(PROJECT)}/sprints`]: { status: 200, body: collection([]) },
+    [`GET /api/v3/projects/${String(PROJECT)}/backlog_buckets`]: { status: 200, body: collection([]) },
     [`GET /api/v3/projects/${String(PROJECT)}/types`]: {
       status: 200,
       body: collection([{ _type: "Type", id: 2, name: "Task" }]),

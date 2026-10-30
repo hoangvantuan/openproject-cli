@@ -230,6 +230,8 @@ function projectRefreshInstall(
       [`/api/v3/memberships?filters=${memberFilters}`]: empty,
       "/api/v3/projects/13/versions": empty,
       "/api/v3/projects/13/categories": empty,
+      "/api/v3/projects/13/sprints": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
+      "/api/v3/projects/13/backlog_buckets": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
       "/api/v3/projects/13/types": {
         _type: "Collection",
         total: 1,
@@ -690,6 +692,8 @@ describe("wp create values by name", () => {
           count: 0,
           _embedded: { elements: [] },
         },
+        "/api/v3/projects/13/sprints": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
+        "/api/v3/projects/13/backlog_buckets": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
         "/api/v3/projects/13/types": {
           _type: "Collection",
           total: 2,
@@ -1291,6 +1295,8 @@ describe("wp create retry rule", () => {
           count: freshVocabulary.categories.length,
           _embedded: { elements: freshVocabulary.categories },
         },
+        "/api/v3/projects/13/sprints": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
+        "/api/v3/projects/13/backlog_buckets": { _type: "Collection", total: 0, count: 0, _embedded: { elements: [] } },
         "/api/v3/projects/13/types": {
           _type: "Collection",
           total: 2,

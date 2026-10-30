@@ -66,6 +66,25 @@ export interface StoredCategory {
   readonly name: string;
 }
 
+/**
+ * One sprint of the project (#46). The status is the tail of the API's
+ * status urn ("in_planning", "active"), not its title, which the instance
+ * localizes.
+ */
+export interface StoredSprint {
+  readonly id: number;
+  readonly name: string;
+  readonly start_date: string | null;
+  readonly finish_date: string | null;
+  readonly status: string;
+}
+
+/** One backlog bucket of the project (#46). */
+export interface StoredBucket {
+  readonly id: number;
+  readonly name: string;
+}
+
 export interface StoredActivity {
   readonly id: number;
   readonly name: string;
@@ -119,9 +138,14 @@ export interface StoredCustomField {
  * The project vocabularies a user may be refused without the project being
  * unusable: each is fetched on its own, and a 403 or 404 stores it empty
  * with a marker instead of failing the whole load (#44). A new optional
- * source (sprints, backlog buckets) joins by adding its name here.
+ * source joins by adding its name here.
  */
-export type OptionalVocabularySource = "versions" | "categories" | "activities";
+export type OptionalVocabularySource =
+  | "versions"
+  | "categories"
+  | "activities"
+  | "sprints"
+  | "buckets";
 
 /** Why one optional source could not be read when it was fetched. */
 export interface UnavailableSource {
@@ -151,6 +175,12 @@ export interface ProjectVocabulary {
   readonly versions: ReadonlyArray<StoredVersion>;
   readonly categories: ReadonlyArray<StoredCategory>;
   readonly activities: ReadonlyArray<StoredActivity>;
+  /**
+   * Absent in a vocabulary stored before sprints and backlog buckets were
+   * captured (#46); a command that needs them refreshes once.
+   */
+  readonly sprints?: ReadonlyArray<StoredSprint>;
+  readonly buckets?: ReadonlyArray<StoredBucket>;
   readonly custom_fields: Readonly<Record<string, ReadonlyArray<StoredCustomField>>>;
   /**
    * Optional sources the instance refused, keyed by source. Absent when
@@ -185,6 +215,8 @@ export type MetadataSection =
   | "versions"
   | "categories"
   | "activities"
+  | "sprints"
+  | "buckets"
   | "fields";
 
 export interface MetadataChange {
@@ -331,6 +363,25 @@ function toStoredCategory(element: HalElement): StoredCategory {
   };
 }
 
+function toStoredSprint(element: HalElement): StoredSprint {
+  const links = (element._links ?? {}) as HalElement;
+  const status = asString((links.status as HalElement | undefined)?.href);
+  return {
+    id: Number(element.id),
+    name: asString(element.name),
+    start_date: typeof element.startDate === "string" ? element.startDate : null,
+    finish_date: typeof element.finishDate === "string" ? element.finishDate : null,
+    status: status.slice(status.lastIndexOf(":") + 1),
+  };
+}
+
+function toStoredBucket(element: HalElement): StoredBucket {
+  return {
+    id: Number(element.id),
+    name: asString(element.name),
+  };
+}
+
 // Above this size an allowed-values list is noise in the store, not a
 // usable dropdown; the field keeps working, just without the list.
 const MAX_ALLOWED_VALUES = 50;
@@ -462,6 +513,30 @@ async function fetchCategories(
     toStoredCategory,
   );
   return sortByName(categories);
+}
+
+async function fetchSprints(
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<ReadonlyArray<StoredSprint>> {
+  const sprints = await fetchVocabulary(
+    profile,
+    `/api/v3/projects/${String(projectId)}/sprints`,
+    toStoredSprint,
+  );
+  return sortByName(sprints);
+}
+
+async function fetchBuckets(
+  profile: ActiveProfile,
+  projectId: number,
+): Promise<ReadonlyArray<StoredBucket>> {
+  const buckets = await fetchVocabulary(
+    profile,
+    `/api/v3/projects/${String(projectId)}/backlog_buckets`,
+    toStoredBucket,
+  );
+  return sortByName(buckets);
 }
 
 // The bare schema endpoint builds its values from TimeEntry.new, so its
@@ -739,6 +814,11 @@ export async function fetchProjectVocabulary(
     () => fetchCategories(profile, projectId));
   const activities = await fetchOptional("activities", unavailable,
     () => fetchActivities(profile, projectId));
+  // A project without the backlogs module answers 404 on both.
+  const sprints = await fetchOptional("sprints", unavailable,
+    () => fetchSprints(profile, projectId));
+  const buckets = await fetchOptional("buckets", unavailable,
+    () => fetchBuckets(profile, projectId));
   return {
     project_id: projectId,
     fetched_at: new Date().toISOString(),
@@ -746,6 +826,8 @@ export async function fetchProjectVocabulary(
     versions,
     categories,
     activities,
+    sprints,
+    buckets,
     ...(await fetchTypeSchemas(profile, projectId)),
     ...(Object.keys(unavailable).length > 0 ? { unavailable } : {}),
   };
@@ -760,7 +842,7 @@ export async function fetchProjectVocabulary(
 export function requireVocabulary<S extends OptionalVocabularySource>(
   vocabulary: ProjectVocabulary,
   source: S,
-): ProjectVocabulary[S] {
+): NonNullable<ProjectVocabulary[S]> {
   const refusal = vocabulary.unavailable?.[source];
   if (refusal !== undefined) {
     throw new OpCliError(
@@ -771,7 +853,9 @@ export function requireVocabulary<S extends OptionalVocabularySource>(
       { source, project_id: vocabulary.project_id, status: refusal.status },
     );
   }
-  return vocabulary[source];
+  // A store from before a source was captured reads as empty here; the
+  // callers that need sprints or buckets refresh such a store first.
+  return vocabulary[source] ?? [];
 }
 
 /** One refused source of one stored project, flattened for reporting. */
@@ -1004,6 +1088,8 @@ function diffVocabulary(
     ...diffOptional("versions", before, after),
     ...diffOptional("categories", before, after),
     ...diffOptional("activities", before, after),
+    ...diffOptional("sprints", before, after),
+    ...diffOptional("buckets", before, after),
     ...diffEntries("fields", fields(before), fields(after)),
   ];
 }
@@ -1021,7 +1107,7 @@ function diffOptional(
   const was = before?.unavailable?.[source];
   const is = after.unavailable?.[source];
   if (was === undefined && is === undefined) {
-    return diffEntries(source, before?.[source], after[source]);
+    return diffEntries(source, before?.[source], after[source] ?? []);
   }
   if (before === undefined || was?.status === is?.status) {
     return [];
