@@ -340,6 +340,23 @@ describe("wp list filters", () => {
     expect(result.stdout).toContain("My own task");
   });
 
+  test("--accountable maps to the responsible filter and resolves me", async () => {
+    const root = await makeTempRoom("wp-list-accountable-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installMockApi({
+      packages: {
+        "/api/v3/users/me": { id: 5, name: "Tuan Ha", login: "tuan" },
+        [listPath([{ responsible: { operator: "=", values: ["5"] } }], 100)]: halCollection(
+          1,
+          [wpElement(1522, "Accountable task")],
+        ),
+      },
+    });
+    const result = await runWp(configDir, cacheDir, ["list", "--accountable", "me"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Accountable task");
+  });
+
   test("--open maps to the o operator without touching metadata", async () => {
     const root = await makeTempRoom("wp-list-open-");
     const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE, 13);

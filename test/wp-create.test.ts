@@ -521,7 +521,22 @@ describe("wp create values by name", () => {
     ]);
   });
 
-  for (const flag of ["--assignee", "--version", "--category", "--parent", "--type", "--status", "--priority"]) {
+  test("--accountable resolves a member name into _links.responsible", async () => {
+    const { configDir, cacheDir } = await standardRoom();
+    await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));
+    const { postBodies } = installMockApi({
+      posts: [{ status: 201, body: createdElement(1500, "Ship the thing") }],
+    });
+    const result = await runWp(configDir, cacheDir, [
+      "create", "Ship the thing", "--accountable", "Linh Nguyen",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const links = postBodies[0]?._links as Record<string, { href: string }>;
+    expect(links.responsible.href).toBe("/api/v3/users/7");
+    expect(links.assignee).toBeUndefined();
+  });
+
+  for (const flag of ["--assignee", "--accountable", "--version", "--category", "--parent", "--type", "--status", "--priority"]) {
     test(`${flag} "" is a usage error on create, never dropped`, async () => {
       const { configDir, cacheDir } = await standardRoom();
       await writeMetadataFile(cacheDir, scopedMetadata(baseMetadata()));

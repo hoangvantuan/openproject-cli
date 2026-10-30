@@ -85,6 +85,7 @@ describe("buildWpFilters", () => {
       {
         types: ["6"],
         assignees: ["9"],
+        accountables: ["8"],
         authors: ["5"],
         versions: ["21"],
         categories: ["4"],
@@ -96,6 +97,7 @@ describe("buildWpFilters", () => {
     expect(filters).toEqual([
       { name: "type", operator: "=", values: ["6"] },
       { name: "assigned_to", operator: "=", values: ["9"] },
+      { name: "responsible", operator: "=", values: ["8"] },
       { name: "author", operator: "=", values: ["5"] },
       { name: "version", operator: "=", values: ["21"] },
       { name: "category", operator: "=", values: ["4"] },
