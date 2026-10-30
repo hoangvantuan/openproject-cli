@@ -62,6 +62,10 @@ const WP_BODY = {
 
 const GETS: Record<string, unknown> = {
   [scopedListing("13")]: collection([WP_BODY]),
+  [scopedListing("13").replace("pageSize=100", "pageSize=1")]: collection([WP_BODY]),
+  [`/api/v3/time_entries?filters=${encodeURIComponent(
+    JSON.stringify([{ project: { operator: "=", values: ["13"] } }]),
+  )}&pageSize=100`]: collection([]),
   "/api/v3/work_packages/675": WP_BODY,
   "/api/v3/projects/13": {
     _type: "Project",
@@ -104,7 +108,7 @@ async function invoke(args: ReadonlyArray<string>): Promise<Outcome> {
   );
   await writeFile(
     join(cacheDir, "default", "metadata.json"),
-    JSON.stringify({ ...baseMetadata(), projectScoped: { "13": projectVocabulary({}) } }),
+    JSON.stringify({ ...baseMetadata(), projectScoped: { "13": { ...projectVocabulary({}), sprints: [], buckets: [] } } }),
   );
   const requests: Array<string> = [];
   const mockAgent = new MockAgent();
@@ -141,10 +145,11 @@ const REPRESENTATIVE: ReadonlyArray<ReadonlyArray<string>> = [
   ["wp", "update", "675", "--subject", "y"],
   ["time", "list"],
   ["time", "log", "675", "--hours", "1", "--activity", "Development"],
-  ["meta", "versions"],
-  ["meta", "members"],
   ["project", "get", "13"],
 ];
+
+/** The commands whose writes the fake refuses (404), so they cannot succeed. */
+const WRITES = new Set(["wp create", "wp update", "time log"]);
 
 describe("--workspace is an alias of --project (#57)", () => {
   test.each(REPRESENTATIVE.map((args) => [args.join(" "), args] as const))(
@@ -155,8 +160,31 @@ describe("--workspace is an alias of --project (#57)", () => {
       expect(viaWorkspace).toEqual(viaProject);
       // The comparison must not pass because both refused the flag.
       expect(viaWorkspace.stderr).not.toContain("unknown option");
+      if (!WRITES.has(args.slice(0, 2).join(" "))) {
+        expect(viaWorkspace.exitCode).toBe(0);
+        // ...nor because the alias was ignored: project 13 shows in the traffic.
+        expect(viaWorkspace.requests.join("\n")).toContain("13");
+      }
     },
   );
+
+  test("every meta subcommand that takes --project takes --workspace the same way", async () => {
+    const taking: Array<string> = [];
+    for (const path of await commandPaths("meta")) {
+      const help = await invoke(["meta", ...path, "--help"]);
+      if (help.stdout.includes("--project")) {
+        taking.push(path.join(" "));
+      }
+    }
+    expect(taking.length).toBeGreaterThan(5);
+    for (const name of taking) {
+      const viaProject = await invoke(["meta", name, "--project", "13"]);
+      const viaWorkspace = await invoke(["meta", name, "--workspace", "13"]);
+      expect(viaWorkspace, name).toEqual(viaProject);
+      expect(viaWorkspace.exitCode, name).toBe(0);
+      expect(viaWorkspace.requests, name).toEqual([]);
+    }
+  });
 
   test("--workspace resolves a name exactly like --project", async () => {
     const viaWorkspace = await invoke(["wp", "list", "--workspace", "Operations"]);
