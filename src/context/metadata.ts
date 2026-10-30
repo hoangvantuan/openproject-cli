@@ -129,6 +129,21 @@ export interface UnavailableSource {
   readonly message: string;
 }
 
+/**
+ * Whether a type's schema carries one of the version-valued link fields,
+ * and whether it holds several versions. Absence of the key means the
+ * schema does not expose the field.
+ */
+export interface StoredVersionField {
+  readonly multiple: boolean;
+}
+
+/** The version-valued fields one type's schema exposes (#47). */
+export interface StoredVersionFields {
+  readonly targetVersions?: StoredVersionField;
+  readonly observedInVersions?: StoredVersionField;
+}
+
 export interface ProjectVocabulary {
   readonly project_id: number;
   readonly fetched_at: string;
@@ -143,6 +158,11 @@ export interface ProjectVocabulary {
    * marker existed reads.
    */
   readonly unavailable?: Readonly<Partial<Record<OptionalVocabularySource, UnavailableSource>>>;
+  /**
+   * Keyed by type id. Absent in a vocabulary stored before the schema's
+   * version fields were captured; a refresh fills it in.
+   */
+  readonly version_fields?: Readonly<Record<string, StoredVersionFields>>;
 }
 
 export interface StoredMetadata {
@@ -508,21 +528,37 @@ async function fetchTypeSchema(
   )) as HalElement;
 }
 
-async function fetchCustomFields(
+function versionFieldsOf(schema: HalElement): StoredVersionFields {
+  const entry = (key: "targetVersions" | "observedInVersions"): StoredVersionFields => {
+    const property = schema[key] as HalElement | undefined;
+    if (typeof property !== "object" || property === null) {
+      return {};
+    }
+    const options = (property.options ?? {}) as HalElement;
+    const multiple = options.multiple === true
+      || asString(property.type).startsWith("[]");
+    return { [key]: { multiple } };
+  };
+  return { ...entry("targetVersions"), ...entry("observedInVersions") };
+}
+
+async function fetchTypeSchemas(
   profile: ActiveProfile,
   projectId: number,
-): Promise<ProjectVocabulary["custom_fields"]> {
+): Promise<Pick<ProjectVocabulary, "custom_fields" | "version_fields">> {
   const typeIds = await fetchVocabulary(
     profile,
     `/api/v3/projects/${String(projectId)}/types`,
     (element) => Number(element.id),
   );
   const byType: Record<string, ReadonlyArray<StoredCustomField>> = {};
+  const versionFields: Record<string, StoredVersionFields> = {};
   for (const typeId of typeIds) {
     const schema = await fetchTypeSchema(profile, projectId, typeId);
     byType[String(typeId)] = sortByName(customFieldEntries(schema));
+    versionFields[String(typeId)] = versionFieldsOf(schema);
   }
-  return byType;
+  return { custom_fields: byType, version_fields: versionFields };
 }
 
 async function fetchVocabulary<T>(
@@ -710,7 +746,7 @@ export async function fetchProjectVocabulary(
     versions,
     categories,
     activities,
-    custom_fields: await fetchCustomFields(profile, projectId),
+    ...(await fetchTypeSchemas(profile, projectId)),
     ...(Object.keys(unavailable).length > 0 ? { unavailable } : {}),
   };
 }

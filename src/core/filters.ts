@@ -32,6 +32,7 @@ export interface WpListFlags {
   readonly accountables?: ReadonlyArray<string> | undefined;
   readonly authors?: ReadonlyArray<string> | undefined;
   readonly versions?: ReadonlyArray<string> | undefined;
+  readonly observedIn?: ReadonlyArray<string> | undefined;
   readonly categories?: ReadonlyArray<string> | undefined;
   readonly priorities?: ReadonlyArray<string> | undefined;
   readonly parents?: ReadonlyArray<string> | undefined;
@@ -212,6 +213,13 @@ export function buildWpFilters(
   }
   if ((flags.versions ?? []).length > 0) {
     filters.push({ name: "version", operator: "=", values: unique(flags.versions!) });
+  }
+  if ((flags.observedIn ?? []).length > 0) {
+    filters.push({
+      name: "observedInVersion",
+      operator: "=",
+      values: unique(flags.observedIn!),
+    });
   }
   if ((flags.categories ?? []).length > 0) {
     filters.push({ name: "category", operator: "=", values: unique(flags.categories!) });
