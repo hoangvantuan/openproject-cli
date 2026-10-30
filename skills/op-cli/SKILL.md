@@ -63,6 +63,8 @@ update notice that would otherwise pollute stderr. Errors render as
 JSON objects carrying a stable `code`. Do not check auth upfront: run
 the command you need directly. If it fails with `PROFILE_NOT_FOUND` or
 `AUTH_FAILED`, run `op-cli auth login` (interactive prompts) and retry.
+`PERMISSION_DENIED` means the key works but the account lacks a
+permission: logging in again will not help.
 
 ## Intent to command
 
