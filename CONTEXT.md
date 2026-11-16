@@ -41,6 +41,10 @@ _Avoid_: follower, subscriber
 A file stored on a work package, addressed by its own attachment id (not the work package id), as listed by `wp attachments` and fetched with `wp attachment-download`. There is deliberately no delete.
 _Avoid_: upload, file (for the stored record)
 
+**Query**:
+A saved work package view stored on the instance: a name, filters, columns, sort order, and grouping, owned by a user, either public or private, and belonging to one project or to none (a global query). Addressed by id, by exact name, or as `default` (the unsaved default view of a project or of the instance); listed with `op-cli query list` and shown with `op-cli query get`. It describes a view; it does not hold work packages.
+_Avoid_: filter (one clause inside a query), report, view, saved search
+
 **Escape hatch**:
 Any route to an endpoint the CLI does not cover: a raw request command, a printed `curl` line, an exposed auth header. Deliberately absent. Bypassing resolution defeats the CLI's purpose, so the answer to an uncovered endpoint is to cover it with a command.
 _Avoid_: passthrough, raw mode, proxy

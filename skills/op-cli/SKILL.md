@@ -200,6 +200,14 @@ op-cli project copy <reference> Copy --identifier web-copy
 # add or remove project members; without membership, assignment is refused
 op-cli project member add <project> <user> <role>
 op-cli project member remove <project> <user>
+# queries (saved work package views): list, then inspect one by id, exact
+# name, or default; a default project scopes both, --global keeps queries
+# without a project, --all-projects ignores the default project; a name
+# matching two queries fails and lists their ids and owners
+op-cli query list --starred
+op-cli query list --all-projects --json
+op-cli query get Roadmap --fields name,columns,filters
+op-cli query get default --global
 # move a work package to another project, by id, identifier, or name
 op-cli wp move <id> <project>
 # what a work package may use in a project
