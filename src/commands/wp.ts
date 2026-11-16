@@ -751,19 +751,16 @@ async function removeCreatorWatch(
   id: unknown,
   memo: ResolutionMemo,
 ): Promise<false | null> {
+  if (typeof id !== "number") {
+    runtime.writeErr(
+      "warning: work package was created without a numeric id; "
+        + "cannot remove you from its watchers.\n",
+    );
+    return null;
+  }
   try {
     const userId = await memo.me();
-    const response = await unknownIfUnfinished(
-      () => apiDeleteRaw(
-        profile.instanceUrl,
-        profile.apiKey,
-        `/api/v3/work_packages/${String(id)}/watchers/${String(userId)}`,
-      ),
-      WATCH_WRITE(String(id)),
-    );
-    if (response.status < 200 || response.status >= 300) {
-      throw writeFailure(response.status, response.body, WATCH_WRITE(String(id)));
-    }
+    await deleteWatcher(profile, id, userId);
     return false;
   } catch (error) {
     const failure = error instanceof OpCliError
@@ -771,9 +768,29 @@ async function removeCreatorWatch(
       : new OpCliError("INTERNAL_ERROR");
     runtime.writeErr(
       `work package ${String(id)} was created, but removing you from its watchers `
-        + `failed: ${failure.code}: ${failure.message}\n`,
+        + `failed: ${failure.code}: ${failure.message}`
+        + `${failure.hint ? ` (${failure.hint})` : ""}\n`,
     );
     return null;
+  }
+}
+
+/** DELETE one watcher; any non-2xx answer becomes a write failure. */
+async function deleteWatcher(
+  profile: ActiveProfile,
+  wpId: number | string,
+  userId: number | string,
+): Promise<void> {
+  const response = await unknownIfUnfinished(
+    () => apiDeleteRaw(
+      profile.instanceUrl,
+      profile.apiKey,
+      `/api/v3/work_packages/${String(wpId)}/watchers/${String(userId)}`,
+    ),
+    WATCH_WRITE(String(wpId)),
+  );
+  if (response.status < 200 || response.status >= 300) {
+    throw writeFailure(response.status, response.body, WATCH_WRITE(String(wpId)));
   }
 }
 
@@ -3746,13 +3763,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         reportWatch(reference, options, userId, name, false, false);
         return;
       }
-      const response = await unknownIfUnfinished(
-        () => apiDeleteRaw(profile.instanceUrl, profile.apiKey, `${path}/${userId}`),
-        WATCH_WRITE(reference),
-      );
-      if (response.status < 200 || response.status >= 300) {
-        throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
-      }
+      await deleteWatcher(profile, reference, userId);
       reportWatch(reference, options, userId, name, false, present === null ? null : true);
     });
 

@@ -197,6 +197,7 @@ describe("wp create --no-watch", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ id: 904, watching: null });
     expect(result.stderr).toContain("work package 904 was created, but removing you");
+    expect(result.stderr).toContain("op-cli wp watchers 904");
   });
 
   test("a failed identity lookup after the create is also a warning", async () => {
@@ -308,6 +309,19 @@ describe("wp create --stdin watch handling", () => {
     expect(result.stderr).toContain(
       "work package 101 was created, but removing you from its watchers failed:",
     );
+  });
+
+  test("a create response without a numeric id sends no DELETE, reports watching null and warns", async () => {
+    const { calls } = installApi([
+      { ...POST_WP, body: { ...createdElement(1, "A"), id: undefined } },
+    ]);
+    const result = await runCreate(["--stdin", "--no-watch"], JSON.stringify([{ subject: "A" }]));
+    expect(result.exitCode).toBe(0);
+    expect(ndjson(result.stdout)[0]).toMatchObject({ ok: true, status: "created", watching: null });
+    expect(result.stderr).toContain(
+      "warning: work package was created without a numeric id; cannot remove you from its watchers.",
+    );
+    expect(calls.map((call) => call.method)).toEqual(["POST"]);
   });
 
   test("--dry-run validates watch and sends no request at all", async () => {

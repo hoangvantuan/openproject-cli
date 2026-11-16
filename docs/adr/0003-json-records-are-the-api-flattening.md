@@ -21,4 +21,5 @@ Left as-is, though, the flattening carried entries that were not data at all. Op
   would write twice; `wp update`, whose columns are known before any
   traffic, refuses before touching anything for the same reason (see
   ADR-0002 on never inviting duplicate writes).
+- `wp create --no-watch` attaches `watching: false | null` to the created record to report the outcome of the follow-up watcher removal (#61).
 - Field names follow the API's own naming, so anything documented by OpenProject reaches the caller under the name OpenProject uses.
