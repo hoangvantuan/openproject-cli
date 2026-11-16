@@ -252,6 +252,17 @@ describe("query list scopes and paging", () => {
     expect(result.stderr).toBe("Showing 1 of 3 queries. Pass --all to fetch every result.\n");
   });
 
+  test("--limit caps elements locally when the server ignores pageSize", async () => {
+    const room = await makeRoom();
+    installApi({
+      "/api/v3/queries?pageSize=1": collection(2, [BUGS, GLOBAL_MINE]),
+    });
+    const result = await runQuery(room, ["list", "--limit", "1", "--json", "--fields", "id"]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([{ id: 5 }]);
+    expect(result.stderr).toBe("Showing 1 of 2 queries. Pass --all to fetch every result.\n");
+  });
+
   test("--all --json streams one record per line across pages", async () => {
     const room = await makeRoom();
     installApi({
@@ -292,6 +303,8 @@ describe("query get", () => {
       "/api/v3/queries/5": {
         ...(BUGS as Record<string, unknown>),
         timelineVisible: false,
+        timelineLabels: {},
+        timestamps: ["PT0S"],
         displayRepresentation: "list",
       },
     });
@@ -299,14 +312,16 @@ describe("query get", () => {
     expect(full.exitCode).toBe(0);
     expect(JSON.parse(full.stdout)).toMatchObject({
       timelineVisible: false,
+      timelineLabels: {},
+      timestamps: ["PT0S"],
       displayRepresentation: "list",
       name: "Open bugs",
     });
     expect(JSON.parse(full.stdout)).not.toHaveProperty("results");
 
-    const picked = await runQuery(room, ["get", "5", "--json", "--fields", "timelineVisible"]);
+    const picked = await runQuery(room, ["get", "5", "--json", "--fields", "timestamps"]);
     expect(picked.exitCode).toBe(0);
-    expect(JSON.parse(picked.stdout)).toEqual({ timelineVisible: false });
+    expect(JSON.parse(picked.stdout)).toEqual({ timestamps: ["PT0S"] });
   });
 
   test("a numeric id reads the query and flattens it", async () => {

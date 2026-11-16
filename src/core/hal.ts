@@ -74,6 +74,16 @@ function isFlatLink(value: unknown): value is FlatLink {
   );
 }
 
+function flattenValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(flattenValue);
+  }
+  if (typeof value === "object" && value !== null) {
+    return flattenHalRecord(value);
+  }
+  return value;
+}
+
 /**
  * Flatten one HAL resource in place: `_type` is dropped, `_embedded` is
  * stripped (embedded resources are never merged into the record), every
@@ -94,11 +104,7 @@ export function flattenHalRecord(
     if (key === "_type" || key === "_embedded" || key === "_links") {
       continue;
     }
-    flat[key] = Array.isArray(value)
-      ? value.map(flattenHalRecord)
-      : typeof value === "object" && value !== null
-        ? flattenHalRecord(value)
-        : value;
+    flat[key] = flattenValue(value);
   }
   const links = resource._links as HalResource | undefined;
   if (typeof links === "object" && links !== null) {

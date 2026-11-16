@@ -475,11 +475,15 @@ function registerList(query: Command, runtime: QueryRuntime): void {
       _embedded?: { elements?: readonly unknown[] };
     };
     const elements = page._embedded?.elements ?? [];
-    emitRows(runtime, QUERY_COLUMNS, elements.map(flattenQueryRecord), options);
-    const total = typeof page.total === "number" ? page.total : elements.length;
-    if (total > elements.length) {
+    const shown = elements.slice(0, limit).map(flattenQueryRecord);
+    emitRows(runtime, QUERY_COLUMNS, shown, options);
+    const total = Math.max(
+      typeof page.total === "number" ? page.total : elements.length,
+      elements.length,
+    );
+    if (total > shown.length) {
       runtime.writeErr(
-        `Showing ${String(elements.length)} of ${String(total)} queries. `
+        `Showing ${String(shown.length)} of ${String(total)} queries. `
           + "Pass --all to fetch every result.\n",
       );
     }
