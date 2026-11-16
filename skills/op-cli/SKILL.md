@@ -80,7 +80,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
     `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
-    `update`/`copy`/`member`, `query get`/`run`/`star`/`unstar`, and `notification list`/`get`. Other list
+    `update`/`copy`/`member`, `query get`/`run`/`star`/`unstar`/`create`/`update`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
     `--fields` the JSON output carries the whole record.
@@ -217,6 +217,18 @@ op-cli query run default --all --json --fields id,subject,status
 op-cli query star Roadmap
 op-cli query unstar Roadmap --fields id,starred
 op-cli query delete Roadmap --yes
+# create a query: it takes the default project, --project picks another,
+# --global makes one without a project; filter flags are the wp list ones
+# (the project scope is not a filter: --no-include-subprojects sets the
+# query's own switch); --sort, --columns, --group-by, and the
+# --public/--starred/--sums/--hierarchies true|false flags shape the view
+op-cli query create Roadmap --project web --open --assignee me --sort dueDate:desc --columns id,subject,status --public
+op-cli query create Everything --global --closed --group-by status
+# update by id or exact name; only the flags you pass change, filter flags
+# replace the whole filter list, --clear-filters empties it, and an empty
+# value for --sort, --columns, or --group-by clears that part
+op-cli query update Roadmap --name Plan --starred
+op-cli query update 5 --clear-filters --sort ""
 # move a work package to another project, by id, identifier, or name
 op-cli wp move <id> <project>
 # what a work package may use in a project

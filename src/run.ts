@@ -285,6 +285,7 @@ export async function run(
 
   const query = program.command("query");
   registerQueryCommands(query, {
+    env,
     resolve: (overrides) => resolveProfile(env, overrides),
     write: (text) => {
       stdout += text;

@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 
+import type { RunEnvironment } from "../run.js";
 import { formatCell, renderTable } from "../output/table.js";
 import { registerQueryRun } from "./query-run.js";
 import { registerQueryManage } from "./query-manage.js";
@@ -27,6 +28,7 @@ import {
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
+import { registerQueryWrite } from "./query-write.js";
 import {
   PROJECTS_COLLECTION,
   withMovedRetry,
@@ -34,6 +36,7 @@ import {
 } from "../context/projectref.js";
 
 export interface QueryRuntime {
+  readonly env: RunEnvironment;
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
   readonly write: (text: string) => void;
   readonly writeErr: (text: string) => void;
@@ -334,7 +337,10 @@ export function flattenQueryRecord(element: unknown): Record<string, unknown> {
 /** Renders one flat query record as a FIELD/VALUE table or picked JSON. */
 export function renderQueryRecord(
   runtime: Pick<QueryRuntime, "write">,
-  options: { readonly json?: boolean; readonly fields?: string },
+  options: {
+    readonly json?: boolean;
+    readonly fields?: string;
+  },
   record: Record<string, unknown>,
   done?: string,
 ): void {
@@ -473,4 +479,5 @@ export function registerQueryCommands(query: Command, runtime: QueryRuntime): vo
   registerGet(query, runtime);
   registerQueryRun(query, runtime);
   registerQueryManage(query, runtime);
+  registerQueryWrite(query, runtime);
 }
