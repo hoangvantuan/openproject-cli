@@ -319,6 +319,9 @@ async function projectWrite(
   /** What to check before repeating, when "the project exists" is the wrong advice. */
   check?: string,
 ): Promise<unknown> {
+  const hint = check ?? (verb === "update"
+    ? "run op-cli project get to see the stored values before repeating the command."
+    : "check whether the project exists before repeating the command.");
   let response: RawWriteResponse;
   try {
     response = await attempt();
@@ -327,9 +330,7 @@ async function projectWrite(
       throw new OpCliError(
         "NETWORK_ERROR",
         `the ${verb} request did not complete; whether it was applied is unknown.`,
-        check ?? (verb === "update"
-          ? "run op-cli project get to see the stored values before repeating the command."
-          : "check whether the project exists before repeating the command."),
+        hint,
       );
     }
     throw error;
@@ -345,9 +346,7 @@ async function projectWrite(
       "NETWORK_ERROR",
       `the ${verb} failed with HTTP ${String(response.status)}; `
         + "whether it was applied is unknown.",
-      check ?? (verb === "update"
-        ? "run op-cli project get to see the stored values before repeating the command."
-        : "check whether the project exists before repeating the command."),
+      hint,
     );
   }
   throw writeRefusal(verb, response.status, response.body);
@@ -924,7 +923,7 @@ export function registerProjectCommands(
       const body = await projectWrite(
         () => apiPostRaw(profile.instanceUrl, profile.apiKey, VERSIONS_COLLECTION, payload),
         "create",
-        "check op-cli project versions before repeating the command, "
+        `run op-cli project versions ${reference} before repeating the command, `
           + "so the version is not created twice.",
       );
       const created = flattenHalRecord(body);

@@ -984,7 +984,7 @@ describe("project version create", () => {
     expect(result.exitCode).toBe(6);
     expect(result.stderr).toContain("[NETWORK_ERROR]");
     expect(result.stderr).toContain("unknown");
-    expect(result.stderr).toContain("op-cli project versions");
+    expect(result.stderr).toContain("run op-cli project versions 21 before repeating");
     expect(api.writes).toHaveLength(1);
   });
 
