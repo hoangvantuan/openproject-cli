@@ -612,6 +612,11 @@ interface CreateOptions extends CreateValueFlags {
   readonly stdin?: boolean;
   readonly dryRun?: boolean;
   readonly failFast?: boolean;
+  /**
+   * Commander's negatable flag: `--no-watch` stores `watch: false`, and
+   * `watch` is `true` when the flag is absent. There is no `noWatch` key.
+   */
+  readonly watch?: boolean;
   readonly json?: boolean;
   readonly fields?: string;
   readonly profile?: string;
@@ -733,6 +738,63 @@ async function submitCreate(
 }
 
 /**
+ * OpenProject subscribes the creator to every work package it creates, and
+ * no create flag turns that off. The only lever is removing oneself
+ * afterwards. The create already succeeded, so a failure here is a warning
+ * and never an error: a non-zero exit would invite a retry that duplicates
+ * the work package. Returns false when the watcher is gone and null when
+ * that is not known.
+ */
+async function removeCreatorWatch(
+  runtime: WpRuntime,
+  profile: ActiveProfile,
+  id: unknown,
+  memo: ResolutionMemo,
+): Promise<false | null> {
+  if (typeof id !== "number") {
+    runtime.writeErr(
+      "warning: work package was created without a numeric id; "
+        + "cannot remove you from its watchers.\n",
+    );
+    return null;
+  }
+  try {
+    const userId = await memo.me();
+    await deleteWatcher(profile, id, userId);
+    return false;
+  } catch (error) {
+    const failure = error instanceof OpCliError
+      ? error
+      : new OpCliError("INTERNAL_ERROR");
+    runtime.writeErr(
+      `work package ${String(id)} was created, but removing you from its watchers `
+        + `failed: ${failure.code}: ${failure.message}`
+        + `${failure.hint ? ` (${failure.hint})` : ""}\n`,
+    );
+    return null;
+  }
+}
+
+/** DELETE one watcher; any non-2xx answer becomes a write failure. */
+async function deleteWatcher(
+  profile: ActiveProfile,
+  wpId: number | string,
+  userId: number | string,
+): Promise<void> {
+  const response = await unknownIfUnfinished(
+    () => apiDeleteRaw(
+      profile.instanceUrl,
+      profile.apiKey,
+      `/api/v3/work_packages/${String(wpId)}/watchers/${String(userId)}`,
+    ),
+    WATCH_WRITE(String(wpId)),
+  );
+  if (response.status < 200 || response.status >= 300) {
+    throw writeFailure(response.status, response.body, WATCH_WRITE(String(wpId)));
+  }
+}
+
+/**
  * Kebab spellings a stdin item may use for a camelCase key, mirroring the
  * flag. Both spell the same attribute; giving both is refused.
  */
@@ -744,6 +806,7 @@ const BULK_KEY_ALIASES: Readonly<Record<string, keyof CreateValueFlags>> = {
 /** Keys one stdin item may carry; everything else is a loud usage error. */
 const BULK_ITEM_KEYS: ReadonlyArray<string> = [
   "subject",
+  "watch",
   ...Object.keys(VALUE_OPTIONS),
   ...Object.keys(BULK_KEY_ALIASES),
 ];
@@ -756,7 +819,7 @@ const BULK_ITEM_KEYS: ReadonlyArray<string> = [
 function parseBulkItem(
   raw: unknown,
   index: number,
-): { subject: string; values: CreateValueFlags } {
+): { subject: string; values: CreateValueFlags; watch?: boolean } {
   const usage = (message: string, hint?: string): OpCliError =>
     new OpCliError("USAGE_ERROR", `input ${index}: ${message}`, hint);
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -785,6 +848,13 @@ function parseBulkItem(
   const subject = record.subject;
   if (typeof subject !== "string" || subject.trim() === "") {
     throw usage('every input needs a non-empty "subject" string.');
+  }
+  const watch = record.watch;
+  if (watch !== undefined && typeof watch !== "boolean") {
+    throw usage(
+      '"watch" must be true or false.',
+      'false removes you from the watchers after the create, e.g. {"subject": "...", "watch": false}.',
+    );
   }
   const values: { -readonly [K in keyof CreateValueFlags]?: CreateValueFlags[K] } = {};
   const scalarKeys: ReadonlyArray<
@@ -873,7 +943,7 @@ function parseBulkItem(
     }
     values.field = field as Array<string>;
   }
-  return { subject, values };
+  return { subject, values, ...(watch === undefined ? {} : { watch }) };
 }
 
 /**
@@ -977,12 +1047,18 @@ async function runBulkCreate(
       const id = typeof body === "object" && body !== null
         ? (body as Record<string, unknown>).id
         : undefined;
+      // An item's own "watch" wins; otherwise --no-watch (watch === false).
+      const unwatchWanted = (item.watch ?? options.watch) === false;
+      const watching = unwatchWanted
+        ? await removeCreatorWatch(runtime, profile, id, memo)
+        : undefined;
       runtime.write(`${JSON.stringify({
         index,
         ok: true,
         status: "created",
         ...(typeof id === "number" ? { id } : {}),
         subject: item.subject,
+        ...(watching === undefined ? {} : { watching }),
       })}\n`);
     } catch (error) {
       failures += 1;
@@ -2949,6 +3025,11 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       "--dry-run",
       "with --stdin: resolve and validate everything, create nothing",
     )
+    .option(
+      "--no-watch",
+      "after the create, remove yourself from the watchers OpenProject added you to; "
+        + "with --stdin applies to every item unless an item sets \"watch\": true",
+    )
     .option("--type <name-or-id>", "work package type, by name or id")
     .option("--status <name-or-id>", "initial status, by name or id")
     .option("--priority <name-or-id>", "priority, by name or id")
@@ -3036,12 +3117,21 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
       );
       const body = await submitCreate(runtime, profile, payload, refs);
       const created = flattenHalRecord(body);
-      renderRecord(
-        runtime,
-        options,
-        created,
-        `work package ${String(created.id)} was created`,
-      );
+      let done = `work package ${String(created.id)} was created`;
+      // Commander: --no-watch makes options.watch false; absent it is true.
+      if (options.watch === false) {
+        const watching = await removeCreatorWatch(
+          runtime,
+          profile,
+          created.id,
+          newResolutionMemo(runtime, profile),
+        );
+        created.watching = watching;
+        if (watching === false) {
+          done += ", not watching";
+        }
+      }
+      renderRecord(runtime, options, created, done);
     });
 
   wp.command("update")
@@ -3673,13 +3763,7 @@ export function registerWpCommands(wp: Command, runtime: WpRuntime): void {
         reportWatch(reference, options, userId, name, false, false);
         return;
       }
-      const response = await unknownIfUnfinished(
-        () => apiDeleteRaw(profile.instanceUrl, profile.apiKey, `${path}/${userId}`),
-        WATCH_WRITE(reference),
-      );
-      if (response.status < 200 || response.status >= 300) {
-        throw writeFailure(response.status, response.body, WATCH_WRITE(reference));
-      }
+      await deleteWatcher(profile, reference, userId);
       reportWatch(reference, options, userId, name, false, present === null ? null : true);
     });
 
