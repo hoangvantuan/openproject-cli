@@ -23,3 +23,4 @@ Left as-is, though, the flattening carried entries that were not data at all. Op
   ADR-0002 on never inviting duplicate writes).
 - `wp create --no-watch` attaches `watching: false | null` to the created record to report the outcome of the follow-up watcher removal (#61).
 - Field names follow the API's own naming, so anything documented by OpenProject reaches the caller under the name OpenProject uses.
+- `query` records keep all flattened attributes while normalizing `columns`, `sortBy`, and `filters` into plain summaries and dropping embedded `results` (`query run` streams those separately).

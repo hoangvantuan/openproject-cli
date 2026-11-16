@@ -17,6 +17,7 @@ import { registerMetaCommands } from "./commands/meta.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerWpCommands } from "./commands/wp.js";
 import { registerProjectCommands } from "./commands/project.js";
+import { registerQueryCommands } from "./commands/query.js";
 import { installWorkspaceAlias } from "./core/workspace-alias.js";
 import { registerTimeCommands } from "./commands/time.js";
 import { registerNotificationCommands } from "./commands/notification.js";
@@ -281,6 +282,21 @@ export async function run(
       group.description("Alias of project: inspect and manage projects");
     }
   }
+
+  const query = program.command("query");
+  registerQueryCommands(query, {
+    env,
+    resolve: (overrides) => resolveProfile(env, overrides),
+    write: (text) => {
+      stdout += text;
+    },
+    writeErr: (text) => {
+      stderr += text;
+    },
+    setJsonMode: (on) => {
+      jsonOutput = on;
+    },
+  });
 
   const time = program
     .command("time")

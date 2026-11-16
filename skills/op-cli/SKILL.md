@@ -16,7 +16,8 @@ numeric; use each command's help to distinguish them. Run any command below with
   the user. Do not fall back to `curl`, hand-built HTTP calls, or reads of
   `credentials.json`; there is no passthrough by design.
 - Deletions need an explicit `--yes`: `wp delete <id> --yes`,
-  `time delete <id> --yes`, `project delete <reference> --yes`. They are
+  `time delete <id> --yes`, `project delete <reference> --yes`,
+  `query delete <reference> --yes`. They are
   irreversible; never work around a refused deletion through another
   route. Deleting a work package cascades on the server: its descendants
   are deleted with it, and `wp delete` names the descendant count in both
@@ -89,7 +90,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
     `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
-    `update`/`copy`/`member`/`version create`, and `notification list`/`get`. Other list
+    `update`/`copy`/`member`/`version create`, `query get`/`run`/`star`/`unstar`/`create`/`update`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
     `--fields` the JSON output carries the whole record.
@@ -217,6 +218,34 @@ op-cli project version create <reference> 1.0.0 --status open --start 2026-12-01
 # add or remove project members; without membership, assignment is refused
 op-cli project member add <project> <user> <role>
 op-cli project member remove <project> <user>
+# queries (saved work package views): list, then inspect one by id, exact
+# name, or default; a default project scopes both, --global keeps queries
+# without a project, --all-projects ignores the default project; a name
+# matching two queries fails and lists their ids and owners
+op-cli query list --starred
+op-cli query list --all-projects --json
+op-cli query get Roadmap --fields name,columns,filters
+op-cli query get default --global
+# run a query: its work packages, with the columns the query defines;
+# --fields picks columns, --limit or --all sets how many
+op-cli query run Roadmap
+op-cli query run default --all --json --fields id,subject,status
+# star or unstar a saved query; delete needs --yes; default cannot be changed
+op-cli query star Roadmap
+op-cli query unstar Roadmap --fields id,starred
+op-cli query delete Roadmap --yes
+# create a query: it takes the default project, --project picks another,
+# --global makes one without a project; filter flags are the wp list ones
+# (the project scope is not a filter: --no-include-subprojects sets the
+# query's own switch); --sort, --columns, --group-by, and the
+# --public/--starred/--sums/--hierarchies true|false flags shape the view
+op-cli query create Roadmap --project web --open --assignee me --sort dueDate:desc --columns id,subject,status --public
+op-cli query create Everything --global --closed --group-by status
+# update by id or exact name; only the flags you pass change, filter flags
+# replace the whole filter list, --clear-filters empties it, and an empty
+# value for --sort, --columns, or --group-by clears that part
+op-cli query update Roadmap --name Plan --starred
+op-cli query update 5 --clear-filters --sort ""
 # move a work package to another project, by id, identifier, or name
 op-cli wp move <id> <project>
 # what a work package may use in a project
