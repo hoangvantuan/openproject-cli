@@ -40,7 +40,8 @@ export function scalarFlag(option: keyof ScalarFlags): string {
   return SCALARS.find((scalar) => scalar.option === option)?.flag ?? option;
 }
 
-function readDate(raw: string, flag: string): string {
+/** One real YYYY-MM-DD calendar date, trimmed; USAGE_ERROR naming the flag otherwise. */
+export function readDate(raw: string, flag: string): string {
   const token = raw.trim();
   const real = /^\d{4}-\d{2}-\d{2}$/.test(token) && (() => {
     const [year, month, day] = token.split("-").map(Number) as [number, number, number];

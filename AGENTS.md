@@ -13,3 +13,11 @@ The five canonical triage labels, used as-is (`needs-triage`, `needs-info`, `rea
 ### Domain docs
 
 Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Coding standards
+
+See `CODING_STANDARDS.md`.
+
+### Wiki
+
+Historical decisions and API notes live in `docs/wiki/index.md`.

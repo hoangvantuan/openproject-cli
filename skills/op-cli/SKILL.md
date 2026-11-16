@@ -50,6 +50,16 @@ numeric; use each command's help to distinguish them. Run any command below with
     `wp create --stdin` items use the keys `start`, `due`, `estimate`,
     `remaining`, `done`, `storyPoints` (or `story-points`); `observedIn`
     also reads as `observed-in`.
+  - `wp create --no-watch` removes you from the work package's watchers
+    after the create (OpenProject subscribes the creator on every create
+    and has no setting to stop it). The record gains `watching: false`;
+    if the removal fails, stderr warns, the record shows `watching: null`,
+    and the exit code stays 0 because the work package exists (do not
+    retry the create). In `--stdin`, `--no-watch` covers every item; an
+    item key `"watch": false` does the same alone and `"watch": true`
+    overrides the flag. Result lines gain `watching` only when removal
+    was requested; a non-boolean `watch` is a `USAGE_ERROR`; `--dry-run`
+    sends no removal.
   - `--accountable <name|id|me>` sets the work package Accountable (API
     field `responsible`) on `wp create`/`update`, resolved like
     `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk
@@ -80,7 +90,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
     `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
-    `update`/`copy`/`member`, `query get`/`run`/`star`/`unstar`/`create`/`update`, and `notification list`/`get`. Other list
+    `update`/`copy`/`member`/`version create`, `query get`/`run`/`star`/`unstar`/`create`/`update`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
     `--fields` the JSON output carries the whole record.
@@ -159,6 +169,8 @@ op-cli wp watchers <id>
 op-cli wp watch <id> --user Linh
 op-cli wp unwatch <id>
 op-cli wp list --watcher me
+# create without staying on the watcher list (creators are auto-subscribed)
+op-cli wp create Quiet --no-watch
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>
@@ -198,6 +210,11 @@ op-cli project list --search web
 op-cli workspace list --search web
 op-cli project create Web --identifier web
 op-cli project copy <reference> Copy --identifier web-copy
+# create a version in a project (status open|locked|closed, default open;
+# sharing none|descendants|hierarchy|tree|system; dates YYYY-MM-DD, "" leaves empty).
+# A 5xx or timeout is NETWORK_ERROR with unknown outcome: run
+# `project versions <reference>` before repeating, or it may be created twice.
+op-cli project version create <reference> 1.0.0 --status open --start 2026-12-01 --end 2026-12-31
 # add or remove project members; without membership, assignment is refused
 op-cli project member add <project> <user> <role>
 op-cli project member remove <project> <user>
