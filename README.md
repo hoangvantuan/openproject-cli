@@ -39,6 +39,7 @@ points beyond the quickstart:
 
 ```sh
 op-cli wp create "Fix login bug" --type Bug --priority High
+op-cli wp create "Quiet task" --no-watch   # also unsubscribe yourself (creators are auto-watchers)
 op-cli wp update 123 --start 2026-09-01 --due 2026-09-30 --estimate 4h --done 40 --story-points 5
 op-cli wp list --search login          # server-side subject search
 op-cli wp list --sort updatedAt:desc   # repeatable; also --id <id>, --no-include-subprojects

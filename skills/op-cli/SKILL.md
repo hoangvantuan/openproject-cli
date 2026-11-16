@@ -49,6 +49,16 @@ numeric; use each command's help to distinguish them. Run any command below with
     `wp create --stdin` items use the keys `start`, `due`, `estimate`,
     `remaining`, `done`, `storyPoints` (or `story-points`); `observedIn`
     also reads as `observed-in`.
+  - `wp create --no-watch` removes you from the work package's watchers
+    after the create (OpenProject subscribes the creator on every create
+    and has no setting to stop it). The record gains `watching: false`;
+    if the removal fails, stderr warns, the record shows `watching: null`,
+    and the exit code stays 0 because the work package exists (do not
+    retry the create). In `--stdin`, `--no-watch` covers every item; an
+    item key `"watch": false` does the same alone and `"watch": true`
+    overrides the flag. Result lines gain `watching` only when removal
+    was requested; a non-boolean `watch` is a `USAGE_ERROR`; `--dry-run`
+    sends no removal.
   - `--accountable <name|id|me>` sets the work package Accountable (API
     field `responsible`) on `wp create`/`update`, resolved like
     `--assignee`; `wp list`/`count` filter by it (repeatable), and bulk
@@ -158,6 +168,8 @@ op-cli wp watchers <id>
 op-cli wp watch <id> --user Linh
 op-cli wp unwatch <id>
 op-cli wp list --watcher me
+# create without staying on the watcher list (creators are auto-subscribed)
+op-cli wp create Quiet --no-watch
 # build hierarchies: nest under a parent work package
 op-cli wp create Sub-task --parent <id>
 op-cli wp update <id> --parent <parent-id>
