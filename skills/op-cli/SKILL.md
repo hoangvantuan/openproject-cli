@@ -208,6 +208,18 @@ op-cli query list --starred
 op-cli query list --all-projects --json
 op-cli query get Roadmap --fields name,columns,filters
 op-cli query get default --global
+# create a query: it takes the default project, --project picks another,
+# --global makes one without a project; filter flags are the wp list ones
+# (the project scope is not a filter: --no-include-subprojects sets the
+# query's own switch); --sort, --columns, --group-by, and the
+# --public/--starred/--sums/--hierarchies true|false flags shape the view
+op-cli query create Roadmap --project web --open --assignee me --sort dueDate:desc --columns id,subject,status --public
+op-cli query create Everything --global --closed --group-by status
+# update by id or exact name; only the flags you pass change, filter flags
+# replace the whole filter list, --clear-filters empties it, and an empty
+# value for --sort, --columns, or --group-by clears that part
+op-cli query update Roadmap --name Plan --starred
+op-cli query update 5 --clear-filters --sort ""
 # move a work package to another project, by id, identifier, or name
 op-cli wp move <id> <project>
 # what a work package may use in a project

@@ -51,6 +51,9 @@ op-cli time log 42 --hours 1h30m --activity Development
 op-cli time report --from 2026-08-01 --to 2026-08-31   # closed period
 op-cli project member add web alice Manager   # join members so assignment works
 op-cli project list --search web
+op-cli query list --starred            # saved work package views; `query get <id-or-name>` shows one
+op-cli query create Roadmap --open --assignee me --sort dueDate:desc --public   # filter flags as in wp list
+op-cli query update Roadmap --name Plan --clear-filters   # change only the flags you pass
 op-cli wp move 42 archive              # move a work package to another project
 op-cli doctor            # diagnose connectivity, credentials, versions
 op-cli update            # self-update; prints the right command for Volta/Homebrew

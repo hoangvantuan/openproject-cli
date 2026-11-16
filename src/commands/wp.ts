@@ -225,16 +225,16 @@ async function openProfile(
   });
 }
 
-function collectValue(value: string, previous: Array<string>): Array<string> {
+export function collectValue(value: string, previous: Array<string>): Array<string> {
   return [...previous, value];
 }
 
 /** Like collectValue, but a flag left out stays undefined, not empty. */
-function collectOptional(value: string, previous?: Array<string>): Array<string> {
+export function collectOptional(value: string, previous?: Array<string>): Array<string> {
   return [...(previous ?? []), value];
 }
 
-interface FilterFlagOptions {
+export interface FilterFlagOptions {
   readonly status?: Array<string>;
   readonly type?: Array<string>;
   readonly assignee?: Array<string>;
@@ -267,8 +267,8 @@ interface FilterFlagOptions {
  * Attach the shared filter surface of `wp list` and `wp count`. Both
  * commands accept exactly the same flags; repeating a value flag ORs.
  */
-function addFilterFlags(command: Command): Command {
-  return command
+export function addFilterFlags(command: Command, withScope = true): Command {
+  const filters = command
     .option("--status <name>", "status name or id; repeat to OR values", collectValue, [])
     .option("--type <name>", "type name or id; repeat to OR values", collectValue, [])
     .option("--assignee <name>", "user name, id, or me; repeat to OR values", collectValue, [])
@@ -327,9 +327,12 @@ function addFilterFlags(command: Command): Command {
       "only the project's own work packages, not its subprojects' (needs a project)",
     )
     .option("--open", "shorthand for every open status")
-    .option("--closed", "shorthand for every closed status")
-    .option("--profile <name>", "use this profile for this command only")
-    .option("--project <name-or-id>", "override the profile default project");
+    .option("--closed", "shorthand for every closed status");
+  return withScope
+    ? filters
+      .option("--profile <name>", "use this profile for this command only")
+      .option("--project <name-or-id>", "override the profile default project")
+    : filters;
 }
 
 /** Normalise --id values ("12" or "#12") to digit strings. */
@@ -347,7 +350,7 @@ function parseIdValues(raw: ReadonlyArray<string>): Array<string> {
   });
 }
 
-function rawListFlags(options: FilterFlagOptions): WpListFlags {
+export function rawListFlags(options: FilterFlagOptions): WpListFlags {
   return {
     statuses: options.status,
     types: options.type,
@@ -1789,7 +1792,7 @@ async function resolveParents(
   return ids;
 }
 
-async function resolveListFlags(
+export async function resolveListFlags(
   runtime: WpRuntime,
   profile: ActiveProfile,
   options: FilterFlagOptions,

@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 
+import type { RunEnvironment } from "../run.js";
 import { formatCell, renderTable } from "../output/table.js";
 
 import { OpCliError, refuseCombined } from "../core/errors.js";
@@ -25,6 +26,7 @@ import {
   type ActiveProfile,
   type ContextOverrides,
 } from "../context/profile.js";
+import { registerQueryWrite } from "./query-write.js";
 import {
   PROJECTS_COLLECTION,
   withMovedRetry,
@@ -32,6 +34,7 @@ import {
 } from "../context/projectref.js";
 
 export interface QueryRuntime {
+  readonly env: RunEnvironment;
   readonly resolve: (overrides?: ContextOverrides) => Promise<ActiveProfile>;
   readonly write: (text: string) => void;
   readonly writeErr: (text: string) => void;
@@ -332,7 +335,12 @@ export function flattenQueryRecord(element: unknown): Record<string, unknown> {
 /** Renders one flat query record as a FIELD/VALUE table or picked JSON. */
 export function renderQueryRecord(
   runtime: Pick<QueryRuntime, "write">,
-  options: { readonly json?: boolean; readonly fields?: string },
+  options: {
+    readonly json?: boolean;
+    readonly fields?: string;
+    /** What already happened, put in front of a field refusal. */
+    readonly done?: string;
+  },
   record: Record<string, unknown>,
 ): void {
   const requested = typeof options.fields === "string"
@@ -346,7 +354,7 @@ export function renderQueryRecord(
   if (unknown !== undefined) {
     throw new OpCliError(
       "USAGE_ERROR",
-      `field "${unknown}" is not a column. Valid fields, closest first: `
+      `${options.done === undefined ? "" : `${options.done}; `}field "${unknown}" is not a column. Valid fields, closest first: `
         + `${rankByCloseness(unknown, Object.keys(record)).join(", ")}.`,
       "run the command without --fields to list every available field.",
     );
@@ -468,4 +476,5 @@ export function registerQueryCommands(query: Command, runtime: QueryRuntime): vo
   query.description("Inspect saved work package views (queries)");
   registerList(query, runtime);
   registerGet(query, runtime);
+  registerQueryWrite(query, runtime);
 }
