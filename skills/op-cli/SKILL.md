@@ -16,7 +16,8 @@ numeric; use each command's help to distinguish them. Run any command below with
   the user. Do not fall back to `curl`, hand-built HTTP calls, or reads of
   `credentials.json`; there is no passthrough by design.
 - Deletions need an explicit `--yes`: `wp delete <id> --yes`,
-  `time delete <id> --yes`, `project delete <reference> --yes`. They are
+  `time delete <id> --yes`, `project delete <reference> --yes`,
+  `query delete <reference> --yes`. They are
   irreversible; never work around a refused deletion through another
   route. Deleting a work package cascades on the server: its descendants
   are deleted with it, and `wp delete` names the descendant count in both
@@ -79,7 +80,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
     `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
-    `update`/`copy`/`member`, and `notification list`/`get`. Other list
+    `update`/`copy`/`member`, `query get`/`star`/`unstar`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
     `--fields` the JSON output carries the whole record.
@@ -208,6 +209,10 @@ op-cli query list --starred
 op-cli query list --all-projects --json
 op-cli query get Roadmap --fields name,columns,filters
 op-cli query get default --global
+# star or unstar a saved query; delete needs --yes; default cannot be changed
+op-cli query star Roadmap
+op-cli query unstar Roadmap --fields id,starred
+op-cli query delete Roadmap --yes
 # move a work package to another project, by id, identifier, or name
 op-cli wp move <id> <project>
 # what a work package may use in a project

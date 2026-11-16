@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 
 import { formatCell, renderTable } from "../output/table.js";
+import { registerQueryManage } from "./query-manage.js";
 
 import { OpCliError, refuseCombined } from "../core/errors.js";
 import { filtersQuery, type WpFilter } from "../core/filters.js";
@@ -334,6 +335,7 @@ export function renderQueryRecord(
   runtime: Pick<QueryRuntime, "write">,
   options: { readonly json?: boolean; readonly fields?: string },
   record: Record<string, unknown>,
+  done?: string,
 ): void {
   const requested = typeof options.fields === "string"
     ? [
@@ -346,7 +348,7 @@ export function renderQueryRecord(
   if (unknown !== undefined) {
     throw new OpCliError(
       "USAGE_ERROR",
-      `field "${unknown}" is not a column. Valid fields, closest first: `
+      `${done === undefined ? "" : `${done}; `}field "${unknown}" is not a column. Valid fields, closest first: `
         + `${rankByCloseness(unknown, Object.keys(record)).join(", ")}.`,
       "run the command without --fields to list every available field.",
     );
@@ -468,4 +470,5 @@ export function registerQueryCommands(query: Command, runtime: QueryRuntime): vo
   query.description("Inspect saved work package views (queries)");
   registerList(query, runtime);
   registerGet(query, runtime);
+  registerQueryManage(query, runtime);
 }
