@@ -11,6 +11,7 @@ import {
   type CollectionRuntime,
 } from "../core/define.js";
 import { flattenHalRecord, toFormattable } from "../core/hal.js";
+import { readDate } from "../core/scalars.js";
 import {
   apiDelete,
   apiGet,
@@ -124,6 +125,29 @@ function collectValue(value: string, previous: Array<string>): Array<string> {
   return [...previous, value];
 }
 
+const VERSIONS_COLLECTION = "/api/v3/versions";
+const VERSION_STATUSES = ["open", "locked", "closed"] as const;
+const VERSION_SHARINGS = ["none", "descendants", "hierarchy", "tree", "system"] as const;
+
+/** One closed-vocabulary flag: absent stays undefined; empty or unknown is misuse. */
+function readChoice(
+  raw: string | undefined,
+  flag: string,
+  choices: ReadonlyArray<string>,
+): string | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!choices.includes(raw)) {
+    throw new OpCliError(
+      "USAGE_ERROR",
+      `${flag} "${raw}" is not one of ${choices.join(", ")}.`,
+      `pass ${flag} with one of: ${choices.join(", ")}.`,
+    );
+  }
+  return raw;
+}
+
 const PRINCIPALS_COLLECTION = "/api/v3/principals";
 const ROLES_COLLECTION = "/api/v3/roles";
 const MEMBERSHIPS_COLLECTION = "/api/v3/memberships";
@@ -231,6 +255,8 @@ async function resolveRoleIds(
 function selectedRecordFields(
   raw: string,
   record: Record<string, unknown>,
+  /** What a completed write already did; a bad name must not invite a repeat. */
+  done?: string,
 ): Array<string> {
   const requested = [
     ...new Set(
@@ -241,7 +267,8 @@ function selectedRecordFields(
   if (first !== undefined) {
     throw new OpCliError(
       "USAGE_ERROR",
-      `field "${first}" is not a column. Valid fields, closest first: `
+      `${done === undefined ? "" : `${done}; `}`
+        + `field "${first}" is not a column. Valid fields, closest first: `
         + `${rankByCloseness(first, Object.keys(record)).join(", ")}.`,
       "run the command without --fields to list every available field.",
     );
@@ -263,9 +290,10 @@ function renderRecord(
   runtime: Pick<ProjectRuntime, "write">,
   options: OutputOptions,
   record: Record<string, unknown>,
+  done?: string,
 ): void {
   const fields = typeof options.fields === "string"
-    ? selectedRecordFields(options.fields, record)
+    ? selectedRecordFields(options.fields, record, done)
     : Object.keys(record);
   if (options.json === true) {
     const picked: Record<string, unknown> = {};
@@ -288,6 +316,8 @@ function renderRecord(
 async function projectWrite(
   attempt: () => Promise<RawWriteResponse>,
   verb: string,
+  /** What to check before repeating, when "the project exists" is the wrong advice. */
+  check?: string,
 ): Promise<unknown> {
   let response: RawWriteResponse;
   try {
@@ -297,9 +327,9 @@ async function projectWrite(
       throw new OpCliError(
         "NETWORK_ERROR",
         `the ${verb} request did not complete; whether it was applied is unknown.`,
-        verb === "update"
+        check ?? (verb === "update"
           ? "run op-cli project get to see the stored values before repeating the command."
-          : "check whether the project exists before repeating the command.",
+          : "check whether the project exists before repeating the command."),
       );
     }
     throw error;
@@ -315,9 +345,9 @@ async function projectWrite(
       "NETWORK_ERROR",
       `the ${verb} failed with HTTP ${String(response.status)}; `
         + "whether it was applied is unknown.",
-      verb === "update"
+      check ?? (verb === "update"
         ? "run op-cli project get to see the stored values before repeating the command."
-        : "check whether the project exists before repeating the command.",
+        : "check whether the project exists before repeating the command."),
     );
   }
   throw writeRefusal(verb, response.status, response.body);
@@ -814,6 +844,97 @@ export function registerProjectCommands(
     (hit) => hit.links?.types ?? `${PROJECTS_COLLECTION}/${String(hit.id)}/types`,
     TYPE_COLUMNS,
   );
+
+  // ---------------------------------------------------------------------------
+  // project version create
+
+  project
+    .command("version")
+    .description("Manage the versions of one project")
+    .command("create")
+    .description("Create one version in a project")
+    .argument("<reference>", "project, by id, identifier, or name")
+    .argument("<name>", "name of the new version")
+    .option("--description <text>", 'markdown description; "" stores an empty one')
+    .option("--status <status>", "open, locked, or closed (default open)")
+    .option(
+      "--sharing <mode>",
+      "none, descendants, hierarchy, tree, or system (instance default if omitted)",
+    )
+    .option("--start <date>", 'start date YYYY-MM-DD; "" leaves it empty')
+    .option("--end <date>", 'end date YYYY-MM-DD; "" leaves it empty')
+    .option("--json", "emit a flat JSON record")
+    .option("--fields <list>", "comma-separated fields to show")
+    .option("--profile <name>", "use this profile for this command only")
+    .option("--project <name-or-id>", "override the profile default project")
+    .action(async (reference: string, name: string, options: {
+      description?: string;
+      status?: string;
+      sharing?: string;
+      start?: string;
+      end?: string;
+    } & ScopeOptions) => {
+      // Misuse is refused before any traffic, JSON mode included.
+      runtime.setJsonMode(options.json === true);
+      if (name.trim() === "") {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          "the version name is empty.",
+          "give the new version a non-empty <name>.",
+        );
+      }
+      const status = readChoice(options.status ?? "open", "--status", VERSION_STATUSES);
+      const sharing = readChoice(options.sharing, "--sharing", VERSION_SHARINGS);
+      const start = options.start === undefined || options.start === ""
+        ? options.start
+        : readDate(options.start, "--start");
+      const end = options.end === undefined || options.end === ""
+        ? options.end
+        : readDate(options.end, "--end");
+      if (start !== undefined && end !== undefined && start !== "" && end !== "" && start > end) {
+        throw new OpCliError(
+          "USAGE_ERROR",
+          `--start ${start} is after --end ${end}.`,
+          "give a start date on or before the end date.",
+        );
+      }
+      const { getPage } = await connect(runtime, options);
+      const profile = await runtime.resolve({
+        profile: options.profile,
+        project: parseProjectOverride(options.project),
+      });
+      const hit = await resolveProjectRef(getPage, reference);
+      const payload: Record<string, unknown> = {
+        name: name.trim(),
+        status,
+        _links: { definingProject: { href: `${PROJECTS_COLLECTION}/${String(hit.id)}` } },
+      };
+      if (options.description !== undefined) {
+        payload.description = toFormattable(options.description);
+      }
+      if (sharing !== undefined) {
+        payload.sharing = sharing;
+      }
+      if (start !== undefined) {
+        payload.startDate = start === "" ? null : start;
+      }
+      if (end !== undefined) {
+        payload.endDate = end === "" ? null : end;
+      }
+      const body = await projectWrite(
+        () => apiPostRaw(profile.instanceUrl, profile.apiKey, VERSIONS_COLLECTION, payload),
+        "create",
+        "check op-cli project versions before repeating the command, "
+          + "so the version is not created twice.",
+      );
+      const created = flattenHalRecord(body);
+      renderRecord(
+        runtime,
+        options,
+        created,
+        `version ${String(created.id)} was created`,
+      );
+    });
 
   // ---------------------------------------------------------------------------
   // project member add / remove

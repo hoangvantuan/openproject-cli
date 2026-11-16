@@ -79,7 +79,7 @@ numeric; use each command's help to distinguish them. Run any command below with
   - `--fields id,subject` narrows single-record and collection-row
     commands: `wp get`/`create`/`update`/`attach`, `wp history`/`comments`/
     `attachments`/`relations`/`watchers`, `time log`/`get`/`update`, `project get`/`create`/
-    `update`/`copy`/`member`, and `notification list`/`get`. Other list
+    `update`/`copy`/`member`/`version create`, and `notification list`/`get`. Other list
     and count commands print fixed columns instead, and `wp create --stdin`
     refuses the flag; without
     `--fields` the JSON output carries the whole record.
@@ -197,6 +197,11 @@ op-cli project list --search web
 op-cli workspace list --search web
 op-cli project create Web --identifier web
 op-cli project copy <reference> Copy --identifier web-copy
+# create a version in a project (status open|locked|closed, default open;
+# sharing none|descendants|hierarchy|tree|system; dates YYYY-MM-DD, "" leaves empty).
+# A 5xx or timeout is NETWORK_ERROR with unknown outcome: run
+# `project versions <reference>` before repeating, or it may be created twice.
+op-cli project version create <reference> 1.0.0 --status open --start 2026-12-01 --end 2026-12-31
 # add or remove project members; without membership, assignment is refused
 op-cli project member add <project> <user> <role>
 op-cli project member remove <project> <user>

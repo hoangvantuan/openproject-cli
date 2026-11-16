@@ -192,6 +192,7 @@ describe("project group registration", () => {
       "star",
       "unstar",
       "versions",
+      "version",
       "categories",
       "sprints",
       "buckets",
@@ -861,6 +862,169 @@ describe("project vocabulary listings", () => {
     expect(result.stdout).toContain("Task");
   });
 });
+function versionElement(id: number, name: string): Record<string, unknown> {
+  return {
+    _type: "Version",
+    id,
+    name,
+    status: "open",
+    sharing: "none",
+    startDate: null,
+    endDate: null,
+    _links: {
+      self: { href: `/api/v3/versions/${String(id)}` },
+      definingProject: { href: "/api/v3/projects/21", title: "Demo Site" },
+    },
+  };
+}
+
+function installVersionCreateApi(status = 201, body: unknown = versionElement(7, "1.0.0")) {
+  return installMockApi({
+    gets: {
+      [PROJECTS_PAGE]: halCollection(2, ALL_PROJECTS),
+      "/api/v3/projects/21": projectElement(21, "demo-site", "Demo Site"),
+    },
+    writes: [{ path: "/api/v3/versions", method: "POST", status, body }],
+  });
+}
+
+describe("project version create", () => {
+  test("posts name, defining project, and default status open, then renders the record", async () => {
+    const root = await makeTempRoom("project-version-create-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installVersionCreateApi();
+    const result = await runProject(configDir, cacheDir, [
+      "version", "create", "Demo Site", "1.0.0",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("1.0.0");
+    expect(api.writes).toHaveLength(1);
+    expect(JSON.parse(api.writes[0]?.body ?? "{}")).toEqual({
+      name: "1.0.0",
+      status: "open",
+      _links: { definingProject: { href: "/api/v3/projects/21" } },
+    });
+  });
+
+  test("optional attributes travel in the shapes the API wants", async () => {
+    const root = await makeTempRoom("project-version-create-opts-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installVersionCreateApi();
+    const result = await runProject(configDir, cacheDir, [
+      "version", "create", "demo-site", "1.0.0",
+      "--description", "First release.",
+      "--status", "locked",
+      "--sharing", "descendants",
+      "--start", "2026-12-01",
+      "--end", "2026-12-31",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(api.writes[0]?.body ?? "{}")).toEqual({
+      name: "1.0.0",
+      status: "locked",
+      description: { raw: "First release." },
+      sharing: "descendants",
+      startDate: "2026-12-01",
+      endDate: "2026-12-31",
+      _links: { definingProject: { href: "/api/v3/projects/21" } },
+    });
+  });
+
+  test("empty description, start, and end are sent as clears", async () => {
+    const root = await makeTempRoom("project-version-create-clear-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installVersionCreateApi();
+    const result = await runProject(configDir, cacheDir, [
+      "version", "create", "21", "1.0.0", "--description", "", "--start", "", "--end", "",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const sent = JSON.parse(api.writes[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(sent["description"]).toEqual({ raw: "" });
+    expect(sent["startDate"]).toBeNull();
+    expect(sent["endDate"]).toBeNull();
+  });
+
+  test.each([
+    [["  "], "name"],
+    [["1.0.0", "--status", "done"], "--status"],
+    [["1.0.0", "--status", ""], "--status"],
+    [["1.0.0", "--sharing", "everyone"], "--sharing"],
+    [["1.0.0", "--sharing", ""], "--sharing"],
+    [["1.0.0", "--start", "2026-02-30"], "--start"],
+    [["1.0.0", "--end", "tomorrow"], "--end"],
+    [["1.0.0", "--start", "2026-12-31", "--end", "2026-12-01"], "--start"],
+  ])("misuse %j exits 1 before any request", async (args, mention) => {
+    const root = await makeTempRoom("project-version-create-bad-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installNoTrafficApi();
+    const result = await runProject(configDir, cacheDir, [
+      "version", "create", "21", ...args,
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("[USAGE_ERROR]");
+    expect(result.stderr).toContain(mention);
+  });
+
+  test("a rejected create quotes the instance's explanation", async () => {
+    const root = await makeTempRoom("project-version-create-422-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installVersionCreateApi(422, { _type: "Error", message: "Name has already been taken." });
+    const result = await runProject(configDir, cacheDir, ["version", "create", "21", "1.0.0"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain(
+      "[API_ERROR] OpenProject rejected the create: Name has already been taken.",
+    );
+  });
+
+  test("a 5xx is an unknown outcome that points at project versions, and is never retried", async () => {
+    const root = await makeTempRoom("project-version-create-500-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installVersionCreateApi(503, "");
+    const result = await runProject(configDir, cacheDir, ["version", "create", "21", "1.0.0"]);
+    expect(result.exitCode).toBe(6);
+    expect(result.stderr).toContain("[NETWORK_ERROR]");
+    expect(result.stderr).toContain("unknown");
+    expect(result.stderr).toContain("op-cli project versions");
+    expect(api.writes).toHaveLength(1);
+  });
+
+  test("a bad --fields after the write says the version was created", async () => {
+    const root = await makeTempRoom("project-version-create-fields-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installVersionCreateApi();
+    const result = await runProject(configDir, cacheDir, [
+      "version", "create", "21", "1.0.0", "--fields", "nope",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("version 7 was created");
+    expect(api.writes).toHaveLength(1);
+  });
+
+  test("--fields and --json pick from the created record", async () => {
+    const root = await makeTempRoom("project-version-create-json-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    installVersionCreateApi();
+    const result = await runProject(configDir, cacheDir, [
+      "version", "create", "21", "1.0.0", "--json", "--fields", "id,name",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ id: 7, name: "1.0.0" });
+  });
+
+  test("workspace version create is the same command", async () => {
+    const root = await makeTempRoom("project-version-create-ws-");
+    const { configDir, cacheDir } = await writeSingleProfile(root, INSTANCE);
+    const api = installVersionCreateApi();
+    const result = await run(
+      ["workspace", "version", "create", "21", "1.0.0"],
+      { OP_CLI_CONFIG_DIR: configDir, OP_CLI_CACHE_DIR: cacheDir },
+      {},
+    );
+    expect(result.exitCode).toBe(0);
+    expect(api.writes).toHaveLength(1);
+  });
+});
+
 describe("project delete", () => {
   test("without --yes exits 1 and sends nothing, with or without a TTY", async () => {
     const root = await makeTempRoom("project-delete-guard-");
