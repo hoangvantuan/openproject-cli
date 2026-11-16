@@ -13,7 +13,7 @@ import {
   rowViewOf,
   type CollectionColumn,
 } from "../core/define.js";
-import { flattenHalLink, halRefId } from "../core/hal.js";
+import { flattenHalLink, flattenHalRecord, halRefId } from "../core/hal.js";
 import { apiGet } from "../core/http.js";
 import {
   DEFAULT_PAGE_SIZE,
@@ -161,9 +161,28 @@ function defaultQueryFallbackPath(scope: QueryScope): string | undefined {
 /** What a query reference names: the scope's default, or one stored query. */
 export type QueryRef =
   | { readonly kind: "default" }
-  | { readonly kind: "id"; readonly id: number };
+  | { readonly kind: "id"; readonly id: number; readonly name?: string };
 
-function lastSegment(href: unknown): string | undefined {
+/** A reference to one stored query: never the scope's default. */
+export type SavedQueryRef = Extract<QueryRef, { readonly kind: "id" }>;
+
+function refuseDefaultQuery(): never {
+  throw new OpCliError(
+    "USAGE_ERROR",
+    "the default query is not a saved query and cannot be modified.",
+    "pass the id or exact name of a saved query; run op-cli query list to see them.",
+  );
+}
+
+/** The default query is a view of the scope, not a stored query. */
+export function refuseDefault(reference: string): void {
+  if (reference.trim() === "default") {
+    refuseDefaultQuery();
+  }
+}
+
+/** The last path segment of an href, decoded; undefined when there is none. */
+export function lastSegment(href: unknown): string | undefined {
   if (typeof href !== "string") {
     return undefined;
   }
@@ -228,7 +247,7 @@ export async function resolveQueryRef(
     })),
   );
   if (match.kind === "unique") {
-    return { kind: "id", id: match.entry.value };
+    return { kind: "id", id: match.entry.value, name: match.entry.name };
   }
   if (match.kind === "ambiguous") {
     const listed = match.candidates
@@ -248,6 +267,18 @@ export async function resolveQueryRef(
         + `${rankByCloseness(raw, candidates.map((candidate) => candidate.name)).join(", ")}.`,
     "run op-cli query list to see the queries you can address.",
   );
+}
+
+/** Like resolveQueryRef, but a reference to the default query is refused. */
+export async function resolveSavedQuery(
+  connection: QueryConnection,
+  raw: string,
+): Promise<SavedQueryRef> {
+  const ref = await resolveQueryRef(connection, raw);
+  if (ref.kind !== "id") {
+    refuseDefaultQuery();
+  }
+  return ref;
 }
 
 /** The raw Query resource a reference names. */
@@ -301,17 +332,23 @@ function sortSummary(href: unknown): string | undefined {
 }
 
 /**
- * One Query resource as a flat record: the scalars, `{ id, name }` for
- * project, user, and group-by, the columns and sort order as plain strings,
- * and the filters as `{ field, operator, values }`. The embedded results
- * are dropped: running a query is its own command.
+ * One Query resource as a flat record: every attribute the server sent
+ * (ADR-0003), with `{ id, name }` for project, user, and group-by, the
+ * columns and sort order as plain strings, and the filters as
+ * `{ field, operator, values }`. The embedded results are dropped:
+ * running a query is its own command.
  */
 export function flattenQueryRecord(element: unknown): Record<string, unknown> {
-  const query = element as Record<string, unknown> & {
-    readonly _links?: Record<string, unknown>;
-  };
-  const links = query._links ?? {};
+  const query = element as Record<string, unknown>;
+  // The filters are summarised below; their plain `values` arrays are not
+  // resources, which the generic flattening cannot take.
+  const withoutFilters = { ...query };
+  delete withoutFilters.filters;
+  const base = flattenHalRecord(withoutFilters);
+  delete base.results;
+  const links = (query._links as Record<string, unknown> | undefined) ?? {};
   return {
+    ...base,
     id: query.id ?? null,
     name: query.name ?? null,
     project: flattenHalLink(links.project),
@@ -385,7 +422,7 @@ function registerList(query: Command, runtime: QueryRuntime): void {
   addQueryScopeOptions(
     query
       .command("list")
-      .description("List visible queries (saved work package views)")
+      .description("List visible queries (saved work package queries)")
       .option("--starred", "only queries you starred")
       .option("--json", PAGED_JSON_HELP)
       .option("--fields <list>", "comma-separated columns to show")
@@ -474,7 +511,7 @@ function registerGet(query: Command, runtime: QueryRuntime): void {
 }
 
 export function registerQueryCommands(query: Command, runtime: QueryRuntime): void {
-  query.description("Inspect and manage saved work package views (queries)");
+  query.description("Inspect and manage saved work package queries");
   registerList(query, runtime);
   registerGet(query, runtime);
   registerQueryRun(query, runtime);

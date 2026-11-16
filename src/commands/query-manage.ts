@@ -4,39 +4,15 @@ import { OpCliError, unknownIfUnfinished, writeFailure } from "../core/errors.js
 import { apiDeleteRaw, apiPatchRaw } from "../core/http.js";
 import {
   addQueryScopeOptions,
-  checkQueryScopeFlags,
   connectQuery,
   flattenQueryRecord,
   QUERIES_COLLECTION,
+  refuseDefault,
   renderQueryRecord,
-  resolveQueryRef,
+  resolveSavedQuery,
   type QueryRuntime,
   type QueryScopeOptions,
 } from "./query.js";
-
-/** The default query is a view of the scope, not a stored query. */
-function refuseDefault(reference: string): void {
-  if (reference === "default") {
-    throw new OpCliError(
-      "USAGE_ERROR",
-      "the default query is not a saved query and cannot be modified.",
-      "pass the id or exact name of a saved query; run op-cli query list to see them.",
-    );
-  }
-}
-
-/** The numeric id a reference names; "default" never reaches here. */
-async function resolveStoredId(
-  connection: Awaited<ReturnType<typeof connectQuery>>,
-  reference: string,
-): Promise<number> {
-  const ref = await resolveQueryRef(connection, reference);
-  if (ref.kind !== "id") {
-    refuseDefault("default");
-    throw new OpCliError("INTERNAL_ERROR", "a saved query reference resolved to the default.");
-  }
-  return ref.id;
-}
 
 type StarOptions = QueryScopeOptions & { readonly fields?: string };
 
@@ -58,11 +34,11 @@ function registerStar(
       .option("--json", "emit a flat JSON record")
       .option("--fields <list>", "comma-separated fields to show"),
   ).action(async (reference: string, options: StarOptions) => {
+    // JSON mode is set first so the refusal below is shaped for the caller.
     runtime.setJsonMode(options.json === true);
-    checkQueryScopeFlags(options);
     refuseDefault(reference);
     const connection = await connectQuery(runtime, options);
-    const id = await resolveStoredId(connection, reference);
+    const { id } = await resolveSavedQuery(connection, reference);
     const { instanceUrl, apiKey } = connection.profile;
     const wording = {
       action: verb,
@@ -102,10 +78,10 @@ function registerDelete(query: Command, runtime: QueryRuntime): void {
         "repeat the command with --yes to confirm the deletion.",
       );
     }
-    checkQueryScopeFlags(options);
     refuseDefault(reference);
     const connection = await connectQuery(runtime, options);
-    const id = await resolveStoredId(connection, reference);
+    const ref = await resolveSavedQuery(connection, reference);
+    const { id } = ref;
     const wording = {
       action: "delete",
       unknown: "whether the query was deleted is unknown",
@@ -119,7 +95,11 @@ function registerDelete(query: Command, runtime: QueryRuntime): void {
     if (response.status >= 400) {
       throw writeFailure(response.status, response.body, wording);
     }
-    runtime.write(`Deleted query ${String(id)}.\n`);
+    runtime.write(
+      ref.name === undefined
+        ? `Deleted query ${String(id)}.\n`
+        : `Deleted query ${ref.name} (${String(id)}).\n`,
+    );
   });
 }
 

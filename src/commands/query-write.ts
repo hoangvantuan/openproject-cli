@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { OpCliError, refuseCombined, unknownIfUnfinished, writeFailure } from "../core/errors.js";
 import { buildWpFilters, parseSort, type WpFilter } from "../core/filters.js";
 import { apiPatchRaw, apiPostRaw } from "../core/http.js";
+import { halRefId } from "../core/hal.js";
 import { parseProjectOverride, type ActiveProfile } from "../context/profile.js";
 import {
   addFilterFlags,
@@ -14,10 +15,12 @@ import {
 import {
   addQueryScopeOptions,
   connectQuery,
+  fetchQuery,
   flattenQueryRecord,
   QUERIES_COLLECTION,
+  refuseDefault,
   renderQueryRecord,
-  resolveQueryRef,
+  resolveSavedQuery,
   type QueryRuntime,
   type QueryScopeOptions,
 } from "./query.js";
@@ -43,11 +46,14 @@ const CREATE_WORDING = {
   check: "run op-cli query list to see whether the query exists before repeating the command.",
 };
 
-const UPDATE_WORDING = {
-  action: "update",
-  unknown: "whether the query was changed is unknown",
-  check: "run op-cli query get to see the stored values before repeating the command.",
-};
+/** What to say when an update may or may not have landed. */
+function updateWording(id: number): { action: string; unknown: string; check: string } {
+  return {
+    action: "update",
+    unknown: "whether the query was changed is unknown",
+    check: `run op-cli query get ${String(id)} to see the stored values before repeating the command.`,
+  };
+}
 
 /** The view flags every write accepts; one spelling for both commands. */
 function addViewOptions(command: Command): Command {
@@ -284,7 +290,7 @@ function registerCreate(query: Command, runtime: QueryRuntime): void {
     addFilterFlags(
       query
         .command("create")
-        .description("Create a saved query (work package view)")
+        .description("Create a saved work package query")
         .argument("<name>", "name of the new query")
         .option("--global", "make a query that belongs to no project"),
     ),
@@ -295,7 +301,6 @@ function registerCreate(query: Command, runtime: QueryRuntime): void {
       [options.global === true ? "--global" : undefined, options.project === undefined ? undefined : "--project"],
       "pass only one of --project or --global.",
     );
-    checkFields(options.fields);
     const view = viewOf(options, "create");
     // Flag conflicts among the filters are refused here, before any traffic.
     queryFilters(rawListFlags(options));
@@ -342,6 +347,36 @@ type UpdateOptions = FilterFlagOptions & ViewOptions & QueryScopeOptions & {
   readonly clearFilters?: boolean;
 };
 
+/**
+ * The project whose names the filter flags resolve against: none for
+ * --global, the one given by --project, otherwise the project of the query
+ * being changed when a flag needs one, else the profile's default.
+ */
+async function filterProjectOf(
+  connection: Awaited<ReturnType<typeof connectQuery>>,
+  ref: Parameters<typeof fetchQuery>[1],
+  options: UpdateOptions,
+): Promise<number | undefined> {
+  if (options.global === true) {
+    return undefined;
+  }
+  if (options.project !== undefined) {
+    return connection.profile.project;
+  }
+  const needsProject = PROJECT_ONLY_FLAGS.some(([key]) => {
+    const value = options[key];
+    return Array.isArray(value) && value.length > 0;
+  });
+  if (!needsProject) {
+    return connection.profile.project;
+  }
+  const existing = (await fetchQuery(connection, ref)) as {
+    readonly _links?: { readonly project?: { readonly href?: unknown } };
+  };
+  const href = existing._links?.project?.href;
+  return halRefId(typeof href === "string" ? href : null) ?? undefined;
+}
+
 function registerUpdate(query: Command, runtime: QueryRuntime): void {
   addQueryScopeOptions(
     addViewOptions(
@@ -357,13 +392,7 @@ function registerUpdate(query: Command, runtime: QueryRuntime): void {
     ),
   ).action(async (reference: string, options: UpdateOptions) => {
     runtime.setJsonMode(options.json === true);
-    if (reference.trim() === "default") {
-      throw new OpCliError(
-        "USAGE_ERROR",
-        'the "default" query is not stored and cannot be updated.',
-        "create a query with op-cli query create instead.",
-      );
-    }
+    refuseDefault(reference);
     const name = options.name === undefined ? undefined : checkName(options.name, "--name");
     checkFields(options.fields);
     const view = viewOf(options, "update");
@@ -387,13 +416,19 @@ function registerUpdate(query: Command, runtime: QueryRuntime): void {
     }
 
     const connection = await connectQuery(runtime, options);
-    const ref = await resolveQueryRef(connection, reference);
-    if (ref.kind !== "id") {
-      throw new OpCliError("USAGE_ERROR", "the default query cannot be updated.", "pass an id or a name.");
-    }
+    const ref = await resolveSavedQuery(connection, reference);
+    const wording = updateWording(ref.id);
     const { profile } = connection;
+    const filterProject = named.length > 0
+      ? await filterProjectOf(connection, ref, options)
+      : undefined;
     const filters = named.length > 0
-      ? await resolvedFilters(runtime, profile, options, profile.project)
+      ? await resolvedFilters(
+        runtime,
+        { ...profile, project: filterProject },
+        options,
+        filterProject,
+      )
       : [];
 
     const links = view.links;
@@ -415,10 +450,10 @@ function registerUpdate(query: Command, runtime: QueryRuntime): void {
           `${QUERIES_COLLECTION}/${String(ref.id)}`,
           payload,
         ),
-      UPDATE_WORDING,
+      wording,
     );
     if (response.status >= 400) {
-      throw writeFailure(response.status, response.body, UPDATE_WORDING);
+      throw writeFailure(response.status, response.body, wording);
     }
     const record = flattenQueryRecord(response.body);
     renderQueryRecord(

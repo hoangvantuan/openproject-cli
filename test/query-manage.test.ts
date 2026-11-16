@@ -202,6 +202,28 @@ describe("query delete", () => {
     expect(seen).toEqual(["DELETE /api/v3/queries/7"]);
   });
 
+  test("a name resolves live and the confirmation names the query", async () => {
+    const room = await makeRoom();
+    const seen = installApi([
+      {
+        method: "GET",
+        path: "/api/v3/queries?pageSize=100",
+        body: {
+          _type: "Collection",
+          total: 1,
+          count: 1,
+          _embedded: { elements: [queryBody(7, "Roadmap", false)] },
+          _links: { self: { href: "/self" } },
+        },
+      },
+      { method: "DELETE", path: "/api/v3/queries/7", status: 204 },
+    ]);
+    const result = await runQuery(room, ["delete", "Roadmap", "--yes"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("Deleted query Roadmap (7).\n");
+    expect(seen).toContain("DELETE /api/v3/queries/7");
+  });
+
   test("a 403 is a refusal and a 5xx is the unknown-state exit 6", async () => {
     const room = await makeRoom();
     installApi([{ method: "DELETE", path: "/api/v3/queries/7", status: 403 }]);

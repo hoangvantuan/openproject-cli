@@ -242,7 +242,6 @@ describe("query create", () => {
     [["create", "X", "--group-by", ""], "--group-by"],
     [["create", "X", "--sort", "nonsense"], "nonsense"],
     [["create", "X", "--open", "--closed"], "--open"],
-    [["create", "X", "--fields", "nope"], "nope"],
     [["create", "X", "--version", "1"], "project"],
   ])("%j is refused before any traffic", async (args, mention) => {
     const room = await makeRoom();
@@ -253,6 +252,20 @@ describe("query create", () => {
     expect(result.stderr.toLowerCase()).toContain(mention.toLowerCase());
     expect(traffic.gets).toEqual([]);
     expect(traffic.writes).toEqual([]);
+  });
+
+  test("--fields is checked after the write and the failure names the created query", async () => {
+    const room = await makeRoom();
+    const traffic = installApi({
+      write: { method: "POST", path: "/api/v3/queries", status: 201, body: stored(5, "X") },
+    });
+    const result = await runQuery(room, ["create", "X", "--fields", "nope"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("USAGE_ERROR");
+    expect(result.stderr).toContain("query 5 was created;");
+    expect(result.stderr).toContain("nope");
+    expect(traffic.writes).toHaveLength(1);
+    expect(traffic.writes[0]?.method).toBe("POST");
   });
 
   test("a 5xx is the unknown-outcome exit 6", async () => {
@@ -349,6 +362,60 @@ describe("query update", () => {
     expect(result.stderr).toContain("USAGE_ERROR");
     expect(result.stderr.toLowerCase()).toContain(mention.toLowerCase());
     expect(traffic.gets).toEqual([]);
+    expect(traffic.writes).toEqual([]);
+  });
+
+  async function seedVersions(room: { cacheDir: string }): Promise<void> {
+    await mkdir(join(room.cacheDir, "default"), { recursive: true });
+    await writeFile(
+      join(room.cacheDir, "default", "metadata.json"),
+      JSON.stringify({
+        projectScoped: {
+          "99": {
+            project_id: 99,
+            fetched_at: "2026-01-01T00:00:00Z",
+            members: [],
+            versions: [{ id: 21, name: "v2", status: "open" }],
+            categories: [],
+            activities: [],
+            sprints: [],
+            buckets: [],
+          },
+        },
+      }),
+    );
+  }
+
+  test("project-scoped names resolve against the project of the query being changed", async () => {
+    const room = await makeRoom(13);
+    await seedVersions(room);
+    const traffic = installApi({
+      gets: {
+        "/api/v3/queries/5": {
+          ...stored(5, "Roadmap"),
+          _links: { project: { href: "/api/v3/projects/99", title: "Other" } },
+        },
+      },
+      write: { method: "PATCH", path: "/api/v3/queries/5", body: stored(5, "Roadmap") },
+    });
+    const result = await runQuery(room, ["update", "5", "--version", "v2"]);
+    expect(result.exitCode).toBe(0);
+    expect(traffic.gets).toEqual(["/api/v3/queries/5"]);
+    expect(JSON.stringify(traffic.writes[0]?.body)).toContain("/api/v3/versions/21");
+  });
+
+  test("a project-scoped name on a global query is refused before any write", async () => {
+    const room = await makeRoom(13);
+    await seedVersions(room);
+    const traffic = installApi({
+      gets: {
+        "/api/v3/queries/5": { ...stored(5, "Roadmap"), _links: { project: { href: null } } },
+      },
+    });
+    const result = await runQuery(room, ["update", "5", "--version", "v2"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("USAGE_ERROR");
+    expect(result.stderr).toContain("--version");
     expect(traffic.writes).toEqual([]);
   });
 

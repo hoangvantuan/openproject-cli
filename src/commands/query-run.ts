@@ -2,22 +2,17 @@ import type { Command } from "commander";
 
 import { OpCliError } from "../core/errors.js";
 import { PAGED_JSON_HELP, type CollectionColumn } from "../core/define.js";
-import { flattenHalRecord, halRefId } from "../core/hal.js";
+import { flattenHalRecord } from "../core/hal.js";
 import { allPageSize, halElements, parsePageSize, withPageSize } from "../core/paginate.js";
 import { rankByCloseness } from "../context/resolve.js";
-import {
-  instancePathOf,
-  PROJECTS_COLLECTION,
-  withMovedRetry,
-  WORKSPACES_COLLECTION,
-} from "../context/projectref.js";
+import { instancePathOf } from "../context/projectref.js";
 import { formatCell, renderTable } from "../output/table.js";
 import {
   addQueryScopeOptions,
   connectQuery,
   fetchQuery,
+  lastSegment,
   resolveQueryRef,
-  type GetPage,
   type QueryRuntime,
   type QueryScopeOptions,
 } from "./query.js";
@@ -36,12 +31,6 @@ interface ResultsPage {
 
 type LinkBody = { readonly href?: unknown; readonly title?: unknown };
 
-/** Where the results of a query start: the first path, and one to try if it is gone. */
-interface ResultsEndpoint {
-  readonly first: string;
-  readonly moved?: string;
-}
-
 /** The href without its pageSize, so the page size is set exactly once. */
 function withoutPageSize(path: string): string {
   const [base = "", query] = path.split("?", 2);
@@ -51,31 +40,21 @@ function withoutPageSize(path: string): string {
 
 /**
  * The results path of a Query resource: the link the server gave, cut to
- * start at /api/v3 so an instance subpath is not added twice; otherwise the
- * work packages of the query's project, or of every project.
+ * start at /api/v3 so an instance subpath is not added twice. Without that
+ * link the filters of the query would be lost, so it fails loudly.
  */
-function resultsEndpointOf(query: unknown): ResultsEndpoint {
+function resultsEndpointOf(query: unknown): string {
   const links = ((query as { readonly _links?: Record<string, unknown> })._links ?? {});
-  const href = (links.results as LinkBody | undefined)?.href;
-  if (typeof href === "string" && href !== "") {
-    const path = instancePathOf(href);
-    if (path !== undefined) {
-      return { first: withoutPageSize(path) };
-    }
+  const href = (links.results as LinkBody | null | undefined)?.href;
+  const path = typeof href === "string" && href !== "" ? instancePathOf(href) : undefined;
+  if (path === undefined) {
+    throw new OpCliError(
+      "API_ERROR",
+      "the query response carried no results link.",
+      "check the instance version with op-cli doctor.",
+    );
   }
-  const projectHref = (links.project as LinkBody | undefined)?.href;
-  const project = halRefId(typeof projectHref === "string" ? projectHref : null);
-  return project === null
-    ? { first: "/api/v3/work_packages" }
-    : {
-      first: `${WORKSPACES_COLLECTION}/${String(project)}/work_packages`,
-      moved: `${PROJECTS_COLLECTION}/${String(project)}/work_packages`,
-    };
-}
-
-function lastSegment(href: string): string {
-  const tail = href.split("/").filter((part) => part !== "").pop() ?? "";
-  return decodeURIComponent(tail);
+  return withoutPageSize(path);
 }
 
 /** The columns the query shows; the fixed work package columns when it defines none. */
@@ -87,6 +66,9 @@ function queryColumns(query: unknown): ReadonlyArray<CollectionColumn> {
       return [];
     }
     const field = lastSegment(link.href);
+    if (field === undefined) {
+      return [];
+    }
     const title = typeof link.title === "string" && link.title !== "" ? link.title : field;
     return [{ title: title.toUpperCase(), field }];
   });
@@ -130,17 +112,10 @@ export function registerQueryRun(query: Command, runtime: QueryRuntime): void {
     const connection = await connectQuery(runtime, options);
     const resource = await fetchQuery(connection, await resolveQueryRef(connection, reference));
     const endpoint = resultsEndpointOf(resource);
-    const { getPage } = connection;
+    const { getPage: readPage } = connection;
 
-    const size = options.all === true ? await allPageSize(getPage) : limit;
-    const first = withPageSize(endpoint.first, size);
-    const moved = endpoint.moved === undefined ? undefined : withPageSize(endpoint.moved, size);
-    // Only the first request may fall back to the older route; every later
-    // page is a link the server handed out.
-    const readPage: GetPage = (path) =>
-      moved !== undefined && path === first
-        ? withMovedRetry(() => getPage(first), () => getPage(moved))
-        : getPage(path);
+    const size = options.all === true ? await allPageSize(readPage) : limit;
+    const first = withPageSize(endpoint, size);
 
     const requested = options.fields === undefined ? undefined : fieldList(options.fields);
     const view = requested === undefined

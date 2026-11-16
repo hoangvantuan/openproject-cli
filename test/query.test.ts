@@ -286,6 +286,29 @@ describe("query list scopes and paging", () => {
 });
 
 describe("query get", () => {
+  test("an extra query attribute survives and --fields can project it", async () => {
+    const room = await makeRoom();
+    installApi({
+      "/api/v3/queries/5": {
+        ...(BUGS as Record<string, unknown>),
+        timelineVisible: false,
+        displayRepresentation: "list",
+      },
+    });
+    const full = await runQuery(room, ["get", "5", "--json"]);
+    expect(full.exitCode).toBe(0);
+    expect(JSON.parse(full.stdout)).toMatchObject({
+      timelineVisible: false,
+      displayRepresentation: "list",
+      name: "Open bugs",
+    });
+    expect(JSON.parse(full.stdout)).not.toHaveProperty("results");
+
+    const picked = await runQuery(room, ["get", "5", "--json", "--fields", "timelineVisible"]);
+    expect(picked.exitCode).toBe(0);
+    expect(JSON.parse(picked.stdout)).toEqual({ timelineVisible: false });
+  });
+
   test("a numeric id reads the query and flattens it", async () => {
     const room = await makeRoom();
     installApi({ "/api/v3/queries/5": BUGS });

@@ -186,36 +186,19 @@ describe("op-cli query run", () => {
     expect(lines[1]).toContain("Fix login");
   });
 
-  test("without a results link it reads the project work packages, then the older route", async () => {
+  test("without a results link it fails loudly and reads no work packages", async () => {
     const room = await makeRoom();
     const seen = installApi({
       "/api/v3/queries/7": queryResource(7, { results: null, project: [5, "Web"] }),
-      "/api/v3/workspaces/5/work_packages?pageSize=100": 404,
-      "/api/v3/projects/5/work_packages?pageSize=100": collection(1, [workPackage(41, "Fix login")]),
     });
 
     const result = await runQuery(room, ["7", "--json"]);
 
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toHaveLength(1);
-    expect(seen).toEqual([
-      "/api/v3/queries/7",
-      "/api/v3/workspaces/5/work_packages?pageSize=100",
-      "/api/v3/projects/5/work_packages?pageSize=100",
-    ]);
-  });
-
-  test("without a results link and a project it reads every work package", async () => {
-    const room = await makeRoom();
-    installApi({
-      "/api/v3/queries/7": queryResource(7, { results: null }),
-      "/api/v3/work_packages?pageSize=100": collection(0, []),
-    });
-
-    const result = await runQuery(room, ["7", "--json"]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("[]\n");
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("API_ERROR");
+    expect(result.stderr).toContain("no results link");
+    expect(seen).toEqual(["/api/v3/queries/7"]);
+    expect(seen.some((path) => path.includes("/work_packages"))).toBe(false);
   });
 
   test("a results link under an instance subpath is cut to start at /api/v3", async () => {
