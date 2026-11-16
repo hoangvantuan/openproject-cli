@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 
 import { formatCell, renderTable } from "../output/table.js";
+import { registerQueryRun } from "./query-run.js";
 
 import { OpCliError, refuseCombined } from "../core/errors.js";
 import { filtersQuery, type WpFilter } from "../core/filters.js";
@@ -468,4 +469,5 @@ export function registerQueryCommands(query: Command, runtime: QueryRuntime): vo
   query.description("Inspect saved work package views (queries)");
   registerList(query, runtime);
   registerGet(query, runtime);
+  registerQueryRun(query, runtime);
 }

@@ -43,7 +43,7 @@ const API_ROOT = "/api/v3/";
  * which the client prepends again from the instance URL, so everything
  * before the API root is dropped.
  */
-function instancePathOf(href: string): string | undefined {
+export function instancePathOf(href: string): string | undefined {
   const path = halNextPath(href);
   const root = path?.indexOf(API_ROOT) ?? -1;
   return path === undefined || root <= 0 ? path : path.slice(root);

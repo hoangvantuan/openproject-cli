@@ -208,6 +208,10 @@ op-cli query list --starred
 op-cli query list --all-projects --json
 op-cli query get Roadmap --fields name,columns,filters
 op-cli query get default --global
+# run a query: its work packages, with the columns the query defines;
+# --fields picks columns, --limit or --all sets how many
+op-cli query run Roadmap
+op-cli query run default --all --json --fields id,subject,status
 # move a work package to another project, by id, identifier, or name
 op-cli wp move <id> <project>
 # what a work package may use in a project
